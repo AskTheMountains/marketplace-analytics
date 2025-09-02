@@ -95,6 +95,8 @@ def process_product_list(df_products):
         df_products_processed['Размер'] = df_products_processed['Размер'].fillna(0)
     # Удаляем дубликаты
     df_products_processed = df_products_processed.drop_duplicates(subset=['Артикул продавца', 'Размер'])
+    # Создаем колонку Артикул_Размер для мерджа
+    df_products_processed['Артикул_Размер'] = df_products_processed[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
     # Считаем скидку
     df_products_processed['discount'] = np.round(1 - (df_products_processed['discount_price']/df_products_processed['price']), 3)
 
@@ -115,14 +117,20 @@ def get_columns_from_catalog(df_products_processed):
     catalog_reference = catalog.dropna(subset=['Размер'], ignore_index=True)
     # Делаем размер строкой
     catalog_reference['Размер'] = catalog_reference['Размер'].astype(str)
+    # Создаем столбец Артикул_Размер для мерджа
+    catalog_reference['Артикул_Размер'] = catalog_reference[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
     # У некоторых клиентов делаем размер строковым типом
     if client_name in ['KU_And_KU', 'Soyuz']:
         catalog_reference['Размер'] = catalog_reference['Размер'].astype(str).str.replace('.0', '')
         catalog_reference['Размер'] = catalog_reference['Размер'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         catalog_reference['Размер'] = catalog_reference['Размер'].fillna(0)
-    df_products_with_catalog = df_products_processed.merge(catalog_reference[catalog_action_columns],
-                                                 how='left',
-                                                 on=['Артикул продавца', 'Размер'])
+    # Объединяем список товаров с данными справочной таблицы
+    df_products_with_catalog = df_products_processed.merge(
+        catalog_reference[catalog_action_columns],
+        how='left',
+        on=['Артикул_Размер']
+    )
+
     return df_products_with_catalog
 
 
@@ -140,12 +148,14 @@ def get_columns_from_metrics(date_report_created, df_products):
     metrics = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/Metrics/{date_report_created}_МетрикиИтоги.xlsx", sheet_name='summary')
     # Переводим столбец с размером в str
     metrics['Размер'] = metrics['Размер'].astype(str)
+    # Создаем колонку Артикул_Размер
+    metrics['Артикул_Размер'] = metrics[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
     # Добавляем столбцы из файла с метриками
     df_products_with_metrics =pd.merge(
         df_products,
-        metrics[['Артикул продавца', 'Размер', 'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs']],
+        metrics[['Артикул_Размер', 'Артикул продавца', 'Размер', 'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs']],
         how='left',
-        on=['Артикул продавца', 'Размер']
+        on=['Артикул_Размер']
     )
 
     return df_products_with_metrics
@@ -228,7 +238,7 @@ def get_actions_data(filelist_actions, df_products_with_catalog_metrics):
             f'Скидка от РРЦ по акции {action_name}',
             f"Разница до мин. цены по акции {action_name}"
         ])
-        if client_name in ['KU_And_KU', 'Soyuz', 'TRIBE', 'Orsk_Combinat']:
+        if client_name in ['KU_And_KU', 'Soyuz', 'TRIBE', 'Orsk_Combinat', 'Neva_Metall']:
             # Маржинальность по акциям
             catalog_for_actions[f'Расчетная маржа, руб по акции {action_name}'] = catalog_for_actions[f'Цена по акции {action_name}'] - (net_cost_koef * catalog_for_actions[f'Цена по акции {action_name}']) - (catalog_for_actions['Себестоимость'])
             catalog_for_actions[f'Расчетная маржа, % по акции {action_name}'] = catalog_for_actions[f'Расчетная маржа, руб по акции {action_name}'] / catalog_for_actions[f'Цена по акции {action_name}']
@@ -291,7 +301,7 @@ def save_excel(catalog_excel, action_list_df, date_report_created):
 
 # %% Вызов всех функций
 # Дата, в которую были посчитаны метрики
-# date_report_created = '2025-05-28'
+# date_report_created = '2025-08-18'
 date_report_created = str(date.today())
 logger.info(f"Creating actions svod for client {client_name} for date {date_report_created}")
 # Получаем даты выгрузки файлов за указанную дату
