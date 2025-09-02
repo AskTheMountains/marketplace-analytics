@@ -254,6 +254,7 @@ def create_campaigns_report(
         client_secret_performance,
         to_save=True,
         delete_files=False,
+
     ):
 
     # Формируем список РК для отдельных клиентов
@@ -267,24 +268,34 @@ def create_campaigns_report(
         client_id_performance,
         client_secret_performance,
         headers,
+        df_dates,
         input_companies,
         upload_path_statistic,
         to_save=to_save,
         delete_files=delete_files
     )
-    # Убираем сшитые товары
-    df_campaigns_report = (
+
+    return df_campaigns_report
+
+# Функция обработки отчета по РК
+def process_campaigns_report(
         df_campaigns_report
-        .loc[df_campaigns_report['Тип товара'].isin(['Товар из РК']), :]
+):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_campaigns_report_processed = df_campaigns_report.copy()
+    # Убираем сшитые товары
+    df_campaigns_report_processed = (
+        df_campaigns_report_processed
+        .loc[df_campaigns_report_processed['Тип товара'].isin(['Товар из РК']), :]
         .reset_index(drop=True)
     )
     # Переименовываем некоторые колонки
-    df_campaigns_report = df_campaigns_report.rename(columns={
-        'Расход с НДС, руб': 'РК',
+    df_campaigns_report_processed = df_campaigns_report_processed.rename(columns={
+        'Расход по кампаниям с НДС, руб': 'РК',
         'ДРР, %': 'ДРР % по размеру'
     })
 
-    return df_campaigns_report
+    return df_campaigns_report_processed
 
 
 # Функция выгрузки заказов
@@ -833,6 +844,8 @@ if __name__ == '__main__':
         to_save=True,
         delete_files=False
     )
+    # Обрабатываем отчет РК
+    df_campaigns_report_processed = process_campaigns_report(df_campaigns_report)
     # Получаем заказы
     df_orders = get_orders_for_svod(df_dates, headers)
     # Получаем остатки
@@ -844,7 +857,7 @@ if __name__ == '__main__':
     # Добавляем данные к списку товаров
     df_products_svod = add_data_to_product_list(
         df_products_processed,
-        df_campaigns_report,
+        df_campaigns_report_processed,
         df_reminders,
         df_orders_by_products,
     )

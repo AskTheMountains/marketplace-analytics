@@ -24,6 +24,8 @@ import re
 from loguru import logger
 import getopt
 import sys
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 
 
@@ -78,48 +80,28 @@ from generic_functions import move_columns
 # Функция создания началной и конечной даты
 # GPT START ----
 def generate_dates(
-        reference_date: str = None,
-        start_date: str = None,
-        end_date: str = None
+        start_date: str,
+        end_date: str
     ) -> pd.DataFrame:
     """
-    reference_date, start_date, end_date — обязательно str в формате 'YYYY-MM-DD' либо None!
+    Генерирует диапазон дат между start_date и end_date включительно (по времени: 00:00:00 и 23:59:59).
+    Даты передаются в формате 'YYYY-MM-DD'.
+    Возвращает DataFrame с полями: date_start, date_end, datetime_start, datetime_end.
     """
-    # Проверка формата, если даты заданы
     def parse_date(date_str):
         return datetime.strptime(date_str, "%Y-%m-%d")
 
-    # Сегодня и вчера
-    today = datetime.now()
-    yesterday = today - timedelta(days=1)
+    start_date_dt = parse_date(start_date)
+    end_date_dt = parse_date(end_date)
 
-    # Конечная дата
-    if end_date is not None:
-        end_date_dt = parse_date(end_date)
-    else:
-        end_date_dt = yesterday
-
-    # Начальная дата
-    if start_date is not None:
-        start_date_dt = parse_date(start_date)
-    else:
-        if reference_date is None:
-            start_date_dt = today.replace(day=1)
-        else:
-            ref_dt = parse_date(reference_date)
-            start_date_dt = ref_dt + timedelta(days=1)
-
-    # Формирование результатов
-    start_date_str = start_date_dt.strftime('%Y-%m-%d')
-    end_date_str = end_date_dt.strftime('%Y-%m-%d')
-    start_date_iso = start_date_dt.strftime('%Y-%m-%dT00:00:00Z')
-    end_date_iso = end_date_dt.strftime('%Y-%m-%dT23:59:59Z')
+    # if start_date_dt >= end_date_dt:
+    #     raise ValueError("Нет новых данных для генерации отчета, проверьте даты в текущем отчете")
 
     df_dates = pd.DataFrame([{
-        'date_start': start_date_str,
-        'date_end': end_date_str,
-        'datetime_start': start_date_iso,
-        'datetime_end': end_date_iso
+        'date_start': start_date_dt.strftime('%Y-%m-%d'),
+        'date_end': end_date_dt.strftime('%Y-%m-%d'),
+        'datetime_start': start_date_dt.strftime('%Y-%m-%dT00:00:00Z'),
+        'datetime_end': end_date_dt.strftime('%Y-%m-%dT23:59:59Z')
     }])
     return df_dates
 # GPT END ----
@@ -248,28 +230,48 @@ def get_last_date_from_previous_report(
     return max_dt_str
 
 # Функция даты заказов для текущего отчета
-def get_date_range_for_current_report(
+def generate_date_range_for_current_report(
         client_name,
         orders_svod_dir,
+        start_date_new_report=None,
+        end_date_new_report=None
     ):
-    # Считываем список файлов с отчетами по текущему клиенту
-    df_orders_report_files = read_report_files(client_name, orders_svod_dir)
-    # Если список файлов пустой, то считаем,
-    # что отчет создается в первый раз
-    if df_orders_report_files.empty:
-        current_report_date = str(date.today())
-        logger.info('Previous report has not been found')
-    # Если список файлов не пустой,
-    # начинаем процесс нахождения максимальной даты предыдущего отчета
-    else:
-        logger.info(f"Getting last date from previous report")
-        # Находим максимальную дату предыдущего отчета
-        current_report_date = get_last_date_from_previous_report(df_orders_report_files)
-        print(f"Last report max date: {current_report_date}")
-        # Генерируем диапазон дат для текущего отчета
+    """
+    Возвращает DataFrame с диапазоном дат (от start_date_new_report до end_date_new_report).
+    Если аргументы не заданы, вычисляет их по наличию предыдущих отчетов:
+    - Если отчета нет, диапазон — с первого дня текущего месяца по вчерашний день (обе даты включительно).
+    - Если отчет есть, диапазон — от следующего дня после даты последнего отчета до вчерашнего дня (включительно).
+    start_date должна быть строго меньше end_date.
+    """
+    # Если даты явно не заданы — пытаемся получить их из отчетов или выставить по-умолчанию
+    if start_date_new_report is None or end_date_new_report is None:
+        df_orders_report_files = read_report_files(client_name, orders_svod_dir)
 
+        if df_orders_report_files.empty:
+            # Первый запуск: от первого дня месяца по вчерашний день
+            start_date_new_report = date.today().replace(day=1).strftime('%Y-%m-%d')
+            end_date_new_report = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+            logger.info('Previous report has not been found')
+        else:
+            logger.info(f"Getting last date from previous report")
+            end_date_previous_report = get_last_date_from_previous_report(df_orders_report_files)
+            # start: следующий день после последнего отчета
+            start_date_new_report = (
+                datetime.strptime(end_date_previous_report, '%Y-%m-%d') + timedelta(days=1)
+            ).strftime('%Y-%m-%d')
+            end_date_new_report = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+            print(f"Last report max date: {end_date_previous_report}")
+
+    # Проверим что start_date < end_date
+    start_dt = datetime.strptime(start_date_new_report, '%Y-%m-%d')
+    end_dt = datetime.strptime(end_date_new_report, '%Y-%m-%d')
+    if start_dt >= end_dt:
+        raise ValueError("Нет новых данных для генерации отчета, проверьте даты в текущем отчете")
+
+    # Генерируем диапазон дат DataFrame
     df_dates = generate_dates(
-        reference_date=current_report_date
+        start_date=start_date_new_report,
+        end_date=end_date_new_report,
     )
 
     return df_dates
@@ -511,8 +513,8 @@ def add_new_products(
     df_current_report_previous_products = (
         df_current_report_
         .loc[
-            ~df_current_report['Артикул'].isin(new_products_list),
-            ~df_current_report.columns.isin([
+            ~df_current_report_['Артикул'].isin(new_products_list),
+            ~df_current_report_.columns.isin([
                 'SKU',
                 'Название товара',
                 'Дата добавления товара'
@@ -868,12 +870,13 @@ def save_and_format_excel(
 # %% Вызов всех функций
 if __name__ == '__main__':
 
+    logger.info(f"Creating orders svod for client {client_name}")
     # Дата, за которую формируется (или формировался) отчет
     date_report = str(date.today())
     # Создаем директорию, куда будет помещен итоговый отчет
     orders_svod_dir = create_orders_svod_dir(client_name)
     # Формируем диапазон дат для текущего отчета
-    df_dates = get_date_range_for_current_report(
+    df_dates = generate_date_range_for_current_report(
         client_name,
         orders_svod_dir
     )

@@ -122,7 +122,8 @@ def calcMetrics(date_upload_files = str(date.today())):
 
     # Обработка данных каталога
     catalog = catalog.rename(columns={'Название товара': 'Наименование товара'})
-    catalog['Артикул'] = catalog['Артикул'].str.replace("'", "", regex=False)
+    for col in ['Артикул', 'Объемный вес, кг']:
+        catalog[col] = catalog[col].str.replace("'", "", regex=False)
     # catalog['Категория'] = catalog['Наименование товара'].str.split(' |-').str[0]
     # catalog['Размер'] = catalog['Артикул'].str.extract(r'_([^_]+)$')
     # catalog['Размер'] = np.where((catalog['Категория'] == 'Бейсболка') |

@@ -13,7 +13,7 @@ from loguru import logger
 import getopt
 import sys
 from ast import literal_eval
-
+pd.set_option('future.no_silent_downcasting', True)
 
 # Файл с некоторыми константами
 from ozon.scripts.constants import (
@@ -164,6 +164,67 @@ def getOzonProduct(headers, to_save=True):
         #     shutil.copyfileobj(r.raw, f)
         # f.close()
 
+
+# Информация о товарах
+def get_products_info(headers, df_products=None):
+    # Если список товаров не задан, считываем его из текущей выгрузки
+    if df_products is None:
+        df_products_ = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
+    # Если список товаров задан, берем его из переданного аргумента
+    else:
+        df_products_ = df_products.copy()
+
+    # Разбиваем список товаров на диапазоны по 1000 товаров
+    df_products_ = df_products_.reset_index(drop=True)
+    step = 1000
+    df_products_['chunks'] = df_products_.index // step + 1
+
+    # df для информации о товарах
+    df_products_info_api = pd.DataFrame()
+
+    # Цикл по каждому диапазону
+    for chunk in df_products_['chunks'].unique():
+        # Делаем выборку первой 1000 товаров
+        product_ids = (
+            df_products_
+            .loc[df_products_['chunks'] == chunk, 'SKU']
+            .astype(int)
+            .to_list()
+        )
+        # Формируем параметры запроса
+        params = json.dumps({
+            "sku": product_ids,
+            # "visibility": "ALL"
+        })
+        # Делаем запрос
+        resp_data_products_info = requests.post(f"{ozon_seller_api_url}/v3/product/info/list", headers=headers, data=params)
+        # Если запрос прошел успешно, формируем df из ответа АПИ
+        if resp_data_products_info.status_code == 200:
+            tmp_df_products_info = pd.DataFrame(resp_data_products_info.json()['items'])
+            # Объединяем с предыдущим чанком товаров
+            df_products_info_api = pd.concat([df_products_info_api, tmp_df_products_info])
+        else:
+            logger.error(f"Error getting products info for chunk {chunk} of {df_products_['chunks'].max()}: {resp_data_products_info.text}")
+
+    # Сбрасываем index после concat
+    df_products_info_api = df_products_info_api.reset_index(drop=True)
+
+    # Создаем колонку с признаком Super-товара
+    df_products_info_api['Super-товар'] = (
+        df_products_info_api['is_super']
+        .apply(lambda x: 'Да' if x else 'Нет')
+    )
+    # Выбираем и переименовываем нужные колонки
+    df_products_info = (
+        df_products_info_api
+        .loc[:, ['offer_id', 'Super-товар']]
+        .rename(columns={
+            'offer_id': 'Артикул',
+            # 'is_super': 'Super-товар'
+        })
+    )
+
+    return df_products_info
 
 # Цены на товары
 def get_products_prices(headers, df_products=None):
@@ -425,9 +486,15 @@ def get_products_attributes(headers, df_products=None):
 
 
 # Функция объединения различных данных по товарам
-def merge_products_data(df_products, df_products_with_attributes, df_products_with_prices):
+def merge_products_data(
+        df_products,
+        df_products_info,
+        df_products_with_attributes,
+        df_products_with_prices
+        ):
     # Создаем список df для джойна
     dfs_to_join = [
+        df_products_info,
         df_products_with_attributes,
         df_products_with_prices
     ]
@@ -444,6 +511,8 @@ def merge_products_data(df_products, df_products_with_attributes, df_products_wi
 def get_ozon_product(headers, to_save=True):
     # Выгрузка списка товаров
     df_products = getOzonProduct(headers, to_save=False)
+    # Получение информации о товарах
+    df_products_info = get_products_info(headers, df_products)
     # Получение цен товаров
     df_products_with_prices = get_products_prices(headers, df_products)
     # Получение характеристик товаров
@@ -451,6 +520,7 @@ def get_ozon_product(headers, to_save=True):
     # Объединение данных по товарам в один df
     df_products_all_data = merge_products_data(
         df_products,
+        df_products_info,
         df_products_with_attributes,
         df_products_with_prices,
     )

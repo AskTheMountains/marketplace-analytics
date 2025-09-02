@@ -906,8 +906,10 @@ def add_data_from_catalog(result_all_costs):
     catalog_reference_ = catalog_reference.loc[~catalog_reference['SKU'].isna(), :]
     # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
     catalog_reference_['Себестоимость'] = catalog_reference_['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-    # Переименовываем колонку с наименованием товара
-    catalog_reference_ = catalog_reference_.rename(columns={'Название': 'Наименование товара'})
+    # Переименовываем некоторые колонки
+    catalog_reference_ = catalog_reference_.rename(columns={
+        'Название': 'Наименование товара'
+    })
     # Переводим SKU в float64, чтобы нормально проходило объединение
     catalog_reference_['SKU'] = catalog_reference_['SKU'].astype('float64')
     # Достаем df с результатами расчетов
@@ -917,7 +919,7 @@ def add_data_from_catalog(result_all_costs):
     # Объединяем справочную таблицу с результатами расчетов
     df_all_costs_with_catalog = df_all_costs.merge(
         catalog_reference_[catalog_columns],
-        on='SKU',
+        on='Артикул продавца',
         how='left'
     )
     # # Перемещаем справочные колонки в начало df
@@ -940,31 +942,93 @@ def calc_final_costs(df_all_costs_with_catalog):
     # Достаем df с результатами расчетов
     df_final_costs = df_all_costs_with_catalog.copy()
 
-    # Определяем колонки, которые будут исключены из затрат
-    columns_to_exclude = ([
-        'SKU', 'Наименование товара', 'Артикул продавца',
-        'Продажи шт', 'Возвраты шт', 'Продажи руб',
-        'Продажи - Возвраты (шт)', 'Продажи - Возвраты (руб)'
-        ]
-        + catalog_finace_svod_columns
-    )
+    # Колонка, от которой считаем долю маржинальности
+    marg_sales_column = df_final_costs['Продажи - Возвраты (руб)']
+
     # Считаем себестоимость
     df_final_costs['Себестоимость * Факт продаж'] = (-1) * abs(df_final_costs['Себестоимость'] * df_final_costs['Продажи - Возвраты (шт)'])
+
+    # Считаем все расходы на рекламные кампании
+    # Определяем колонки, которые будут включены в затраты на рекламу
+    promotion_columns = [
+        'Вывод в топ',
+        'Трафареты',
+        'Продвижение с оплатой за заказ',
+        'Подписка Premium',
+        'Подписка Premium Plus',
+        'Бонусы продавца',
+        'Бейдж Оригинал',
+        'Баллы за отзывы',
+        'Продвижение бренда',
+    ]
+    # Находим колонки по рекламе, которые реально есть в отчете реализации
+    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
+    if existing_promotion_columns:
+        df_final_costs['Затраты на рекламу (руб)'] = df_final_costs[existing_promotion_columns].sum(axis=1)
+    else:
+        df_final_costs['Затраты на рекламу (руб)'] = 0.0
+    # Считаем % по рекламным расходам
+    df_final_costs['% Затрат на рекламу'] = (
+        abs(
+            df_final_costs['Затраты на рекламу (руб)'] /
+            marg_sales_column
+            * 100
+        )
+    )
+
+    # Определяем колонки, которые будут исключены из затрат
+    columns_to_exclude_from_final_costs = ([
+        'SKU', 'Наименование товара', 'Артикул продавца',
+        'Продажи шт',
+        'Возвраты шт',
+        'Продажи - Возвраты (шт)',
+        'Продажи руб',
+        'Продажи - Возвраты (руб)',
+        'Возвраты руб',
+        # 'Затраты на рекламу (руб)',
+        '% Затрат на рекламу',
+        'Маржинальность %',
+        'Маржинальность на ед. товара руб',
+        'Маржинальность руб',
+        'Все затраты (руб)',
+        ]
+        + catalog_finace_svod_columns + promotion_columns
+    )
     # Выбираем итоговые колонки для расчета маржинальности
-    final_costs_columns = df_final_costs.columns[~df_final_costs.columns.isin(columns_to_exclude)]
+    final_costs_columns = df_final_costs.columns[~df_final_costs.columns.isin(columns_to_exclude_from_final_costs)]
 
     # Считаем сумму по всем затратам
     df_final_costs['Все затраты (руб)'] = df_final_costs[final_costs_columns].sum(axis=1)
-
     # Вычитаем из продаж в рублях все затраты
-    df_final_costs['Маржинальность руб'] = df_final_costs['Продажи руб'] + df_final_costs['Все затраты (руб)']
+    df_final_costs['Маржинальность руб'] = df_final_costs['Продажи - Возвраты (руб)'] + df_final_costs['Все затраты (руб)']
+    df_final_costs = df_final_costs.drop(columns=['Все затраты (руб)'])
     # Там, где нет себестоимости, маржинальность не считаем
     df_final_costs.loc[df_final_costs['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
-    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / df_final_costs['Продажи руб']
-    # Меняем inf на nan
-    # df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность %'].replace([-np.inf, np.inf], np.nan)
+    # Считаем маржинальность на ед. товара
+    df_final_costs['Маржинальность на ед. товара руб'] = (
+        df_final_costs['Маржинальность руб'] /
+        df_final_costs['Продажи - Возвраты (шт)']
+    )
+    # Там, где маржинальность в рублях > 0, у маржинальности на единицу товара так же будет знак "+"
+    # в ином случае "-"
+    df_final_costs['Маржинальность на ед. товара руб'] = np.where(
+        df_final_costs['Маржинальность руб'] < 0,
+        (-1) * abs(df_final_costs['Маржинальность на ед. товара руб']),
+        abs(df_final_costs['Маржинальность на ед. товара руб'])
+    )
 
-    return df_final_costs
+    # Считаем маржинальность в %
+    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / marg_sales_column
+    # Меняем inf на nan
+    columns_to_replace_inf = [
+        'Маржинальность %',
+        'Маржинальность на ед. товара руб',
+        '% Затрат на рекламу',
+
+    ]
+    df_final_costs[columns_to_replace_inf] = df_final_costs[columns_to_replace_inf].replace([-np.inf, np.inf], np.nan)
+
+    return df_final_costs, promotion_columns, columns_to_exclude_from_final_costs
 
 
 # Функция расчета сводной таблицы по всем расходам
@@ -982,10 +1046,13 @@ def create_svod_by_operations(df_final_costs):
         'Себестоимость',
         'Категория',
         'РРЦ',
+        '% Затрат на рекламу',
+        # 'Затраты на рекламу (руб)',
         # 'Себестоимость * Факт продаж',
         # 'Все затраты (руб)',
         # 'Маржинальность руб',
         'Маржинальность %',
+
     ]
 
     # Считаем суммы по остальным столбцам
@@ -997,7 +1064,7 @@ def create_svod_by_operations(df_final_costs):
             ~df_final_costs.columns.isin(columns_to_exclude)
         ]
         # Считаем суммы по остальным
-        .sum()
+        .sum(skipna=True)
         # Достаем столбцы из index
         .reset_index()
         # Переименовываем колонки
@@ -1078,101 +1145,141 @@ def save_finance_svod_to_excel(
 
 
 # Функция форматирования excel
-def format_excel(date_report, df_final_costs):
+def format_excel(
+        date_report,
+        df_final_costs,
+        promotion_columns,
+        columns_to_exclude_from_final_costs,
+    ):
     logger.info(f"Formatting FinanceReport for client {client_name}")
-    # Путь файла отчета с именем
+
+    # Формируем путь к итоговому файлу Excel
     filepath_finance_svod = (
         f"{finance_reports_dir}/{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx"
     )
-    # Открываем файл с расчетами Excel
+    # Открываем итоговый Excel-файл
     wb = openpyxl.load_workbook(filepath_finance_svod)
 
-    # Цикл по всем листам
-    for worksheet in wb.sheetnames:
-        ws = wb[worksheet]
-        # Автоподбор ширины столбца
+    # --- ШАГ 1. Автоматически подобрать ширины столбцов, применить числа, фильтр ---
+    # Задаем стиль границы
+    thin_border = Side(border_style="thin", color="000000")
+    # Исключаем колонки из числового форматирования
+    exclude_columns = ["SKU", "Артикул продавца", 'Размер']
+
+    for worksheet_name in wb.sheetnames:
+        ws = wb[worksheet_name]
+
+        # Подбор ширины столбцов
         for column in ws.columns:
-            max_length = 0
             column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(cell.value)
-                except:
-                    pass
-            adjusted_width = (max_length + 2) * 1.2
-            ws.column_dimensions[column_letter].width = adjusted_width
+            max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column)
+            ws.column_dimensions[column_letter].width = (max_length + 2) * 1.2
 
-        # Определяем индексы столбцов, которым НЕ нужно форматировать числа
-        exclude_format_idx = [
-            idx + 1  # Openpyxl колонки считаются с 1
-            for idx, header in enumerate(headers)
-            if header and ('Артикул продавца' in str(header) or 'SKU' in str(header))
-        ]
-
-        # Формат чисел (пробелы как разделители)
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=ws.max_column):
-            for col_idx, cell in enumerate(row, start=1):
-                # Не форматируем числа в исключённых столбцах
-                if col_idx in exclude_format_idx:
-                    continue
-                if isinstance(cell.value, (int, float)):
-                    cell.number_format = '# ##0'
-
-        # Значок фильтра на столбцы
+        # Включаем фильтр Excel
         ws.auto_filter.ref = ws.dimensions
 
-    # Отдельное форматирование для листа итоговых расходов
+        # Получаем заголовки и их индексы
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        exclude_idx = {idx for idx, header in enumerate(headers) if header in exclude_columns}
+
+        # Границы диапазона
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
+
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                # Граница для каждой ячейки
+                cell.border = Border(top=thin_border, bottom=thin_border, left=thin_border, right=thin_border)
+                # Шапка: жирный текст
+                if cell.row == 1:
+                    cell.font = Font(name="Calibri", size=11, bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                # Формат "число" только если не исключён, не шапка и это действительно число
+                elif idx not in exclude_idx and isinstance(cell.value, (int, float)):
+                    if float(cell.value).is_integer():
+                        cell.number_format = '#,##0'
+                    else:
+                        cell.number_format = '#,##0.00'
+
+    # --- ШАГ 2. Форматируем лист "Итоговой таблицы" ---
     final_costs_worksheet = wb['Итоговая таблица']
 
-    # df с соответствием заголовков и названий столбцов
-    excel_columns = pd.DataFrame({"column": df_final_costs.columns,
-                                  "column_number": np.arange(1, len(df_final_costs.columns) + 1)})
-    excel_columns['excel_column'] = excel_columns['column_number'].apply(lambda x: get_column_letter(x))
-    # Кол-во строк в df
-    svod_len = df_final_costs.shape[0]
-    # Номер строки, откуда начинается запись
-    row_start = 2
+    # Готовим dataframe для сопоставления: название -> номер столбца -> буква Excel
+    # excel_columns = pd.DataFrame({
+    #     "column": df_final_costs.columns,
+    #     "column_number": np.arange(1, len(df_final_costs.columns) + 1)
+    # })
+    # excel_columns['excel_column'] = excel_columns['column_number'].apply(get_column_letter)
 
-    # Мин. и макс. колонка
-    min_col = excel_columns.loc[excel_columns['column_number'].idxmin(), 'excel_column']
-    max_col = excel_columns.loc[excel_columns['column_number'].idxmax(), 'excel_column']
-    # Заголовки
-    header_cells = final_costs_worksheet[f"{min_col}{row_start - 1}:{max_col}{row_start - 1}"]
-    # Все колонки, кроме заголовков
-    all_cells = final_costs_worksheet[f"{min_col}{row_start}:{max_col}{svod_len + 1}"]
+    # svod_len = df_final_costs.shape[0]
+    # row_start = 2  # С какой строки начинаются данные (1 — только заголовок)
 
-    # Формат заголовков
-    thin_border = Side(border_style="thin", color="000000")
-    for row in header_cells:
-        for cell in row:
-            cell.font = Font(name = "Calibri", size = 11, bold=True)
-            cell.alignment = Alignment(horizontal='center',
-                                       vertical='center',
-                                       wrap_text=True)
-            cell.border = Border(top = thin_border, bottom = thin_border,
-                                 right = thin_border, left = thin_border)
-    # Границы (сетка)
-    for row in all_cells:
-        for cell in row:
-            cell.font = Font(name = "Calibri", size = 11)
-            cell.border = Border(top = thin_border, bottom = thin_border,
-                                 right = thin_border, left = thin_border)
+    # min_col = excel_columns.excel_column.iloc[0]
+    # max_col = excel_columns.excel_column.iloc[-1]
 
+    # --- ШАГ 3. Формирование формул для рекламных расходов и маржинальности ---
 
-    # Колонка с маржинальностью
-    marginality_percent = excel_columns.loc[excel_columns['column'].str.contains('Маржинальность %'), 'excel_column'].values[0]
+    # Список реально присутствующих в файле колонок по рекламе
+    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
+    # Колонки для расчёта затрат (все, кроме явно исключённых)
+    cost_columns = [col for col in df_final_costs.columns if col not in columns_to_exclude_from_final_costs]
 
-    # Формат числа 0% у маржинальности
-    percent_0_digit_cells = [marginality_percent]
-    for i in range(len(percent_0_digit_cells)):
-        percent_0_digit_cells[i] = f"{percent_0_digit_cells[i]}{row_start}:{percent_0_digit_cells[i]}{svod_len + 1}"
+    # Маппинг название столбца -> буква столбца Excel
+    col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
+    start_row = 2
+    end_row = final_costs_worksheet.max_row
 
-    for cell_range in percent_0_digit_cells:
-        cell_range = final_costs_worksheet[cell_range]
-        for row in cell_range:
-            for cell in row:
-                cell.number_format = '0%'
+    for row in range(start_row, end_row + 1):
+        # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
+        if existing_promotion_columns:
+            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
+            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = f"={promo_sum}"
+        else:
+            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
+        # --- "% Затрат на рекламу": делим затраты на выручку после возвратов (в руб.), не делим на 0!
+        # Имена используемых столбцов должны ТОЧНО совпадать с DataFrame
+        cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
+        cell_sales_minus_returns = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
+        final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
+
+        # --- "Все затраты (руб)": если есть, можно добавить сумму по всем cost_columns (иначе пропустить)
+        # all_costs_sum = '+'.join(f"{col_map[col]}{row}" for col in final_costs_columns)
+        # final_costs_worksheet[f"{col_map['Все затраты (руб)']}{row}"].value = f"={all_costs_sum}"
+
+        # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
+        base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        formula = base
+        for col in cost_columns:
+            formula += f"-{col_map[col]}{row}"
+        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+
+        # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_sales = f"{col_map['Продажи руб']}{row}"
+        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
+        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+
+        # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
+        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        formula_na_ed = (
+            f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
+        )
+        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+
+        # --- ШАГ 4. Сделать формат процентов только для столбца "Маржинальность %"
+        try:
+            # Получаем букву столбца для "Маржинальность %"
+            percent_col_letter = col_map['Маржинальность %']
+            # Диапазон строк (от row_start до svod_len + 1)
+            cell_range = final_costs_worksheet[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
+            for row in cell_range:
+                for cell in row:
+                    cell.number_format = '0%'
+        except KeyError:
+            logger.warning('Столбец "Маржинальность %" не найден в col_map для форматирования процентов')
 
     wb.save(filepath_finance_svod)
 
@@ -1180,10 +1287,10 @@ def format_excel(date_report, df_final_costs):
 # %% Вызов всех функций
 if __name__ == "__main__":
     # Дата, с которой начинается имя папки с исходными данными
-    date_report = '2025_07'
+    date_report = '2025_08'
     # Даты, за которые был сформирован отчет (содержатся в имени файла с отчетом)
-    date_start = '2025-07-01'
-    date_end = '2025-07-31'
+    date_start = '2025-08-01'
+    date_end = '2025-08-31'
     # Дата, когда были выгружены данные по рекламе
     date_upload_performance = str(date.today())
     # Директория для сохранения результатов
@@ -1237,7 +1344,7 @@ if __name__ == "__main__":
     # Добавляем данные из справочной таблицы
     df_all_costs_with_catalog = add_data_from_catalog(result_all_costs)
     # Расчет колонки с итоговыми расходами
-    df_final_costs = calc_final_costs(df_all_costs_with_catalog)
+    df_final_costs, promotion_columns, columns_to_exclude_from_final_costs = calc_final_costs(df_all_costs_with_catalog)
     # Расчет сводной по всем операциям
     df_final_costs_by_operation = create_svod_by_operations(df_final_costs)
     # Сохранение в excel
@@ -1254,7 +1361,7 @@ if __name__ == "__main__":
         date_end
     )
     # Функция форматирования Excel (на данный момент только ширина столбцов)
-    format_excel(date_report, df_final_costs)
+    format_excel(date_report, df_final_costs, promotion_columns, columns_to_exclude_from_final_costs)
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
 
 # %%

@@ -3,6 +3,7 @@ import requests
 import json
 import time
 from datetime import date,datetime,timedelta
+import copy
 import pandas as pd
 import shutil
 import os
@@ -51,44 +52,11 @@ from ozon.scripts.uploadDataFromOzonPerformance import (
     getAuthorizationToken,
     getCompanyList,
     getCompanyStatistics,
+    get_search_promo_orders,
 )
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
 
-
-# Создание нужных директорий
-# def create_dirs():
-#     # Папка с клиентом
-#     client_dir = f"Clients/{client_name}/"
-#     # Список директорий для создания
-#     dir_names = [
-#         'CampaignsReport',
-#         f"CampaignsReport/{str(date.today())}/{str(date.today())}_Кампании_API"
-#     ]
-#     for dir_name in dir_names:
-#         dir_path = os.path.join(client_dir, dir_name)
-#         if not os.path.exists(dir_path):
-#             logger.info(f"Creating folder {dir_path} for client {client_name}")
-#             os.makedirs(dir_path)
-
-
-# Создание директории для выгрузки статистики РК за конкретные даты
-def create_upload_statistic_dir(date_campaign_report, client_name):
-    # Задаем путь к директории
-    # upload_path = (
-    #     f"Clients/{client_name}/CampaignsReport/{str(date.today())}/"
-    #     f"{dt_start_dir}-{dt_end_dir}_API/"
-    # )
-    upload_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_campaign_report}/{date_campaign_report}_Кампании_API"
-    )
-    if not os.path.exists(upload_path):
-        os.makedirs(upload_path, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{upload_path}")
-
-    return upload_path
 
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
@@ -179,7 +147,7 @@ def get_start_end_date(df_date_range, type_dates='companies'):
 # Функция создания списка РК с датами
 def create_input_companies(promotion_companies, df_date_range):
     # Создаем копию списка кампаний из констант
-    input_companies = promotion_companies
+    input_companies = copy.deepcopy(promotion_companies)
     # Получаем даты для отчета РК
     date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='companies')
     # Добавляем даты к списку РК
@@ -516,41 +484,6 @@ def get_company_statistics(
         logger.info("Файлы по всем кампаниями уже загружены")
 
 
-# Функция парсинга файла по рекламной кампании
-# def parse_company_file(df_company):
-#     # Определяем тип отчета (по первой колонке в отчете)
-#     # TODO: придумать более надежный способ
-#     if df_company.columns[0] == 'Дата':
-#         # Убираем строку Всего и Корректировка
-#         df_company = df_company.loc[~df_company['Дата'].isin(['Всего', 'Корректировка']), :]
-#         # Ozon ID = SKU в данном отчете
-#         df_company = df_company.rename(columns={'Ozon ID': 'sku'})
-#         # Переименовываем колонку с расходами для удобства
-#         df_company = df_company.rename(columns={'Расход, ₽': 'Расходы'})
-#         # Переименовываем колонку с названием товара
-#         df_company = df_company.rename(columns={'Наименование': 'Наименование товара'})
-#         # Добавляем колонку с номером кампании
-#         df_company['Номер кампании'] = df_filenames_companies['Номер кампании'][i]
-#         # Выбираем нужные колонки
-#         # df_company = df_company.loc[:, ['Номер кампании','Дата', 'sku', 'Наименование товара', 'Расходы']]
-#         # df_company.to_csv(f"{parsed_dir_path}/{df_filenames_companies['Номер кампании'][i]}.csv", sep=';')
-#     else:
-#         # Убираем строку Всего и Корректировка
-#         df_company = df_company.loc[~df_company['sku'].isin(['Всего', 'Корректировка']), :]
-#         # Переименовываем колонку с расходами для удобства
-#         df_company = df_company.rename(columns={'Расход, ₽, с НДС': 'Расходы'})
-#         # Переименовываем колонку с названием товара
-#         df_company = df_company.rename(columns={'Название товара': 'Наименование товара'})
-#         # Добавляем колонку с номером кампании
-#         df_company['Номер кампании'] = df_filenames_companies['Номер кампании'][i]
-#         # Выбираем нужные колонки
-#         # df_company = df_company.loc[:, ['Номер кампании','sku', 'Наименование товара', 'Расходы']]
-#         # df_company.to_csv(f"{parsed_dir_path}/{filenames_companies['Номер кампании'][i]}.csv", sep=';', index=False)
-
-#     return df_company
-
-
-
 # Функция парсинга данных по РК
 def parse_companies_files(
         date_campaign_report,
@@ -614,12 +547,14 @@ def parse_companies_files(
                         'sku': 'SKU',
                         'Цена товара, ₽': 'Цена товара, руб',
                         'Ср. цена клика, ₽': 'Ср. цена клика, руб',
-                        'Расход, ₽, с НДС': 'Расход с НДС, руб',
+                        'Расход, ₽, с НДС': 'Расход по кампаниям с НДС, руб',
                         'Заказы': 'Заказы шт (из отчета РК)',
                         'Заказы модели': 'Заказы модели шт (из отчета РК)',
                         'Продажи, ₽': 'Заказы руб (из отчета РК)',
                         'Продажи с заказов модели, ₽': 'Заказы модели руб (из отчета РК)',
                     })
+                    # Переводим столбец с SKU в int, чтобы не было ошибок при merge
+                    df_company['SKU'] = df_company['SKU'].astype(int)
                     # Добавляем колонки с информацией о кампании
                     df_company = df_company.assign(**{
                         'unique_company_id': unique_company_id,
@@ -640,12 +575,14 @@ def parse_companies_files(
                         'sku': 'SKU',
                         'Цена товара, ₽': 'Цена товара, руб',
                         'Ср. цена клика, ₽': 'Ср. цена клика, руб',
-                        'Расход, ₽, с НДС': 'Расход с НДС, руб',
+                        'Расход, ₽, с НДС': 'Расход по кампаниям с НДС, руб',
                         'Заказы': 'Заказы шт (из отчета РК)',
                         'Заказы модели': 'Заказы модели шт (из отчета РК)',
                         'Продажи, ₽': 'Заказы руб (из отчета РК)',
                         'Продажи с заказов модели, ₽': 'Заказы модели руб (из отчета РК)',
                     })
+                    # Переводим столбец с SKU в int, чтобы не было ошибок при merge
+                    df_company['SKU'] = df_company['SKU'].astype(int)
                     # Добавляем колонку с номером кампании
                     df_company = df_company.assign(**{
                         'unique_company_id': unique_company_id,
@@ -700,12 +637,108 @@ def parse_companies_files(
     return df_companies_parsed
 
 
+# Функция выгрузки отчета по товарам в оплате за заказ
+def get_promo_orders(
+        df_date_range,
+        upload_path,
+        auth_token,
+):
+    # Получаем ожидаемые даты в имени файла
+    date_start_file = (
+        pd.to_datetime(
+            df_date_range['date_start']
+            .iloc[0]
+        )
+        .strftime('%d.%m.%Y')
+    )
+    date_end_file = (
+        (
+                pd.to_datetime(
+                df_date_range['date_end']
+                .iloc[0]
+            )
+            + timedelta(days=1)
+        )
+        .strftime('%d.%m.%Y')
+    )
+    # Формируем имя ожидаемого файла с отчетом
+    payment_orders_report_file_name = Path(
+        f"{upload_path}/"
+        f"search_promo_organisation_orders_report_"
+        f"{date_start_file}-{date_end_file}.csv"
+    )
+    # Проверяем наличие файла
+    payment_orders_report_exists = payment_orders_report_file_name.is_file()
+
+    # Если отчета нет, начинаем загрузку отчета
+    if not payment_orders_report_exists:
+        date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='orders')
+        get_search_promo_orders(
+            auth_token,
+            date_start_performance,
+            date_end_performance,
+            upload_path,
+        )
+    else:
+        logger.info(f"Products orders payment report already downloaded")
+
+    return payment_orders_report_file_name
+
+# Функция обработки отчета по товарам в оплате за заказ
+def parse_search_promo_report(
+        payment_orders_report_file_name
+):
+    # Считываем отчет csv
+    df_payment_orders_report = pd.read_csv(
+        payment_orders_report_file_name,
+        sep=';',
+        decimal=',',
+        skiprows=1,
+    )
+    # Убираем последнюю строку (с итогами)
+    df_payment_orders_report = df_payment_orders_report.iloc[:-1]
+
+    # Считаем расходы на каждый артикул
+    df_payment_orders_costs = (
+        df_payment_orders_report
+        .groupby(['SKU', 'Название товара'], as_index=False)
+        .agg(**{
+            'Расход в оплате за заказ, руб': ('Расход ₽', 'sum'),
+        })
+    )
+    # Переводим столбец с SKU в int, чтобы не было ошибок при merge
+    df_payment_orders_costs['SKU'] = df_payment_orders_costs['SKU'].astype(int)
+
+    return df_payment_orders_costs
+
+
+# Функция добавления расходов товаров в оплате за заказ к статистике РК
+def add_promo_search_costs_to_company_stats(
+        df_companies_parsed,
+        df_payment_orders_costs
+):
+
+    # Объединяем данные по SKU
+    df_companies_parsed_with_promo = df_companies_parsed.merge(
+        df_payment_orders_costs[['SKU', 'Расход в оплате за заказ, руб']],
+        on='SKU',
+        how='left'
+    )
+    # Заполняем NaN нулями
+    df_companies_parsed_with_promo['Расход в оплате за заказ, руб'] = (
+        df_companies_parsed_with_promo['Расход в оплате за заказ, руб']
+        .fillna(0)
+    )
+
+    return df_companies_parsed_with_promo
+
+
 # Функция обработка списка товаров АПИ
 def process_product_list(df_products):
     # Создаем копию для избежания изменений в оригинальном df
     df_products_processed = df_products.copy()
     # Переводим SKU в строку чтобы не было ошибок при merge
-    df_products_processed['SKU'] = df_products_processed['SKU'].astype(str)
+    df_products_processed['SKU'] = df_products_processed['SKU'].astype(int)
     # Переводим Артикул в строку
     df_products_processed['Артикул'] = df_products_processed['Артикул'].astype(str)
     # Создаем колонку основного артикула для определения модельного ряда
@@ -787,7 +820,7 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
     # Создаем копию для избежания изменений в оригинальном df
     df_products_processed_ = df_products_processed.copy()
     # Переводим SKU в строку чтобы не было ошибок при merge
-    df_products_processed_['SKU'] = df_products_processed_['SKU'].astype(str)
+    df_products_processed_['SKU'] = df_products_processed_['SKU'].astype(int)
 
     # Объединяем датафреймы с информацией о кампаниях со списком товаров
     df_companies_products_data = df_companies_parsed.merge(
@@ -926,7 +959,7 @@ def add_products_data_to_orders(df_orders_all, df_products_processed):
     # Создаем копию для избежания изменений в оригинальном df
     # df_products_processed_ = df_products_processed.copy()
     # Переводим SKU в строку чтобы не было ошибок при merge
-    # df_products_processed_['SKU'] = df_products_processed_['SKU'].astype(str)
+    # df_products_processed_['SKU'] = df_products_processed_['SKU'].astype(int)
 
     # Объединяем датафреймы с информацией о кампаниях со списком товаров
     df_orders_products_data = df_orders_all.merge(
@@ -1512,7 +1545,8 @@ def calc_orders_for_companies(
                 'CTR (%)',
                 'В корзину',
                 'Ср. цена клика, ₽',
-                'Расход с НДС, руб',
+                'Расход по кампаниям с НДС, руб',
+                'Расход в оплате за заказ, руб',
                 'Дата добавления',
         ])]
     )
@@ -1902,11 +1936,16 @@ def calc_final_orders(df_companies_with_orders_and_reminders):
     # )
     # Считаем ДРР
     df_final_orders = df_final_orders.loc[:, ~df_final_orders.columns.isin(['ДРР, %',])]
+    # Суммируем расходы по кампаниям с расходом в оплате за заказ
+    df_final_orders['Расход по кампаниям и в оплате за заказ, руб'] = (
+        df_final_orders['Расход по кампаниям с НДС, руб']
+        + df_final_orders['Расход в оплате за заказ, руб']
+    )
     df_final_orders['ДРР, %'] = np.where(
         df_final_orders['Заказы всего руб'] == 0,
         np.nan,  # Заменить на nan при делении на 0
         np.round(
-            df_final_orders['Расход с НДС, руб'] / df_final_orders['Заказы всего руб'] * 100,
+            df_final_orders['Расход по кампаниям с НДС, руб'] / df_final_orders['Заказы всего руб'] * 100,
             2
         )
     )
@@ -1945,7 +1984,10 @@ def create_excel_report(df_final_orders):
         'Заказы размерного ряда шт (из отчета по Заказам)',
         'Заказы размерного ряда руб (из отчета по Заказам)',
         'Заказы всего шт', 'Заказы всего руб',
-        'Расход с НДС, руб', 'ДРР, %',
+        'Расход по кампаниям с НДС, руб',
+        'Расход в оплате за заказ, руб',
+        'Расход по кампаниям и в оплате за заказ, руб',
+        'ДРР, %',
         'Остаток',
         'Дата добавления',
     ]
@@ -2038,6 +2080,7 @@ def create_campaigns_report(
         client_id_performance,
         client_secret_performance,
         headers,
+        df_date_range,
         input_companies,
         upload_path,
         date_campaign_report = str(date.today()),
@@ -2073,20 +2116,37 @@ def create_campaigns_report(
         upload_path,
         auth_token,
     )
+    # Выгружаем отчет по товарам с оплатой за заказ
+    payment_orders_report_file_name = get_promo_orders(
+        df_date_range,
+        upload_path,
+        auth_token
+    )
     # Обрабатываем загруженные файлы по рекламным кампаниям
     df_companies_parsed = parse_companies_files(
         date_campaign_report,
         df_input_companies_parsed
     )
+    # Обрабатываем данные отчета по товарам с оплатой за заказ
+    df_promo_search_costs = parse_search_promo_report(
+        payment_orders_report_file_name
+    )
+    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
+    df_companies_parsed_with_promo = add_promo_search_costs_to_company_stats(
+        df_companies_parsed,
+        df_promo_search_costs
+    )
+
     # Выгружаем список товаров
     df_products = get_ozon_product(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
     # Добавляем данные по товарам в отчет по РК
     df_companies_products_data = add_products_data_to_companies_reports(
-        df_companies_parsed,
+        df_companies_parsed_with_promo,
         df_products_processed
     )
+
     # Получаем мин. и макс. дату для заказов
     date_start_orders, date_end_orders = get_min_max_dates(df_input_companies_parsed)
     # Выгружаем заказы
@@ -2112,6 +2172,7 @@ def create_campaigns_report(
     df_final_orders = calc_final_orders(df_companies_with_orders_and_reminders)
     # Создаем df для записи в excel
     df_excel_companies_report = create_excel_report(df_final_orders)
+
     # Если стоит флаг сохранения, то сохраняем отчет
     if to_save:
         # Сохраняем и форматируем отчет в excel
@@ -2145,8 +2206,8 @@ if __name__ == '__main__':
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        start_date='2025-07-01',
-        end_date='2025-07-31'
+        start_date='2025-08-18',
+        end_date='2025-08-27'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(promotion_companies, df_date_range)
@@ -2158,8 +2219,8 @@ if __name__ == '__main__':
 
    # Создаем директорию, куда будет помещена статистика кампаний из АПИ
     upload_path = create_upload_statistic_dir(
+        client_name,
         date_campaign_report,
-        client_name
     )
 
     # Проверяем, нужна ли статистика по всем кампаниям
@@ -2189,20 +2250,37 @@ if __name__ == '__main__':
         upload_path,
         auth_token,
     )
+    # Выгружаем отчет по товарам с оплатой за заказ
+    payment_orders_report_file_name = get_promo_orders(
+        df_date_range,
+        upload_path,
+        auth_token
+    )
     # Обрабатываем загруженные файлы по рекламным кампаниям
     df_companies_parsed = parse_companies_files(
         date_campaign_report,
         df_input_companies_parsed
     )
+    # Обрабатываем данные отчета по товарам с оплатой за заказ
+    df_promo_search_costs = parse_search_promo_report(
+        payment_orders_report_file_name
+    )
+    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
+    df_companies_parsed_with_promo = add_promo_search_costs_to_company_stats(
+        df_companies_parsed,
+        df_promo_search_costs
+    )
+
     # Выгружаем список товаров
     df_products = get_ozon_product(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
     # Добавляем данные по товарам в отчет по РК
     df_companies_products_data = add_products_data_to_companies_reports(
-        df_companies_parsed,
+        df_companies_parsed_with_promo,
         df_products_processed
     )
+
     # Получаем мин. и макс. дату для заказов
     date_start_orders, date_end_orders = get_min_max_dates(df_input_companies_parsed)
     # Выгружаем заказы
