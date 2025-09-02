@@ -401,7 +401,7 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
     # Имя файла для сохранения отчета
     report_file_name = (f"{marketplace_dir_name}/Clients/{client_name}/SalesOrdersSvod/"
                         f"{date_start_file}_{date_end_file}"
-                        f"_Свод_продажи_Ozon_{client_name}.xlsx"
+                        f"_Свод_заказы_продажи_Ozon_{client_name}.xlsx"
     )
 
     # GPT START ----
@@ -543,7 +543,7 @@ if __name__ == '__main__':
     date_range_df = generate_date_range_df(date_start, date_end)
 
     logger.info(
-        f"Calculating Sales svod for client {client_name} "
+        f"Calculating Sales and Orders svod for client {client_name} "
         f"for dates {date_start} - {date_end}"
     )
     # Выгружаем заказы FBO и FBS
