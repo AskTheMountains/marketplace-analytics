@@ -1,10 +1,14 @@
 
 # %% Определение всех функций
-import requests
+# import sys
+# print("PYTHONPATH:", sys.path)
+# import os
+# print("CWD:", os.getcwd())
 import json
 import time
 from datetime import date,datetime,timedelta
 import pandas as pd
+import copy
 import shutil
 import os
 import glob
@@ -166,11 +170,11 @@ def get_start_end_date(df_dates, type_dates='companies'):
     return date_start, date_end
 
 # Функция создания списка РК с датами
-def create_input_companies(promotion_companies, df_dates):
+def create_input_companies(promotion_companies, df_date_range):
     # Создаем копию списка кампаний из констант
-    input_companies = promotion_companies
+    input_companies = copy.deepcopy(promotion_companies)
     # Получаем даты для отчета РК
-    date_start_performance, date_end_performance = get_start_end_date(df_dates, type_dates='companies')
+    date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='companies')
     # Добавляем даты к списку РК
     for company in input_companies:
         company.extend([date_start_performance, date_end_performance])
@@ -227,6 +231,7 @@ def create_campaigns_report(
         client_id_performance,
         client_secret_performance,
         headers,
+        df_dates,
         input_companies,
         upload_path_statistic,
         to_save=to_save,
@@ -249,7 +254,7 @@ def process_campaigns_report(
     )
     # Переименовываем некоторые колонки
     df_campaigns_report_processed = df_campaigns_report_processed.rename(columns={
-        'Расход с НДС, руб': 'РК',
+        'Расход по кампаниям с НДС, руб': 'РК',
         'ДРР, %': 'ДРР % по размеру'
     })
 
