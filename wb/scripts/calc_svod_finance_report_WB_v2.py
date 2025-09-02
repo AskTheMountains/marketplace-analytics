@@ -38,7 +38,7 @@ from wb.scripts.uploadDataPerformanceWB import get_costs_history
 
 # Вспомогательные функции
 from generic_functions import move_columns
-from wb.scripts.wb_generic_functions import get_company_stats
+from wb.scripts.wb_generic_functions import get_company_stats_v2
 
 # Функция выгрузки отчета о реализации по апи
 def upload_realization_report(headers, date_start, date_end):
@@ -220,9 +220,32 @@ def add_new_columns(df_realization_report_renamed):
         'Дата заказа', 'Дата продажи','Дата операции',
         'Дата формирования отчёта',
         'Дата начала действия фиксации', 'Дата окончания действия фиксации',
+        'Артикул WB',
+        'Предмет',
+        'Бренд',
+        'Обоснование для оплаты',
+        'Обоснование штрафов и доплат',
         ],
         position='id',
         insert_type='after'
+    )
+    # Заменяем некоторые название групп расходов
+    other_costs_replace_patterns = {
+        # r'^Списание за отзыв .+: акция №\d+, товар \d+': 'Списания за отзывы',
+        'Платная приемка': 'Платная приемка (Отчет реализации)',
+        'Хранение': 'Хранение (Отчет реализации)'
+    }
+    # Колонки, в которых заменяем
+    cols_to_replace_patterns = [
+        'Обоснование для оплаты',
+        'Обоснование штрафов и доплат'
+    ]
+    df_realization_report_new_columns[cols_to_replace_patterns] = (
+        df_realization_report_new_columns[cols_to_replace_patterns]
+        .replace(
+            other_costs_replace_patterns,
+            regex=False
+        )
     )
     # Колонки, по которым считаем прочие расходы
     other_costs_columns = [
@@ -269,7 +292,6 @@ def filter_report_dates(date_start, date_end, df_realization_report_new_columns,
         df_realization_report_date_filtered = df_realization_report_date_filtered.reset_index(drop=True)
 
     return df_realization_report_date_filtered
-
 
 
 # Функция получения дат отчета
@@ -328,41 +350,65 @@ def calc_orders_by_size(df_orders):
 
 # Функция расчета расходов, которые уже разделены по артикулам в отчете апи
 def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Артикул WB', 'Артикул продавца', 'Размер']):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_sku_costs = df_realization_report_date_filtered.copy()
     # Выбираем расходы, где есть артикул
     df_sku_costs = df_realization_report_date_filtered.loc[df_realization_report_date_filtered['Артикул продавца'] != '', :]
 
     # Колонки, по которым будет производиться группировка
     # groupby_cols = ['Артикул WB', 'Артикул продавца', 'Размер']
 
-    # df, в котором будут считаться расходы
     df_sku_sizes_costs_stats = pd.DataFrame()
 
     # Временная колонка с размерами групп
     df_sku_sizes_costs_stats['tmp_col'] = df_sku_costs.groupby(groupby_cols).size()
 
     # Колонка, по которой считаем продажи и возвраты в рублях
-    if client_name in ['Orsk_Combinat', 'Neva_Metall']:
-        sales_returns_col = 'Цена розничная с учетом согласованной скидки'
-    else:
-        sales_returns_col = 'Сумма продаж (возвратов)'
+    # if client_name in ['Orsk_Combinat', 'Neva_Metall']:
+    sales_returns_spp = 'Цена розничная с учетом согласованной скидки'
+    # else:
+    sales_returns_without_spp = 'Сумма продаж (возвратов)'
 
     # Расчет продаж
     sales_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == 'Продажа', 'id'].to_list()
-    df_sku_sizes_costs_stats['Продажи шт'] = df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :] \
-        .groupby(groupby_cols) \
-        ['Количество'].sum()
-    df_sku_sizes_costs_stats['Продажи руб'] = df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :] \
-        .groupby(groupby_cols) \
-        [sales_returns_col].sum()
-
+    df_sku_sizes_costs_stats['Продажи шт'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        ['Количество']
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб с СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб без СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_without_spp]
+        .sum()
+    )
     # Расчет возвратов
     returns_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == 'Возврат', 'id'].to_list()
-    df_sku_sizes_costs_stats['Возвраты шт'] = df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :] \
-        .groupby(groupby_cols) \
-        ['Количество'].sum()
-    df_sku_sizes_costs_stats['Возвраты руб'] = df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :] \
-        .groupby(groupby_cols) \
-        [sales_returns_col].sum()
+    df_sku_sizes_costs_stats['Возвраты шт'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        ['Количество']
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Возвраты руб с СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Возвраты руб без СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_without_spp]
+        .sum()
+    )
 
     # Считаем итоговы суммы по Продажам и Возвратам (без разбивки по Артикулам)
     df_sku_sales_returns_by_operation = (
@@ -370,7 +416,8 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         .loc[df_sku_costs['id'].isin(sales_ids + returns_ids), :]
         .groupby('Обоснование для оплаты')
         .agg(**{
-            'Расходы руб': (sales_returns_col, 'sum')
+            'Расходы руб с СПП': (sales_returns_spp, 'sum'),
+            'Расходы руб без СПП': (sales_returns_without_spp, 'sum'),
         })
         .reset_index()
         .rename(columns={'Обоснование для оплаты': 'Группа расходов'})
@@ -381,16 +428,26 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
 
     # Итоговые колонки по продажам и возвратам
     df_sku_sizes_costs_stats['Продажи минус возвраты шт'] = df_sku_sizes_costs_stats['Продажи шт'] - df_sku_sizes_costs_stats['Возвраты шт']
-    df_sku_sizes_costs_stats['Продажи минус возвраты руб'] = df_sku_sizes_costs_stats['Продажи руб'] - df_sku_sizes_costs_stats['Возвраты руб']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП'] = df_sku_sizes_costs_stats['Продажи руб с СПП'] - df_sku_sizes_costs_stats['Возвраты руб с СПП']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб без СПП'] = df_sku_sizes_costs_stats['Продажи руб без СПП'] - df_sku_sizes_costs_stats['Возвраты руб без СПП']
 
     # Считаем комиссию WB
-    df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] = df_sku_costs \
-        .groupby(groupby_cols) \
-        ['Вознаграждение WB без НДС'].sum()
-    df_sku_sizes_costs_stats['НДС с вознаграждения WB'] = df_sku_costs \
-        .groupby(groupby_cols) \
+    df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] = (
+        df_sku_costs
+        .groupby(groupby_cols)
+        ['Вознаграждение WB без НДС']
+        .sum()
+    )
+    df_sku_sizes_costs_stats['НДС с вознаграждения WB'] = (
+        df_sku_costs
+        .groupby(groupby_cols)
         ['НДС с вознаграждения WB'].sum()
-    df_sku_sizes_costs_stats['Комиссия WB, %'] = (df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] + df_sku_sizes_costs_stats['НДС с вознаграждения WB']) / df_sku_sizes_costs_stats['Продажи минус возвраты руб'] * 100
+    )
+    df_sku_sizes_costs_stats['Комиссия WB, %'] = (
+        (df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] + df_sku_sizes_costs_stats['НДС с вознаграждения WB']) /
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП']
+        * 100
+    )
 
 
     # Заменяем деление на 0 на пропуски
@@ -444,26 +501,30 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
     df_sku_sizes_costs_stats['Артикул продавца'] = df_sku_sizes_costs_stats['Артикул продавца'].str.upper()
 
 
-    # Перемещаем колонки в начало df
-    # df_sku_sizes_costs_stats = move_columns(df_sku_sizes_costs_stats,
-    #                                   ['Количество размеров в артикуле', 'Продажи в артикуле', 'Доля продаж в артикуле'],
-    #                                    position='Продажи шт',
-    #                                    insert_type='before'
-    # )
+
 
     # Формируем list с id строк расходов по артикулам
     sku_costs_ids = sales_ids + returns_ids + penalty_costs_ids + other_costs_ids
 
     # Формируем df со списком расходов, которые привязаны к Артикулам
-    df_sku_costs_by_operation = pd.concat([df_sku_sales_returns_by_operation, df_sku_penalty_costs_by_operation, df_sku_other_costs_by_operation]).reset_index(drop=True)
+    df_sku_costs_by_operation = (
+        pd.concat([
+                df_sku_sales_returns_by_operation,
+                df_sku_penalty_costs_by_operation,
+                df_sku_other_costs_by_operation
+            ],
+            ignore_index=True)
+        #.reset_index(drop=True)
+    )
 
     # Формируем словарь с результатами
-    result_sku_costs = {'df_sku_sizes_costs_stats': df_sku_sizes_costs_stats,
-                        'df_sku_costs_by_operation': df_sku_costs_by_operation,
-                        'sku_costs_ids': sku_costs_ids}
+    result_sku_costs = {
+        'df_sku_sizes_costs_stats': df_sku_sizes_costs_stats,
+        'df_sku_costs_by_operation': df_sku_costs_by_operation,
+        'sku_costs_ids': sku_costs_ids
+    }
 
     return result_sku_costs
-
 
 
 # Функция добавления заказов в отчет о реализации
@@ -512,10 +573,12 @@ def add_orders_to_sku_costs(result_sku_costs, df_orders):
 
 
 # Функция выгрузки и расчета расходов по платому хранению
-def calc_paid_storage_costs(headers,
-                            df_realization_report_date_filtered,
-                            date_start,
-                            date_end):
+def calc_paid_storage_costs(
+        headers,
+        df_realization_report_date_filtered,
+        date_start,
+        date_end
+    ):
 
     # df, в который будем помещать итоговый результат
     df_paid_storage_stats = pd.DataFrame()
@@ -524,101 +587,149 @@ def calc_paid_storage_costs(headers,
     df_paid_storage = pd.DataFrame()
 
     # Формируем недели, из которых был собран отчет о реализации и где были расходы на хранение
-    paid_storage_dates = df_realization_report_date_filtered \
-        .loc[df_realization_report_date_filtered['Обоснование для оплаты'].isin(['Хранение']), :] \
-        .groupby(['Дата начала отчётного периода', 'Дата конца отчётного периода']) \
-        .size() \
-        .reset_index() \
-        .rename(columns = {0: 'row_count',
-                           'Дата начала отчётного периода': 'date_from',
-                           'Дата конца отчётного периода': 'date_to'}
-                           )
-
+    paid_storage_dates = (
+        df_realization_report_date_filtered
+        .loc[
+            df_realization_report_date_filtered['Обоснование для оплаты'].isin(['Хранение (Отчет реализации)']),
+            :
+        ]
+        .groupby(['Дата начала отчётного периода', 'Дата конца отчётного периода'])
+        .size()
+        .reset_index()
+        .rename(columns={
+            0: 'row_count',
+            'Дата начала отчётного периода': 'date_from',
+            'Дата конца отчётного периода': 'date_to'
+            }
+        )
+    )
     paid_storage_dates = paid_storage_dates.loc[paid_storage_dates['row_count'] > 0, :]
     # Если были расходу по платному хранению, начинаем выгрузку отчетов
     if paid_storage_dates.shape[0] > 0:
         # df, в который будем помещать результат апи
         df_paid_storage = pd.DataFrame()
 
-        # -- GPT START --
-        # Преобразование строковых дат в тип данных datetime
-        start_date = pd.to_datetime(date_start)
-        end_date = pd.to_datetime(date_end)
-        # Создаем список для хранения диапазона дат
-        date_range_paid_storage = []
-        # Генерируем даты с разницей не более 8 дней и без пересечений
-        current_date = start_date
-        while current_date <= end_date:
-            # Устанавливаем конечную дату как текущую дату плюс 7 дней или дату окончания, если она раньше
-            new_end_date = min(current_date + pd.Timedelta(days=7), end_date)
-            date_range_paid_storage.append({'date_from': current_date, 'date_to': new_end_date})
-            # Переходим к следующей начальной дате (добавляем 9 дней)
-            current_date = new_end_date + pd.Timedelta(days=1)
-        # Создаем DataFrame
-        df_paid_storage_date_range = pd.DataFrame(date_range_paid_storage)
-        # -- GPT END --
+        # # -- GPT START --
+        # # Преобразование строковых дат в тип данных datetime
+        # start_date = pd.to_datetime(date_start)
+        # end_date = pd.to_datetime(date_end)
+        # # Создаем список для хранения диапазона дат
+        # date_range_paid_storage = []
+        # # Генерируем даты с разницей не более 8 дней и без пересечений
+        # current_date = start_date
+        # while current_date <= end_date:
+        #     # Устанавливаем конечную дату как текущую дату плюс 7 дней или дату окончания, если она раньше
+        #     new_end_date = min(current_date + pd.Timedelta(days=7), end_date)
+        #     date_range_paid_storage.append({'date_from': current_date, 'date_to': new_end_date})
+        #     # Переходим к следующей начальной дате (добавляем 9 дней)
+        #     current_date = new_end_date + pd.Timedelta(days=1)
+        # # Создаем DataFrame
+        # df_paid_storage_date_range = pd.DataFrame(date_range_paid_storage)
+        # # -- GPT END --
+
+        # Находим минимальную дату
+        min_date = min(paid_storage_dates['date_from'])
+        # Считаем разницу с минимальной датой в днях
+        paid_storage_dates['days_diff'] = abs(paid_storage_dates['date_to'] - min_date).dt.days + 1
+        # Разбиваем на интервалы по 30 дней
+        paid_storage_dates['chunks'] = paid_storage_dates['days_diff'].apply(lambda x: int(x / 7) + 1)
+        # Сколько всего получилось интервалов
+        total_chunks = max(paid_storage_dates['chunks'])
+        # total_chunks =  df_paid_acceptance_date_range.shape[0]
 
         # Делаем цикл по каждой из недель
-        for i in range(df_paid_storage_date_range.shape[0]):
-            time.sleep(5)
+        # for i in range(df_paid_storage_date_range.shape[0]):
+        last_paid_storage_generation_time = None
+        last_paid_storage_download_time = None
+
+        for idx, row in paid_storage_dates.iterrows():
             # Выбираем одну неделю
-            date_start_paid_storage = df_paid_storage_date_range['date_from'][i].isoformat()
-            date_end_paid_storage = df_paid_storage_date_range['date_to'][i].isoformat()
+            date_start_paid_storage = row['date_from'].isoformat()
+            date_end_paid_storage = row['date_to'].isoformat()
 
             logger.info(f"Uploading paid storage for dates {date_start_paid_storage} - {date_end_paid_storage}")
 
-            #  Параметры запроса на создание отчета
-            params_report_generation = {
+            # Параметры запроса на создание отчета
+            params_paid_storage = {
                 'dateFrom': date_start_paid_storage,
                 'dateTo': date_end_paid_storage
             }
-            # Получаем id задания на создание отчета
-            resp_data_task_id = requests.get("https://seller-analytics-api.wildberries.ru/api/v1/paid_storage", headers=headers, params=params_report_generation).json()
+
+            # --- ДО генерации отчета ждем лимит ---
+            if last_paid_storage_generation_time is not None:
+                gen_wait_time = 62 - (time.time() - last_paid_storage_generation_time)
+                if gen_wait_time > 0:
+                    logger.info(f"Waiting {gen_wait_time:.1f} seconds before generating next paid storage report (WB limit)")
+                    time.sleep(gen_wait_time)
+
+            start_time = time.time()
+
+            # Формируем задание на генерацию отчета
+            resp_data_task_id = requests.get(
+                "https://seller-analytics-api.wildberries.ru/api/v1/paid_storage",
+                headers=headers,
+                params=params_paid_storage
+            ).json()
+            last_paid_storage_generation_time = time.time()
+
+            # Получаем ID задания
             task_id = resp_data_task_id['data']['taskId']
 
-            # print(f"Task id: {task_id}")
-
             # Проверяем статус отчета
-            report_status = 'new' # Начальное значение для цикла
+            report_status = ''
             while report_status not in ['done', 'purged', 'canceled']:
-                resp_data_report_status = requests.get(f"https://seller-analytics-api.wildberries.ru/api/v1/paid_storage/tasks/{task_id}/status", headers=headers).json()
+                resp_data_report_status = requests.get(
+                    f"https://seller-analytics-api.wildberries.ru/api/v1/paid_storage/tasks/{task_id}/status",
+                    headers=headers
+                ).json()
                 report_status = resp_data_report_status['data']['status']
-                logger.info(f"Paid storage report status: {report_status}")
+                logger.info(
+                    f"\n"
+                    f"Paid storage report status: {report_status}\n"
+                    f"Dates: {date_start_paid_storage} - {date_end_paid_storage}\n"
+                    f"taskID: {task_id}"
+                )
+                # Ограничение на запросы раз в 5-10 секунд
                 time.sleep(10)
 
-            # Загружаем отчет, если он готов
+            # Если отчет выгружен успешно, начинаем процесс загрузки
             if report_status == 'done':
-                # Начальное значение для цикла while
-                resp_data_paid_storage_report = {'data': []}
-                # Делаем запрос на загрузку отчета, пока не скачаем его
-                while not isinstance(resp_data_paid_storage_report, list):
-                    resp_data_paid_storage_report = requests.get(f"https://seller-analytics-api.wildberries.ru/api/v1/paid_storage/tasks/{task_id}/download", headers=headers).json()
-                    time.sleep(5)
+                # --- ДО скачивания отчёта ждем лимит ---
+                if last_paid_storage_download_time is not None:
+                    download_wait_time = 62 - (time.time() - last_paid_storage_download_time)
+                    if download_wait_time > 0:
+                        logger.info(f"Waiting {download_wait_time:.1f} seconds before downloading paid storage report (WB limit)")
+                        time.sleep(download_wait_time)
+
+                # Получаем отчет
+                resp_data_paid_storage_report = requests.get(
+                    f"https://seller-analytics-api.wildberries.ru/api/v1/paid_storage/tasks/{task_id}/download",
+                    headers=headers
+                ).json()
+                # Засекаем время, когда скачали отчет
+                last_paid_storage_download_time = time.time()
+
                 # Переводим отчет в df
-                tmp_df = pd.DataFrame(resp_data_paid_storage_report)
+                tmp_df_paid_storage = pd.DataFrame(resp_data_paid_storage_report)
                 # Объединяем с предыдущим проходом цикла
-                df_paid_storage = pd.concat([df_paid_storage, tmp_df])
-                logger.info('Done uploading chunk')
-
-            # Если ошибка, выводим текст ошибки
+                df_paid_storage = pd.concat([df_paid_storage, tmp_df_paid_storage])
+                logger.info("Done uploading chunk")
             else:
-                print(f"Error downloading report, info: {resp_data_paid_storage_report}")
+                print(f"Error uploading paid storage report, info: {resp_data_report_status}")
 
-            # Ждем 1 минуту (ограничение на кол-во запросов),
-            # если это не последняя неделя, за которую нужно выгрузить
-            if i != (paid_storage_dates.shape[0] - 1):
-                logger.info('Waiting 1 minute before downloading next week')
-                time.sleep(60)
-
-        logger.info("Done uploading paid storage reports")
-
+            # Фиксируем, сколько времени ушло на генерацию и скачивание отчета
+            elapsed_time = time.time() - start_time
+            logger.info(
+                f"Time spent: {elapsed_time:.1f} seconds"
+            )
+            # После этого ожидание уже не нужно — всё разруливается контролем времени до вызова!
         # Переименовываем некоторые столбцы для удобства
         df_paid_storage = df_paid_storage.rename(columns={
             'nmId': 'Артикул WB',
             'vendorCode': 'Артикул продавца',
             'size': 'Размер',
             'warehousePrice': 'Сумма хранения'
-            })
+        })
 
         # Считаем стоимость хранения для каждого товара
         df_paid_storage_stats = df_paid_storage.groupby(['Артикул WB', 'Артикул продавца', 'Размер']).agg(
@@ -664,10 +775,11 @@ def union_sku_sizes_costs(result_sku_costs, result_paid_storage):
     df_sku_sizes_costs_merged['Доля продаж в артикуле'] = df_sku_sizes_costs_merged['Продажи шт'] / df_sku_sizes_costs_merged['Продажи в артикуле']
     df_sku_sizes_costs_merged['Количество размеров в артикуле'] = df_sku_sizes_costs_merged.groupby('Артикул WB').transform('size')
     # Перемещаем колонки в начало df
-    df_sku_sizes_costs_merged = move_columns(df_sku_sizes_costs_merged,
-                                      ['Количество размеров в артикуле', 'Продажи в артикуле', 'Доля продаж в артикуле', 'Заказы шт'],
-                                       position='Продажи шт',
-                                       insert_type='before'
+    df_sku_sizes_costs_merged = move_columns(
+        df_sku_sizes_costs_merged,
+        ['Количество размеров в артикуле', 'Продажи в артикуле', 'Доля продаж в артикуле'],
+        position='Продажи шт',
+        insert_type='before'
     )
 
     return df_sku_sizes_costs_merged
@@ -695,56 +807,63 @@ def calc_paid_acceptance_costs(
     df_realization_report_ = df_realization_report_date_filtered.copy()
 
     # Проверяем, были ли расходы по платной приемке
-    paid_acceptance_costs = df_realization_report_.loc[df_realization_report_['Обоснование для оплаты'].isin(['Платная приемка']), :]
+    paid_acceptance_costs = df_realization_report_.loc[df_realization_report_['Обоснование для оплаты'].isin(['Платная приемка (Отчет реализации)']), :]
 
     if paid_acceptance_costs.shape[0] > 0:
         # Переводим в datetime
-        # for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода']:
-        #     paid_acceptance_costs[col] = pd.to_datetime(paid_acceptance_costs[col])
+        for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода']:
+            paid_acceptance_costs[col] = pd.to_datetime(paid_acceptance_costs[col])
 
-        # # Разбиваем df на равные интервалы по 30 дней
-        # paid_acceptance_dates = paid_acceptance_costs \
-        #     .groupby(['Дата начала отчётного периода', 'Дата конца отчётного периода']) \
-        #     .size() \
-        #     .reset_index() \
-        #     .rename(columns = {0: 'row_count',
-        #                     'Дата начала отчётного периода': 'date_from',
-        #                     'Дата конца отчётного периода': 'date_to'}
-        #                     )
-        # # Переводим в datetime
-        # for col in ['date_from', 'date_to']:
-        #     paid_acceptance_dates[col] = pd.to_datetime(paid_acceptance_dates[col])
+        # Разбиваем df на равные интервалы по 30 дней
+        paid_acceptance_dates = (
+            paid_acceptance_costs
+            .groupby(['Дата начала отчётного периода', 'Дата конца отчётного периода']) \
+            .size()
+            .reset_index()
+            .rename(columns={
+                0: 'row_count',
+                'Дата начала отчётного периода': 'date_from',
+                'Дата конца отчётного периода': 'date_to'
+            })
+        )
+        # Переводим в datetime
+        for col in ['date_from', 'date_to']:
+            paid_acceptance_dates[col] = pd.to_datetime(paid_acceptance_dates[col])
 
         # -- GPT START --
-        # Преобразование строковых дат в тип данных datetime
-        start_date = pd.to_datetime(date_start)
-        end_date = pd.to_datetime(date_end)
-        # Создаем список для хранения диапазона дат
-        date_range_paid_storage = []
-        # Генерируем даты с разницей не более 30 дней и без пересечений
-        current_date = start_date
-        while current_date <= end_date:
-            # Устанавливаем конечную дату как текущую дату плюс 29 дней или дату окончания, если она раньше
-            new_end_date = min(current_date + pd.Timedelta(days=30), end_date)
-            date_range_paid_storage.append({'date_from': current_date, 'date_to': new_end_date})
-            # Переходим к следующей начальной дате
-            current_date = new_end_date + pd.Timedelta(days=1)
-        # Создаем DataFrame
-        df_paid_acceptance_date_range = pd.DataFrame(date_range_paid_storage)
+        # # Преобразование строковых дат в тип данных datetime
+        # start_date = pd.to_datetime(date_start)
+        # end_date = pd.to_datetime(date_end)
+        # # Создаем список для хранения диапазона дат
+        # date_range_paid_storage = []
+        # # Генерируем даты с разницей не более 30 дней и без пересечений
+        # current_date = start_date
+        # while current_date <= end_date:
+        #     # Устанавливаем конечную дату как текущую дату плюс 29 дней или дату окончания, если она раньше
+        #     new_end_date = min(current_date + pd.Timedelta(days=30), end_date)
+        #     date_range_paid_storage.append({'date_from': current_date, 'date_to': new_end_date})
+        #     # Переходим к следующей начальной дате
+        #     current_date = new_end_date + pd.Timedelta(days=1)
+        # # Создаем DataFrame
+        # df_paid_acceptance_date_range = pd.DataFrame(date_range_paid_storage)
         # -- GPT END --
 
-        # # Находим минимальную дату
-        # min_date = min(paid_acceptance_dates['date_from'])
-        # # Считаем разницу с минимальной датой в днях
-        # paid_acceptance_dates['days_diff'] = abs(paid_acceptance_dates['date_to'] - min_date).dt.days + 1
-        # # Разбиваем на интервалы по 30 дней
-        # paid_acceptance_dates['chunks'] = paid_acceptance_dates['days_diff'].apply(lambda x: int(x / 30) + 1)
-        # # Сколько всего получилось интервалов
-        # total_chunks = max(paid_acceptance_dates['chunks'])
-        total_chunks =  df_paid_acceptance_date_range.shape[0]
+        # Находим минимальную дату
+        min_date = min(paid_acceptance_dates['date_from'])
+        # Считаем разницу с минимальной датой в днях
+        paid_acceptance_dates['days_diff'] = abs(paid_acceptance_dates['date_to'] - min_date).dt.days + 1
+        # Разбиваем на интервалы по 30 дней
+        paid_acceptance_dates['chunks'] = paid_acceptance_dates['days_diff'].apply(lambda x: int(x / 30) + 1)
+        # Сколько всего получилось интервалов
+        total_chunks = max(paid_acceptance_dates['chunks'])
+        # total_chunks =  df_paid_acceptance_date_range.shape[0]
+
+        # Переменные для трекинга лимитов WB
+        last_report_generation_time = None
+        last_report_download_time = None
 
         # Цикл по каждому интервалу
-        for idx, row in df_paid_acceptance_date_range.iterrows():
+        for idx, row in paid_acceptance_dates.iterrows():
             # Выбираем временной интервал не больше 30 дней
             # df_dates_tmp = paid_acceptance_dates.loc[paid_acceptance_dates['chunks'] == chunk, :]
             # Ищем мин. и макс дату
@@ -753,14 +872,23 @@ def calc_paid_acceptance_costs(
 
             logger.info(f"Uploading paid acceptance report for dates {min_date_chunk} - {max_date_chunk}")
             # Переводим даты в нужный формат
-            # date_start_paid_acceptance = datetime.strptime(date_start, '%Y-%m-%dT%H:%M:%S').date().strftime('%Y-%m-%d')
-            # date_end_paid_acceptance = datetime.strptime(date_end, '%Y-%m-%dT%H:%M:%S').date().strftime('%Y-%m-%d')
 
             # Параметры запроса
             params_paid_acceptance = {
                 'dateFrom': min_date_chunk,
                 'dateTo': max_date_chunk
             }
+
+            # --- ДО генерации отчета ждем лимит ---
+            if last_report_generation_time is not None:
+                gen_wait_time = 62 - (time.time() - last_report_generation_time)
+                if gen_wait_time > 0:
+                    logger.info(f"Waiting {gen_wait_time:.1f} seconds before generating next report due to WB limit")
+                    time.sleep(gen_wait_time)
+
+            # Засекаем время, когда отправили задание на генерацию
+            start_time = time.time()
+
             # Формируем задание на генерацию отчета
             resp_data_paid_acceptance = (
                 requests
@@ -771,13 +899,16 @@ def calc_paid_acceptance_costs(
                 )
                 .json()
             )
+            # Засекаем время, когда отчет сгенерировался
+            last_report_generation_time = time.time()
+
             # Получаем ID задания на генерацию отчета
             task_id = resp_data_paid_acceptance['data']['taskId']
+
             # Проверяем статус отчета
             report_status = ''
             while report_status not in ['done', 'purged', 'canceled']:
-                report_status = (
-                    requests
+                report_status = (requests
                     .get(
                         f'https://seller-analytics-api.wildberries.ru/api/v1/acceptance_report/tasks/{task_id}/status',
                         headers=headers
@@ -794,9 +925,15 @@ def calc_paid_acceptance_costs(
                 # Ограничение на запросы раз в 5 секунд
                 time.sleep(6)
 
-
-            # Если отчет выгружен успешно, добавляем его в df
+            # Если отчет выгружен успешно, то начинаем процесс загрузки
             if report_status == 'done':
+                # --- ДО скачивания отчёта ждем лимит ---
+                if last_report_download_time is not None:
+                    download_wait_time = 62 - (time.time() - last_report_download_time)
+                    if download_wait_time > 0:
+                        logger.info(f"Waiting {download_wait_time:.1f} seconds before downloading report due to WB limit")
+                        time.sleep(download_wait_time)
+
                 # Получаем отчет
                 resp_data_paid_acceptance_report = (
                     requests
@@ -806,6 +943,9 @@ def calc_paid_acceptance_costs(
                     )
                     .json()
                 )
+                # Засекаем время, когда скачали отчет
+                last_report_download_time = time.time()
+
                 # Переводим отчет в df
                 tmp_df_paid_acceptance = pd.DataFrame(resp_data_paid_acceptance_report)
                 # Объединяем с предыдущим проходом цикла
@@ -814,10 +954,12 @@ def calc_paid_acceptance_costs(
             else:
                 print(f"Error uploading paid acceptance report, info: {resp_data_paid_acceptance}")
 
-            # Ждем одну минуту до формирования отчета за следующие даты
-            if (idx + 1) != total_chunks:
-                logger.info("Waiting 1 minute before dowloading next report")
-                time.sleep(60)
+            # Фиксируем, сколько времени ушло на генерацию и скачивание отчета
+            elapsed_time = time.time() - start_time
+            logger.info(
+                f"Time spent: {elapsed_time:.1f} seconds"
+            )
+            # После этого ожидание уже не нужно — всё разруливается контролем времени до вызова!
 
         # Если df с отчетами не пустой, начинаем обработку отчетов
         if not df_paid_acceptance.empty:
@@ -1071,21 +1213,40 @@ def parse_companies_files(date_report):
         return df_companies_stats
 
 
+# Функция обработки датафрейма со статистикой РК
+def process_company_stats_df(df_companies_stats):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_companies_stats_processed = df_companies_stats.copy()
+    df_companies_stats_processed = df_companies_stats_processed.rename(columns={
+        'Номер кампании': 'ID Кампании',
+        'Заказы по рекламе шт (из отчета РК)': 'Заказы из кампаний шт',
+        'Затраты руб': 'Затраты (Статистика РК)'
+    })
+    # Добавляем столбец с количеством артикулов в кампании
+    df_companies_stats_processed['Количество артикулов в кампании'] = (
+        df_companies_stats_processed
+        .groupby(['ID Кампании'])['Артикул WB']
+        .transform('nunique')
+    )
+    # Переводим колонку с ID кампании в int64
+    df_companies_stats_processed['ID Кампании'] = df_companies_stats_processed['ID Кампании'].astype(np.int64)
+
+    return df_companies_stats_processed
+
+
 # Функция распределения расходов рекламных кампаний по артикулам WB
-def calc_companies_by_sku_and_size(df_companies_stats, df_costs_history, df_sku_sizes_costs_merged):
+def calc_companies_by_sku_and_size(df_companies_stats_processed, df_costs_history, df_sku_sizes_costs_merged):
     # Создаем копию для избежания изменений в оригинальном df
     df_costs_history_ = df_costs_history.copy()
-    df_companies_stats_ = df_companies_stats.copy()
     df_sku_sizes_costs_merged_ = df_sku_sizes_costs_merged.copy()
     # Переименовываем колонки для соответствия
     df_costs_history_ = df_costs_history_.rename(columns={
-        'advertId': 'ID Кампании'
+        'advertId': 'ID Кампании',
+        'Расходы': 'Затраты (История затрат)'
     })
-    # Переводим колонку с ID кампании в int64
-    df_companies_stats_['ID Кампании'] = df_companies_stats_['ID Кампании'].astype(np.int64)
     # Мерджим историю затрат (там, где "правильные расходы")
     # со статистикой кампаний (где содержатся артикулы кампаний)
-    df_companies_stats_by_sku = df_companies_stats_.merge(
+    df_companies_stats_by_sku = df_companies_stats_processed.merge(
         df_costs_history_,
         on='ID Кампании',
         how='left',
@@ -1103,16 +1264,17 @@ def calc_companies_by_sku_and_size(df_companies_stats, df_costs_history, df_sku_
     df_companies_stats_by_sku = df_companies_stats_by_sku.sort_values(by=['ID Кампании', 'Артикул WB'], ignore_index=True)
     # Заполняем пропуски в расходах
     # (если кампании не было в Истории затрат, то считаем, что расходы по ней равны 0)
-    df_companies_stats_by_sku['Расходы'] = df_companies_stats_by_sku['Расходы'].fillna(0)
+    df_companies_stats_by_sku['Затраты (История затрат)'] = df_companies_stats_by_sku['Затраты (История затрат)'].fillna(0)
     # Убираем кампании, которых не было в Истории затрат
     df_companies_stats_by_sku = df_companies_stats_by_sku.loc[df_companies_stats_by_sku['Наличие кампаний'] == 'both', :]
     # Распределяем расходы из Истории затрат на один артикул
     df_companies_stats_by_sku['Расходы по артикулу'] = (
         # df_companies_stats_by_sku['Заказы из кампаний шт']
         # / df_companies_stats_by_sku['Заказы внутри кампании шт']
-        # * df_companies_stats_by_sku['Расходы']
-        df_companies_stats_by_sku['Расходы'] /
-        df_companies_stats_by_sku['Количество артикулов в кампании']
+        # * df_companies_stats_by_sku['Расходы (из Истории затрат)']
+        # df_companies_stats_by_sku['Расходы (из Истории затрат)'] /
+        # df_companies_stats_by_sku['Количество артикулов в кампании']
+        df_companies_stats_by_sku['Затраты (Статистика РК)']
     )
     # Заполняем пропуски
     df_companies_stats_by_sku['Расходы по артикулу'] = df_companies_stats_by_sku['Расходы по артикулу'].fillna(0)
@@ -1145,7 +1307,6 @@ def calc_companies_by_sku_and_size(df_companies_stats, df_costs_history, df_sku_
         'Артикул продавца': 'Неизвестный артикул',
         'Размер': 0,
         'Количество размеров в артикуле': 1,
-
     }
     df_companies_stats_by_size = df_companies_stats_by_size.fillna(fill_values)
 
@@ -1253,7 +1414,7 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
         df_companies_stats_by_sku = pd.DataFrame()
     # Если расходы были, то начинаем расчет расходов по рекламным кампаниям
     else:
-        # Обработка данных рекламных кампаний
+        # # Обработка данных рекламных кампаний
         # df_companies_stats = parse_companies_files(date_report)
         # # Выгружаем заказы
         # df_orders = get_orders(
@@ -1264,29 +1425,37 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
         # )
         # # Считаем заказы по размерам
         # df_orders_stats = calc_orders_by_size(df_orders)
-
-        # Получаем данные по рекламным кампаниям
-
+        date_start_promotion = promotion_dates['date_start_promotion']
+        date_end_promotion = promotion_dates['date_end_promotion']
         # Получение истории затрат
         df_costs_history = get_costs_history(
             headers,
-            promotion_dates['date_start_promotion'],
-            promotion_dates['date_end_promotion']
+            date_start_promotion,
+            date_end_promotion
         )
-        # Создаем df для передачи в метод статистики кампаний
+        # Создание датафрейма с номерами кампаний для статистики
+        companies_list = (
+            df_costs_history['ID Кампании']
+            .astype(int)
+            .unique()
+            .tolist()
+        )
         df_input_companies = pd.DataFrame({
-            'Номер кампании': df_costs_history['ID Кампании'].astype(str).to_list(),
-            'date_start': promotion_dates['date_start_promotion'],
-            'date_end': promotion_dates['date_end_promotion'],
+            'Номер кампании': companies_list,
+            'date_start': [date_start_promotion] * len(companies_list),
+            'date_end': [date_end_promotion] * len(companies_list),
         })
-        # Получение статистики кампаний
-        df_companies_stats = get_company_stats(
+        # Получаем статистику кампаний
+        df_companies_stats = get_company_stats_v2(
             headers,
             df_input_companies,
+            # groupby_cols=[]
         )
+        # Обрабатываем df со статистикой кампаний
+        df_companies_stats_processed = process_company_stats_df(df_companies_stats)
         # Распределяем расходы из истории затрат по артикулам в кампании
         df_companies_stats_by_sku = calc_companies_by_sku_and_size(
-            df_companies_stats,
+            df_companies_stats_processed,
             df_costs_history,
             df_sku_sizes_costs_merged
         )
@@ -1294,22 +1463,161 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
     return df_companies_stats_by_sku
 
 
+# Функция расчета расходов списаний за отзывы
+def calc_reviews_costs(df_realization_report_date_filtered, df_sku_sizes_costs_merged):
+    # Ищем расходы списаний за отзывы
+    # Создаём маску для строк по паттерну
+    reviews_costs_text_pattern = r'Списание за отзыв.*акция №\d+, товар \d+$'
+    # Колонка, в которой ищем списание за отзывы
+    column_to_search = 'Обоснование штрафов и доплат'
+    mask_reviews_costs = (
+        df_realization_report_date_filtered
+        [column_to_search]
+        .str.contains(
+            reviews_costs_text_pattern,
+            na=False,
+            regex=True
+        )
+    )
+    # Делаем выборку по списаниям за отзывы
+    df_reviews_sku_costs = (
+        df_realization_report_date_filtered
+        .loc[mask_reviews_costs, [column_to_search, 'Итого руб']]
+        # Выделяем артикул из строки списания за отзыв
+        .assign(
+            **{
+                "Артикул WB": lambda df: pd.to_numeric(
+                    df[column_to_search].str.extract(r'(\d+)$')[0], errors='coerce'
+                ).astype('Int64')
+        })
+        # Считаем суммы списаний за отзывы
+        .groupby(['Артикул WB'], as_index=False)
+        .agg(**{
+            'Списания за отзывы': ('Итого руб', 'sum')
+        })
+    )
+    # Если есть расходы по списаниям за отзывы, то разбиваем их по размерам
+    if df_reviews_sku_costs.shape[0] > 0:
+        # Получаем df с расходами по SKU
+        df_sku_sizes = df_sku_sizes_costs_merged.copy()
+        # Мерджим с расходами на приемку, чтобы получить количество размеров в одном артикуле
+        df_reviews_sku_sizes_costs = df_reviews_sku_costs.merge(
+            df_sku_sizes[[
+                'Артикул WB',
+                'Артикул продавца',
+                'Размер', 'Продажи шт',
+                'Количество размеров в артикуле',
+                'Продажи в артикуле',
+                'Доля продаж в артикуле'
+            ]],
+            on='Артикул WB',
+            how='left',
+            indicator='Наличие артикула'
+        )
+        # Если какого-то артикула не было в списке SKU по размерам, выводим предупреждение
+        missing_articles = df_reviews_sku_sizes_costs.loc[
+            df_reviews_sku_sizes_costs['Наличие артикула'] == 'left_only',
+            ['Артикул WB']
+        ]
+        if not missing_articles.empty:
+            logger.warning(
+                f"No size found for articles \n"
+                f"{missing_articles}"
+            )
 
-# Функция расчета расходов, которые не привязаны к артикулам
-def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_merged):
+        # Заполняем пропуски в артикуле и размере
+        fill_values = {
+            'Артикул продавца': 'Неизвестный артикул',
+            'Количество размеров в артикуле': 0,
+            'Продажи в артикуле': 0,
+            'Доля продаж в артикуле': 0,
+            'Размер': 0
+        }
+        for col, fill_value in fill_values.items():
+            df_reviews_sku_sizes_costs[col] = df_reviews_sku_sizes_costs[col].fillna(fill_value)
+
+        # Разбиваем расходы по платной приемке на долю продаж в артикуле
+        df_reviews_sku_sizes_costs['Списания за отзывы'] =(
+            df_reviews_sku_sizes_costs['Списания за отзывы'] /
+            df_reviews_sku_sizes_costs['Количество размеров в артикуле']
+        )
+
+        # Выбираем нужные колонки
+        df_reviews_sku_sizes_costs = df_reviews_sku_sizes_costs[['Артикул WB', 'Артикул продавца', 'Размер', 'Списания за отзывы']]
+    # Если расходы по списаниям за отзывы найдены не были, то возвращаем пустой df
+    else:
+        df_reviews_sku_sizes_costs = pd.DataFrame()
+
+    # Ищем id строк расходов за отзывы
+    reviews_sku_costs_ids = (
+        df_realization_report_date_filtered
+        .loc[
+            df_realization_report_date_filtered[column_to_search]
+            .str.contains(reviews_costs_text_pattern, na=False, regex=True),
+            'id'
+        ]
+        .to_list()
+    )
+
+    # Формируем словарь с результатами
+    result_reviews_costs = {
+        'df_reviews_sku_sizes_costs': df_reviews_sku_sizes_costs,
+        'reviews_sku_costs_ids': reviews_sku_costs_ids
+    }
+
+    return result_reviews_costs
+
+
+# Функция объединения расходов
+def merge_all_costs(
+        df_sku_sizes_costs_merged,
+        result_paid_acceptance,
+        df_companies_costs,
+        result_reviews_costs,
+):
+    # Получаем df с расходами по платной приемке
+    df_paid_acceptance_costs = result_paid_acceptance['df_paid_acceptance_sku_sizes']
+    # Получаем df с расходами по списаниям за отзывы
+    df_reviews_sku_sizes_costs = result_reviews_costs['df_reviews_sku_sizes_costs']
+    # Объединяем полученные расходы в один df
+    df_sku_sizes_costs_union = pd.concat([
+        df_sku_sizes_costs_merged,
+        df_paid_acceptance_costs,
+        df_companies_costs,
+        df_reviews_sku_sizes_costs,
+    ])
+    # Сводим все по артикулам после concat
+    df_sku_sizes_costs_all = (
+        df_sku_sizes_costs_union
+        .groupby(['Артикул WB', 'Артикул продавца', 'Размер'])
+        .sum()
+        .reset_index()
+    )
+
+    return df_sku_sizes_costs_all
+
+
+# Функция расчета расходов, которые не привязаны к артикулам (v2)
+def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_all):
     # Получаем list с id строк расходов по артикулам
     sku_costs_ids = result_sku_costs['sku_costs_ids']
     # df, в который будем помещать итоговый результат (df уже содержит расходы по sku)
-    df_sku_and_other_costs = df_sku_sizes_costs_merged.copy()
+    df_sku_and_other_costs = df_sku_sizes_costs_all.copy()
 
     # Выбираем строки из отчета, которые не привязаны к артикулам
     df_other_costs = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(sku_costs_ids), :]
     other_costs_ids = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(sku_costs_ids), 'id'].to_list()
 
     # Выбираем расходы, у которых есть доп. детализация в столбце "Обоснование штрафов и доплат"
-    df_other_costs_fees = df_other_costs.loc[
-        (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
-    :]
+    df_other_costs_fees = (
+        df_other_costs
+        .loc[
+            (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
+            :
+        ]
+        # .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+    )
+    # Определяем id строк, у которых есть доп. детализация
     other_costs_fees_ids = df_other_costs_fees['id'].to_list()
 
     # Считаем итоговые суммы по Штрафам и доплатам
@@ -1318,9 +1626,9 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_merged):
         .groupby('Обоснование штрафов и доплат')
         .agg(
             Итого_прочие_расходы=('Итого руб', 'sum')
-            )
-            .reset_index()
-            .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+        )
+        .reset_index()
+        .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
     )
 
     # Выбираем расходы, у которых нет доп. детализации
@@ -1339,8 +1647,27 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_merged):
     )
 
     # Объединяем группы расходов, полученные выше
-    df_other_costs_by_operation = pd.concat([df_other_costs_fees_by_operation, df_other_costs_leftover_by_operation], axis = 0).reset_index(drop=True)
-
+    df_other_costs_by_operation = pd.concat([
+            df_other_costs_fees_by_operation,
+            df_other_costs_leftover_by_operation
+        ],
+        axis=0,
+        ignore_index=True
+    )
+    # Удаляем некоторые группы расходов, которые мы уже учли
+    exclude_costs_list = [
+        r'Списание за отзыв.*акция №\d+, товар \d+$',
+    ]
+    exclude_costs_filter = '|'.join(f"(?:{p})" for p in exclude_costs_list)
+    df_other_costs_by_operation = (
+        df_other_costs_by_operation
+        .loc[
+            df_other_costs_by_operation['Тип расходов']
+            .str.contains(exclude_costs_filter, regex=True, na=False),
+            :
+        ]
+        .reset_index(drop=True)
+    )
     # Добавляем прочие расходы в df с расходами по sku, разбивая их от количества продаж
     total_sales = df_sku_and_other_costs['Продажи шт'].sum()
     for operation_type in df_other_costs_by_operation['Тип расходов']:
@@ -1348,19 +1675,34 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_merged):
         df_sku_and_other_costs[operation_type] = df_sku_and_other_costs['Продажи шт'] / total_sales * operation_costs
 
     # Удаляем некоторые группы расходов, т.к. по ним мы формируем отдельные отчеты
-    df_sku_and_other_costs = df_sku_and_other_costs.loc[:, ~df_sku_and_other_costs.columns.isin([
-        'Оказание услуг «ВБ.Продвижение»',
-        # 'Платная приемка',
-        # 'Корректировка приемки',
-        'Хранение',
-        'Корректировка хранения',
-        'Удержания',
-        ])]
+    # Поскольку мы выгружали отдельные отчеты по некоторым расходам,
+    # мы должны убрать их из прочих расходов, чтобы не было дубликатов
+    # Да, удаляем два раза, потому что я дебил и мне пох
+    other_costs_duplicate_flags = {
+        'Платное хранение (отдельный отчет)': ['Хранение (Отчет реализации)'],
+        'Платная приемка (отдельный отчет)': ['Платная приемка (Отчет реализации)'],
+        'Расходы по рекламным кампаниям': ['Оказание услуг «ВБ.Продвижение»']
+    }
+    for separate_report_cost, realization_report_cost in other_costs_duplicate_flags.items():
+        if separate_report_cost in df_sku_and_other_costs.columns:
+            df_sku_and_other_costs.drop(columns=realization_report_cost, inplace=True, errors='ignore')
+
+    # Старый способ удаления повторяющихся групп расходов
+    # df_sku_and_other_costs = df_sku_and_other_costs.loc[:, ~df_sku_and_other_costs.columns.isin([
+    #     'Оказание услуг «ВБ.Продвижение»',
+    #     # 'Платная приемка',
+    #     # 'Корректировка приемки',
+    #     'Хранение',
+    #     'Корректировка хранения',
+    #     'Удержания',
+    #     ])]
 
     # Формируем словарь с результатами
-    result_other_costs = {'df_sku_and_other_costs': df_sku_and_other_costs,
-                          'df_other_costs_by_operation': df_other_costs_by_operation,
-                          'other_costs_ids': other_costs_ids}
+    result_other_costs = {
+        'df_sku_and_other_costs': df_sku_and_other_costs,
+        'df_other_costs_by_operation': df_other_costs_by_operation,
+        'other_costs_ids': other_costs_ids
+    }
 
     return result_other_costs
 
@@ -1430,25 +1772,13 @@ def calc_other_costs(df_realization_report_date_filtered, result_sku_costs):
         ])]
 
     # Формируем словарь с результатами
-    result_other_costs = {'df_sku_and_other_costs': df_sku_and_other_costs,
-                          'df_other_costs_by_operation': df_other_costs_by_operation,
-                          'other_costs_ids': other_costs_ids}
+    result_other_costs = {
+        'df_sku_and_other_costs': df_sku_and_other_costs,
+        'df_other_costs_by_operation': df_other_costs_by_operation,
+        'other_costs_ids': other_costs_ids
+    }
 
     return result_other_costs
-
-
-# Функция объединения расходов
-def merge_all_costs(df_sku_sizes_costs_merged,
-                    result_paid_acceptance,
-                    df_companies_costs):
-    # Получаем df с расходами по платной приемке
-    df_paid_acceptance_costs = result_paid_acceptance['df_paid_acceptance_sku_sizes']
-    # Объединяем с расходами по платной приемке и хранению
-    df_sku_sizes_costs_union = pd.concat([df_sku_sizes_costs_merged, df_paid_acceptance_costs, df_companies_costs])
-    # Сводим все по артикулам после concat
-    df_sku_sizes_costs_all = df_sku_sizes_costs_union.groupby(['Артикул WB', 'Артикул продавца', 'Размер']).sum().reset_index()
-
-    return df_sku_sizes_costs_all
 
 
 # Функция добавления данных из справочной таблицы
@@ -1498,6 +1828,9 @@ def add_data_from_catalog(result_other_costs):
 def calc_final_costs(df_all_costs_stats_with_catalog):
     # Создание копии для избежания изменений в оригинальном df
     df_all_costs_stats_ = df_all_costs_stats_with_catalog.copy()
+    # Колонка, от которой будем считать маржинальность в %
+    marg_sales_column = df_all_costs_stats_['Продажи минус возвраты руб без СПП']
+    marg_sales_amount_column = df_all_costs_stats_['Продажи минус возвраты шт']
     # Колонки, по которым нужно поменять знаки расходов с + на -
     change_sign_columns = [
         'Возмещение издержек по перевозке',
@@ -1510,8 +1843,39 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         if col in df_all_costs_stats_.columns:
             df_all_costs_stats_[col] = df_all_costs_stats_[col] * (-1)
 
+    # Считаем все расходы на рекламные кампании
+    promotion_columns = [
+        'Расходы по рекламным кампаниям',
+        'Витрина Магазина',
+        'Оказание услуг «ВБ.Медиа»',
+        'Предоставление услуг по подписке «Джем»',
+        'Стоимость участия в программе лояльности',
+    ]
+    # Находим колонки по рекламе, которые реально есть в отчете реализации
+    existing_promotion_columns = [col for col in df_all_costs_stats_.columns if col in promotion_columns]
+    if existing_promotion_columns:
+        df_all_costs_stats_['Затраты на рекламу руб'] = df_all_costs_stats_[existing_promotion_columns].sum(axis=1)
+    else:
+        df_all_costs_stats_['Затраты на рекламу руб'] = 0.0
+
+    # Считаем % по рекламным расходам
+    df_all_costs_stats_['% Затрат на рекламные кампании'] = (
+        abs(
+            df_all_costs_stats_['Затраты на рекламу руб'] /
+            marg_sales_column
+            * 100
+        )
+    )
+    # Переносим % по рекламным расходам до маржинальности
+    df_all_costs_stats_ = move_columns(
+        df_all_costs_stats_,
+        ['Затраты на рекламу руб', '% Затрат на рекламные кампании'],
+        position=df_all_costs_stats_.columns.shape[0] - 2,
+        insert_type='before'
+    )
+
     # Колонки, которые нужно исключить из затрат
-    columns_to_exclude = [
+    columns_to_exclude_from_final_costs = ([
         'Артикул WB',
         'Артикул продавца',
         'Размер',
@@ -1519,43 +1883,65 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Статус',
         'Заказы шт',
         'Продажи шт',
-        'Продажи руб',
+        'Продажи руб с СПП',
+        'Продажи руб без СПП',
+        'Возвраты руб с СПП',
+        'Возвраты руб без СПП',
+        'Продажи минус возвраты руб с СПП',
+        'Продажи минус возвраты руб без СПП',
+        'Продажи минус возвраты шт',
         'Возвраты шт',
         'Количество размеров в артикуле',
         'Продажи в артикуле',
         'Доля продаж в артикуле',
-        'Продажи руб',
+        '% Затрат на рекламные кампании',
         'Маржинальность руб',
-        'Возвраты шт',
-        'Продажи минус возвраты руб',
-        'Продажи минус возвраты шт',
+        'Маржинальность %',
+        'Маржинальность на ед. товара руб',
         'Себестоимость',
         # 'Вознаграждение WB без НДС',
         # 'НДС с вознаграждения WB',
         'Комиссия WB, %',
         # 'Платное хранение (отдельный отчет)',
-        'Платная приемка (отдельный отчет)'
-    ]
+        # 'Платная приемка (отдельный отчет)'
+        ] + promotion_columns
+    )
 
     # Расчет маржинальности в рублях
-    df_all_costs_stats_['Маржинальность руб'] = df_all_costs_stats_['Продажи руб']
-    for col in df_all_costs_stats_.columns[~df_all_costs_stats_.columns.isin(columns_to_exclude + ['Итого руб'])]:
+    df_all_costs_stats_['Маржинальность руб'] = marg_sales_column
+    for col in df_all_costs_stats_.columns[~df_all_costs_stats_.columns.isin(columns_to_exclude_from_final_costs)]:
         df_all_costs_stats_['Маржинальность руб'] = df_all_costs_stats_['Маржинальность руб'] - df_all_costs_stats_[col]
 
     # Расчет Маржинальности в процентах
     # Там, где нет себестоимости, маржинальность не считаем
     df_all_costs_stats_.loc[df_all_costs_stats_['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
-    df_all_costs_stats_['Маржинальность %'] = df_all_costs_stats_['Маржинальность руб'] / df_all_costs_stats_['Продажи руб'] * 100
-    # Меняем inf на nan
-    df_all_costs_stats_['Маржинальность %'] = df_all_costs_stats_['Маржинальность %'].replace([-np.inf, np.inf], np.nan)
+    df_all_costs_stats_['Маржинальность %'] = df_all_costs_stats_['Маржинальность руб'] / marg_sales_column * 100
 
-    return df_all_costs_stats_
+    # Расчет маржинальности на единицу товара
+    df_all_costs_stats_['Маржинальность на ед. товара руб'] = (
+        df_all_costs_stats_['Маржинальность руб'] /
+        marg_sales_amount_column
+    )
+    # Там, где маржинальность в рублях > 0, у маржинальности на единицу товара так же будет знак "+"
+    # в ином случае "-"
+    df_all_costs_stats_['Маржинальность на ед. товара руб'] = np.where(
+        df_all_costs_stats_['Маржинальность руб'] < 0,
+        (-1) * abs(df_all_costs_stats_['Маржинальность на ед. товара руб']),
+        abs(df_all_costs_stats_['Маржинальность на ед. товара руб'])
+    )
+
+    # Меняем inf на nan в маржинальностях
+    for col in ['Маржинальность %', 'Маржинальность на ед. товара руб']:
+        df_all_costs_stats_[col] = df_all_costs_stats_[col].replace([-np.inf, np.inf], np.nan)
+
+
+    return df_all_costs_stats_, promotion_columns, columns_to_exclude_from_final_costs
 
 
 # Функция расчета сводной таблицы по всем расходам
 def create_svod_by_operations(df_final_costs):
     # Список колонок, по котором мы не считаем суммы
-    columns_to_exclude = [
+    columns_to_exclude_from_operations_svod = [
         'Артикул WB',
         'Артикул_Размер',
         'Артикул продавца',
@@ -1569,15 +1955,25 @@ def create_svod_by_operations(df_final_costs):
         # 'Все затраты (руб)',
         # 'Маржинальность руб',
         'Маржинальность %',
+        'Маржинальность на ед. товара',
+        '% Затрат на рекламные кампании',
     ]
-
+    # Создаем копию для избежения изменений в исходном df
+    df_final_costs_by_operation = df_final_costs.copy()
+    # Рассчитываем доп. столбцы
+    # if 'Вознаграждение WB без НДС' in df_final_costs_by_operation.columns:
+    df_final_costs_by_operation['Вознаграждение WB без НДС'] = (
+        df_final_costs_by_operation['Продажи минус возвраты руб с СПП'] -
+        df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
+        + df_final_costs_by_operation['Вознаграждение WB без НДС']
+    )
     # Считаем суммы по остальным столбцам
     df_final_costs_by_operation = (
-        df_final_costs
+        df_final_costs_by_operation
         # Убираем колонки, которые не должны быть включены в сумму
         .loc[
             :,
-            ~df_final_costs.columns.isin(columns_to_exclude)
+            ~df_final_costs_by_operation.columns.isin(columns_to_exclude_from_operations_svod)
         ]
         # Считаем суммы по остальным
         .sum()
@@ -1592,7 +1988,7 @@ def create_svod_by_operations(df_final_costs):
     )
     # Считаем сумму, от которой будем считать процент
     sum_columns = [
-        'Продажи минус возвраты руб',
+        'Продажи минус возвраты руб с СПП',
         # 'Баллы за скидки',
     ]
     # Считается сумма по тем колонкам, которые есть в df_final_costs
@@ -1649,88 +2045,118 @@ def save_excel(
         df_paid_acceptance.to_excel(w, sheet_name='Отчет пл. приемка', index=False)
         df_paid_storage.to_excel(w, sheet_name='Отчет пл. хранение', index=False)
 
+# Функция форматирования excel
+def format_excel(
+    finance_reports_dir,
+    date_report,
+    client_name,
+    df_final_costs,
+    promotion_columns,
+    columns_to_exclude_from_final_costs,
+):
+    # Формируем путь к итоговому файлу Excel
+    filename = f"{finance_reports_dir}/{date_report}_Свод_реализации_WB_{client_name}.xlsx"
+    # Загружаем рабочую книгу Excel
+    wb = openpyxl.load_workbook(filename)
 
-# Функция форматирования отчета Excel
-def format_excel(finance_reports_dir, date_report, df_final_costs):
-    # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(f"{finance_reports_dir}/{date_report}_Свод_реализации_WB_{client_name}.xlsx")
-    # Автоподбор ширины столбца
-    for worksheet in wb.sheetnames:
-        ws = wb[worksheet]
+    # Проходим по всем листам и настраиваем ширины столбцов + фильтр
+    for ws in wb.worksheets:
         for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(cell.value)
-                except:
-                    pass
-            adjusted_width = (max_length + 2) * 1.2
-            ws.column_dimensions[column_letter].width = adjusted_width
-        # Значок фильтра на столбцы
+            column_letter = column[0].column_letter  # Получаем букву столбца (например, 'A')
+            # Находим максимальную длину значения среди всех ячеек этого столбца
+            max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column)
+            # Делаем ширину побольше найденного максимума для удобства визуализации
+            ws.column_dimensions[column_letter].width = (max_length + 2) * 1.2
+        # Включаем автoфильтр на всех данных листа
         ws.auto_filter.ref = ws.dimensions
-    final_costs_worksheet = wb['Итоговая таблица']
 
-    # df с соответствием заголовков и названий столбцов
-    excel_columns = pd.DataFrame({"column": df_final_costs.columns,
-                                  "column_number": np.arange(1, len(df_final_costs.columns) + 1)})
-    excel_columns['excel_column'] = excel_columns['column_number'].apply(lambda x: get_column_letter(x))
-    # Кол-во строк в df
-    svod_len = df_final_costs.shape[0]
-    # Номер строки, откуда начинается запись
-    row_start = 2
+    # Получаем лист, где будем работать с итоговой таблицей
+    final_ws = wb['Итоговая таблица']
 
-    # Мин. и макс. колонка
-    min_col = excel_columns.loc[excel_columns['column_number'].idxmin(), 'excel_column']
-    max_col = excel_columns.loc[excel_columns['column_number'].idxmax(), 'excel_column']
-    # Заголовки
-    header_cells = final_costs_worksheet[f"{min_col}{row_start - 1}:{max_col}{row_start - 1}"]
-    # Все колонки, кроме заголовков
-    all_cells = final_costs_worksheet[f"{min_col}{row_start}:{max_col}{svod_len + 1}"]
+    # Создаём словарь: название столбца -> буква столбца в Excel
+    col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
 
-    # Формат заголовков
+    # Готовим стили для ячеек: тонкая чёрная рамка
     thin_border = Side(border_style="thin", color="000000")
+
+    svod_len = df_final_costs.shape[0]  # Количество строк с данными отчёта
+    row_start = 2  # Обычно строка 1 — заголовки, а с 2 — данные
+
+    # Границы диапазона столбцов по буквам Excel (например, A:Q)
+    min_col = get_column_letter(1)
+    max_col = get_column_letter(len(df_final_costs.columns))
+
+    # Получаем диапазон заголовков по соответствующим ячейкам
+    header_cells = final_ws[f"{min_col}{row_start - 1}:{max_col}{row_start - 1}"]
     for row in header_cells:
         for cell in row:
-            cell.font = Font(name = "Calibri", size = 11, bold=True)
-            cell.alignment = Alignment(horizontal='center',
-                                       vertical='center',
-                                       wrap_text=True)
-            cell.border = Border(top = thin_border, bottom = thin_border,
-                                 right = thin_border, left = thin_border)
-    # Границы (сетка)
+            cell.font = Font(name="Calibri", size=11, bold=True)
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = Border(top=thin_border, bottom=thin_border, left=thin_border, right=thin_border)
+
+    # Получаем диапазон всех строк с данными
+    all_cells = final_ws[f"{min_col}{row_start}:{max_col}{svod_len + 1}"]
     for row in all_cells:
         for cell in row:
-            cell.font = Font(name = "Calibri", size = 11)
-            cell.border = Border(top = thin_border, bottom = thin_border,
-                                 right = thin_border, left = thin_border)
+            cell.font = Font(name="Calibri", size=11)
+            cell.border = Border(top=thin_border, bottom=thin_border, left=thin_border, right=thin_border)
 
+    # Определяем, какие рекламные столбцы реально присутствуют в таблице
+    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
 
-    # Колонка с маржинальностью
-    marginality_percent = excel_columns.loc[excel_columns['column'].str.contains('Маржинальность %'), 'excel_column'].values[0]
+    # Определяем все колонки, учитываемые в расходах (исключаем явно ненужные)
+    cost_columns = [col for col in df_final_costs.columns if col not in columns_to_exclude_from_final_costs]
 
-    # Формат числа 0% у маржинальности
-    # percent_0_digit_cells = [marginality_percent]
-    # for i in range(len(percent_0_digit_cells)):
-    #     percent_0_digit_cells[i] = f"{percent_0_digit_cells[i]}{row_start}:{percent_0_digit_cells[i]}{svod_len + 1}"
+    start_row = 2
+    end_row = final_ws.max_row  # Последняя строка с данными в финальной таблице
+    # Колонка продаж минус возвратов
+    sales_minus_returns_col = 'Продажи минус возвраты руб без СПП'
+    sales_minus_returns_amount_col = 'Продажи минус возвраты шт'
+    for row in range(start_row, end_row + 1):
+        # --- Формула: "Затраты на рекламу руб"
+        if existing_promotion_columns:
+            # Складываем по всем реально существующим колонкам
+            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
+            final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = f'={promo_sum}'
+        else:
+            final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = '0'
 
-    # for cell_range in percent_0_digit_cells:
-    #     cell_range = final_costs_worksheet[cell_range]
-    #     for row in cell_range:
-    #         for cell in row:
-    #             cell.number_format = '0%'
+        # --- Формула: "% Затрат на рекламные кампании"
+        cell_promo = f"{col_map['Затраты на рекламу руб']}{row}"
+        cell_sales_minus_returns = f"{col_map[sales_minus_returns_col]}{row}"
+        cell_sales_minus_returns_amount = f"{col_map[sales_minus_returns_amount_col]}{row}"
+        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
+        final_ws[f"{col_map['% Затрат на рекламные кампании']}{row}"].value = formula_percent
 
-    wb.save(f"{finance_reports_dir}/{date_report}_Свод_реализации_WB_{client_name}.xlsx")
+        # --- Формула: "Маржинальность руб"
+        base = f"{col_map[sales_minus_returns_col]}{row}"
+        formula = base
+        for col in cost_columns:
+            formula += f"+{col_map[col]}{row}"
+        final_ws[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+
+        # --- Формула: "Маржинальность %"
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_sales = f"{col_map[sales_minus_returns_col]}{row}"
+        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales}*100)'
+        final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+
+        # --- Формула: "Маржинальность на ед. товара руб"
+        # (используем те же переменные, что и выше, чтобы не было ошибок подстановки)
+        formula_na_ed = f'=IF({cell_sales_minus_returns_amount}=0,"",ABS({cell_marg_rub}/{cell_sales_minus_returns_amount})*SIGN({cell_marg_rub}))'
+        final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+
+    # Сохраняем итоговый файл с формулами и форматированием
+    wb.save(filename)
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Имя папки, в которую будет сохранен отчет
-    date_report = '2025_07'
+    date_report = '2025_08'
     # Даты, за которые нужно сформировать отчет
-    date_start = '2025-07-01T00:00:00'
-    date_end = '2025-07-31T23:59:59'
+    date_start = '2025-08-01T00:00:00'
+    date_end = '2025-08-31T23:59:59'
     # Директория для сохранения результатов
     finance_reports_dir = f"{marketplace_dir_name}/Clients/{client_name}/FinanceReports/{date_report}"
     if not os.path.exists(finance_reports_dir):
@@ -1796,10 +2222,15 @@ if __name__ == '__main__':
         date_end
     )
     # Считаем расходы на рекламные кампании
-    df_companies_costs = calc_companies_costs(
+    df_companies_costs = calc_companies_costs_v2(
         df_realization_report_date_filtered,
         df_sku_sizes_costs_merged,
         date_report
+    )
+    # Считаем расходы на списания за отзывы на товары
+    result_reviews_costs = calc_reviews_costs(
+        df_realization_report_date_filtered,
+        df_sku_sizes_costs_merged,
     )
     # Объединяем расходы на пл. приемку с расходами по SKU и хранению
     # df_sku_paid_storage_acceptance_stats = union_sku_paid_storage_acceptance_costs(df_sku_and_paid_storage_stats, result_paid_acceptance)
@@ -1807,7 +2238,8 @@ if __name__ == '__main__':
     df_sku_sizes_costs_all = merge_all_costs(
         df_sku_sizes_costs_merged,
         result_paid_acceptance,
-        df_companies_costs
+        df_companies_costs,
+        result_reviews_costs,
     )
     # Расчет затрат, которые не привязаны к артикулам
     # result_other_costs = calc_other_costs(df_realization_report_date_filtered, result_sku_costs)
@@ -1828,7 +2260,7 @@ if __name__ == '__main__':
         result_other_costs
     )
     # Расчет итоговой колонки по затратам
-    df_final_costs = calc_final_costs(
+    df_final_costs, promotion_columns, columns_to_exclude_from_final_costs = calc_final_costs(
         df_all_costs_stats_with_catalog
     )
     # Считаем сводную по затратам
@@ -1850,7 +2282,10 @@ if __name__ == '__main__':
     format_excel(
         finance_reports_dir,
         date_report,
-        df_final_costs
+        client_name,
+        df_final_costs,
+        promotion_columns,
+        columns_to_exclude_from_final_costs,
     )
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
 
