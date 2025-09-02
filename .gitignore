@@ -140,3 +140,34 @@ actual_modules_versions.txt
 only_imported_modules.txt
 wb/scripts/tmp.py
 ozon/scripts/tmp.py
+ozon/scripts/createSvod.py
+ozon/scripts/createSvodOzon.py
+ozon/scripts/options_ozon.py
+ozon/scripts/requirements.in
+ozon/scripts/requirements.txt
+ozon/scripts/settings — копия.json
+ozon/scripts/settings_ozon.json
+ozon/scripts/svod_products_report.py
+ozon/scripts/update_catalog_data.py
+ozon/scripts/calc_svod_finance_report.py
+ozon/scripts/calc_svod_finance_report_v2.py
+ozon/scripts/clasters_warehouse.csv
+ozon/scripts/clasters_warehouse_old.csv
+ozon/scripts/uploadDataFronOzon.py
+ozon/scripts/uploadDataFronOzon_src.py
+wb/scripts/calc_svod_finance_report_WB.py
+wb/scripts/calc_svod_finance_report_WB_from_file.py
+wb/scripts/constants_by_shop_type.py
+wb/scripts/createSvodWB.py
+wb/scripts/df_companies_stats.csv
+wb/scripts/get_warehouses.py
+wb/scripts/get_warehouses_from_files.py
+wb/scripts/merge_finance_reports_lk.py
+wb/scripts/options_wb.py
+wb/scripts/requirements.txt
+wb/scripts/seller_warehouse_list.csv
+wb/scripts/settings_wb.json
+wb/scripts/update_catalog_data.py
+wb/scripts/wb_warehouse_list.csv
+wb/scripts/your_file_formatted.xlsx
+wb/scripts/Склады поставки для группировки.xlsx
