@@ -279,7 +279,6 @@ def getCompanyStatistics(
             uploaded_companies_amount =+ current_companies_amount
 
 
-
 # Отчёт по товарам в продвижении в поиске
 def getProductsSearchPromote(auth_token, date_start, date_end):
     # Даты формирования отчета
@@ -321,6 +320,134 @@ def getProductsSearchPromote(auth_token, date_start, date_end):
         logger.info("Error creating products promote report")
 
 
+# Отчет по товарам в оплате за заказ
+def get_search_promo_orders(
+        auth_token,
+        date_start,
+        date_end,
+        companies_stats_dir,
+        task_id=None,
+):
+    logger.info(
+        f"\nUploading pay for orders report\n"
+        f"dates: {date_start} - {date_end}"
+    )
+    # Формируем параметры запроса
+    params_products_pay_for_orders = {
+        'from': date_start,
+        'to': date_end
+    }
+    # Если не задан ID задания на генерацию отчета, то создаем задание на генерацию отчета
+    # Если он задан (например, мы до этого запускали и не получили отчеты с  этого задания),
+    # то пропускаем этот этап
+    if task_id is None:
+        # Флаг проверки того, что прошел запрос на формирование отчета
+        report_task_ok = False
+        # Делаем запросы, пока не пройдет запрос на формирование отчета
+        while not report_task_ok:
+            # Проверяем срок действия токена
+            auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
+            # Авторизация
+            headers = {
+                'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
+            }
+            # Запрос к апи
+            resp_data_products_pay_for_orders = (
+                requests
+                .post(
+                    f"{ozon_performance_api_url}:443/api/client/statistics/orders/generate",
+                    headers=headers,
+                    json=params_products_pay_for_orders
+                )
+                .json()
+            )
+            # Если при запросе выходит ошибка, выводим текст ошибки
+            if 'error' in resp_data_products_pay_for_orders.keys():
+                # Получаем текст ошибки
+                error_message = resp_data_products_pay_for_orders['error']
+                logger.info(f"{error_message}")
+                # Делаем паузу перед следующей отправкой запроса на генерацию
+                time.sleep(5)
+            # Если ошибки нет, то ставим флаг того, что запрос прошел и идем дальше
+            else:
+                report_task_ok = True
+
+        # Получаем номер задания на генерацию отчета
+        task_id = resp_data_products_pay_for_orders['UUID']
+
+    # Получаем статус отчета
+    report_status = '' # Начальное значение статуса отчета
+    logger.info("Getting pay for orders report status")
+    # Делаем запросы, пока отчет не сформируется, либо не будет ошибка
+    while report_status not in ['OK', 'ERROR']:
+        # Заново запрашиваем токен авторизации, если истек текущий
+        auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
+        # Авторизация
+        headers = {
+            'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
+        }
+        # Делаем запрос
+        resp_data_report_status = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
+                                            headers=headers).json()
+        # Получаем статус отчета
+        report_status = resp_data_report_status['state']
+        # Выводим сообщение, сколько уже выгружено кампаний и сколько выгружается
+        logger.info(
+            f"\nUploading pay for orders report\n"
+            # f"{current_companies_amount} of {total_companies} companies\n"
+            # f"(Chunk {chunk} of {total_chunks})\n"
+            # f"Already uploaded: {uploaded_companies_amount} companies\n"
+            f"Dates: {date_start} - {date_end}\n"
+            f"Report creation status: {report_status}\n"
+            f"Task id: {task_id}"
+        )
+        # logger.info(f"Report creation status: {report_status}")
+        # Ограничение апи - один запрос в 5 секунд
+        time.sleep(5)
+
+    # Если отчет сформирован успешно, то скачиваем его
+    if resp_data_report_status['state'] == 'OK':
+        logger.info("Downloading pay for orders report")
+        params_get_report = {
+            "UUID": resp_data_report_status['UUID']
+        }
+        resp_data_report = requests.get(
+            f"{ozon_performance_api_url}:443/api/client/statistics/report",
+            params=params_get_report,
+            headers=headers
+        )
+        # Определяем расширение файла
+        report_type = resp_data_report.headers['Content-Type'].split(';')[0]
+        # Получаем имя файла
+        file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
+        # Удаляем лишние символы из имени файла
+        replace_dict = {
+            '"': '',
+            ' ': '',
+            'filename=': '',
+        }
+        # Заменяем символы
+        for old, new in replace_dict.items():
+            file_name = file_name.replace(old, new)
+        # Если csv, то просто сохраняем файл
+        if 'csv' in report_type:
+            file_type = 'csv'
+            with open(f"{companies_stats_dir}/{file_name}", 'wb') as w:
+                w.write(resp_data_report.content)
+                w.close()
+                logger.info(f"Pay for orders report saved: {file_name}")
+        # Если zip, сохраняем архив, затем распаковываем его
+        else:
+            raise ValueError(f'Unknown report type: {report_type}')
+            # file_type = 'zip'
+            # with open(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'wb') as w:
+            #     w.write(resp_data_report.content)
+            #     w.close()
+            # with ZipFile(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'r') as zip_ref:
+            #     zip_ref.extractall(companies_stats_dir)
+
+
+
 # Вызов всех функций
 def upload_data_performane(
         date_start,
@@ -330,6 +457,7 @@ def upload_data_performane(
         companies_stats_dir,
         df_companies=None,
         task_id=None,
+        payment_for_orders=False,
 ):
     # Получаем токен авторизации
     auth_token = getAuthorizationToken(client_id_performance, client_secret_performance)
@@ -341,6 +469,7 @@ def upload_data_performane(
     else:
         df_companies_for_statistic = df_companies.copy()
 
+    # Выгружаем статистику кампаний
     getCompanyStatistics(
         date_start,
         date_end,
@@ -349,13 +478,23 @@ def upload_data_performane(
         companies_stats_dir,
         task_id
     )
+
+    # Выгружаем отчет о товарах в оплате за заказ (если стоит флаг)
+    if payment_for_orders:
+        get_search_promo_orders(
+            auth_token,
+            date_start,
+            date_end,
+            companies_stats_dir,
+            task_id
+        )
     print(f"\033[44m\033[37mDONE UPLOADING OZON PERFORMANCE FOR CLIENT {client_name}")
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
     # создаем отдельную папку для текущей выгрузки
-    uploaddir = f"{marketplace_dir_name}Clients/{client_name}/UploadFilesPerformance"
+    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFilesPerformance"
     if not os.path.exists(uploaddir):
         os.makedirs(uploaddir)
     uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
@@ -366,11 +505,13 @@ if __name__ == '__main__':
     companies_stats_dir = f"{uploaddir_today}/{str(date.today())}_Кампании"
     os.mkdir(companies_stats_dir)
 
-    date_start = '2025-04-01T00:00:00Z'
-    date_end = '2025-04-30T23:59:59Z'
+    date_start = '2025-08-17T00:00:00Z'
+    date_end = '2025-08-27T23:59:59Z'
     auth_token = getAuthorizationToken(client_id_performance, client_secret_performance,)
 
     df_companies = getCompanyList(auth_token)
     getCompanyStatistics(date_start, date_end, auth_token, df_companies, companies_stats_dir)
     print(f"\033[44m\033[37mDONE UPLOADING OZON PERFORMANCE FOR CLIENT {client_name}")
     # getProductsSearchPromote(auth_token, date_start, date_end)
+
+# %%
