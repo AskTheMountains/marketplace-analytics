@@ -2,6 +2,7 @@ from datetime import date,datetime,timedelta
 import pandas as pd
 import shutil
 import os
+from pathlib import Path
 import csv
 import json
 import numpy as np
@@ -14,28 +15,33 @@ pd.set_option('future.no_silent_downcasting', True)
 from ozon.scripts.constants import marketplace_dir_name, client_name
 
 
-metricsdir = f"{marketplace_dir_name}/Clients/{client_name}/Metrics"
-if not os.path.exists(metricsdir):
-    os.mkdir(metricsdir)
+metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
+if not metricsdir.exists():
+    metricsdir.mkdir(parents=True, exist_ok=True)
 
 # date_upload_files = '2024-11-13'
 
 def calcMetrics(date_upload_files = str(date.today())):
     # Директории с загруженными файлами из апи
-    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-    uploaddir = f"{uploaddir}/UploadFiles_{date_upload_files}"
-    dates_from_to = pd.read_csv(f"{uploaddir}/{date_upload_files}_dates_from_to.csv", sep=';')
+    uploaddir = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+        / f"UploadFiles_{date_upload_files}"
+    )
+    dates_from_to = pd.read_csv(uploaddir / f"{date_upload_files}_dates_from_to.csv", sep=';')
     logger.info(f"Calculation metrics for client {client_name} for dates {dates_from_to['date_start'][0]} - {dates_from_to['date_end'][0]}")
 
     # Загрузка данных из CSV файлов
-    catalog = pd.read_csv(f"{uploaddir}/{date_upload_files}_Товары.csv", sep=';')
-    order_fbo = pd.read_csv(f"{uploaddir}/{date_upload_files}_Заказы_fbo.csv", encoding='utf-8', sep=';')
-    order_fbs = pd.read_csv(f"{uploaddir}/{date_upload_files}_Заказы_fbs.csv", encoding='utf-8', sep=';')
-    sales_fbo = pd.read_csv(f"{uploaddir}/{date_upload_files}_Продажи_fbo.csv", encoding='utf-8', sep=';')
-    sales_fbs = pd.read_csv(f"{uploaddir}/{date_upload_files}_Продажи_fbs.csv", encoding='utf-8', sep=';')
-    warehouses_fbo = pd.read_csv(f"{uploaddir}/{date_upload_files}_Остатки.csv", encoding='utf-8', sep=';')
-    warehouses_fbs = pd.read_csv(f"{uploaddir}/{date_upload_files}_Остатки_fbs.csv", encoding='utf-8', sep=';')
-    supply_order_items = pd.read_csv(f"{uploaddir}/{date_upload_files}_Поставки.csv", encoding='utf-8', sep=';')
+    catalog = pd.read_csv(uploaddir / f"{date_upload_files}_Товары.csv", sep=';')
+    order_fbo = pd.read_csv(uploaddir / f"{date_upload_files}_Заказы_fbo.csv", encoding='utf-8', sep=';')
+    order_fbs = pd.read_csv(uploaddir / f"{date_upload_files}_Заказы_fbs.csv", encoding='utf-8', sep=';')
+    sales_fbo = pd.read_csv(uploaddir / f"{date_upload_files}_Продажи_fbo.csv", encoding='utf-8', sep=';')
+    sales_fbs = pd.read_csv(uploaddir / f"{date_upload_files}_Продажи_fbs.csv", encoding='utf-8', sep=';')
+    warehouses_fbo = pd.read_csv(uploaddir / f"{date_upload_files}_Остатки_fbo.csv", encoding='utf-8', sep=';')
+    warehouses_fbs = pd.read_csv(uploaddir / f"{date_upload_files}_Остатки_fbs.csv", encoding='utf-8', sep=';')
+    supply_order_items = pd.read_csv(uploaddir / f"{date_upload_files}_Поставки.csv", encoding='utf-8', sep=';')
 
     # Объединение данных заказов FBO и FBS
     order_fbo = order_fbo.loc[:, ~order_fbo.columns.isin(['Объемный вес товаров, кг'])]
@@ -49,29 +55,17 @@ def calcMetrics(date_upload_files = str(date.today())):
     # Обработка данных заказов
     order = order[['Артикул', 'Кластер доставки', 'Статус', 'Схема доставки', 'Сумма отправления']]
     order = order.rename(columns={'Кластер доставки': 'Кластер'})
-    # Добавление колонок для подсчета продаж и заказов
-    # order['Продажи'] = np.where(order['Статус'] != 'Отменен',1, 0)
-    # order['Продажи_только_Доставлен'] = np.where(order['Статус'] == 'Доставлен',1, 0)
-    # order['Продажи, руб.'] = np.where(order['Продажи'] == 1, order['Сумма отправления'], 0)
-    # order['Отмены, руб.'] = np.where((order['Статус'] == 'Отменён') | (order['Статус'] == 'Отменен'), order['Сумма отправления'],0)
-    # order['Продажи итого, руб.'] = order['Продажи, руб.'] - order['Отмены, руб.']
     order['Заказы'] = np.where(order['Статус'].notnull(), 1, 0)
     order['Заказы, руб.'] = np.where(order['Заказы'] == 1, order['Сумма отправления'], 0)
-    # order.drop(columns=['Статус'], inplace=True)
     pd.set_option('display.max_columns', None)
 
     # Объединение данных продаж FBO и FBS
     sales = pd.concat([sales_fbo, sales_fbs], axis=0)
-    # Обработка данных продаж
-    # sales['Продажи'] = np.where(sales['Статус'] == 'delivered',
-    #                             sales['Количество'],
-    #                             0)
     sales['Продажи'] = sales['Количество']
     sales = sales.rename(columns={'Кластер_доставки': 'Кластер'})
     sales = sales.loc[:, ['Артикул', 'Кластер', 'Продажи']]
 
     # Удаление ненужных колонок и фильтрация складских данных
-    # warehouses_fbo.drop(columns=['sku', 'Название товара', 'Резерв', 'Название склада'], inplace=True)
     # warehouses = warehouses[warehouses['Доступный к продаже товар'] != 0]
     warehouses_fbo = warehouses_fbo.loc[:, warehouses_fbo.columns.isin([
         'Артикул',
@@ -102,12 +96,33 @@ def calcMetrics(date_upload_files = str(date.today())):
     else:
         warehouses_fbs = pd.DataFrame(columns=['Артикул', 'Остатки_fbs'])
 
+    # Обработка данных каталога
+    catalog = catalog.rename(columns={
+        'Название товара': 'Наименование товара',
+        'Barcode': 'Штрихкод',
+    })
+    # Убираем лишние символы
+    for col in ['Артикул', 'Объемный вес, кг']:
+        catalog[col] = catalog[col].str.replace("'", "", regex=False)
+    # Переводим артикул в строку
+    catalog['Артикул'] = catalog['Артикул'].astype(str)
+    # Выбираем нужные колонки
+    catalog = catalog[[
+        'Артикул',
+        'SKU',
+        'Наименование товара',
+        'Штрихкод',
+        'Ozon Product ID',
+    ]]
+
     # Объединение данных заказов и складских остатков
-    #orderware = pd.merge(order, warehouses_fbo, how='outer', on = ['Артикул', 'Кластер'])
     orderware = pd.concat([order, sales, supply_order_items, warehouses_fbo, warehouses_fbs])
+    # Заполняем пропуски
     orderware = orderware.fillna(0)
-    # orderware = orderware.rename(columns={'Доступный к продаже товар': 'Остатки'})
-    orderware = orderware.groupby(['Артикул', 'Кластер']).agg(
+    # Переводим артикул в строку
+    orderware['Артикул'] = orderware['Артикул'].astype(str)
+    # Считаем сумму по артикулам и кластерам
+    orderware_by_cluster = orderware.groupby(['Артикул', 'Кластер']).agg(
         Продажи=('Продажи', 'sum'),
         Заказы=('Заказы', 'sum'),
         Заказы_руб=('Заказы, руб.', 'sum'),
@@ -117,76 +132,41 @@ def calcMetrics(date_upload_files = str(date.today())):
         # У остатков fbs нет разбивки по кластерам
         Остатки_fbs=('Остатки_fbs', 'sum')
     ).reset_index()
-    # Сохранение объединенных данных в файл Excel
-    # orderware.to_excel('orderware.xlsx')
-
-    # Обработка данных каталога
-    catalog = catalog.rename(columns={'Название товара': 'Наименование товара'})
-    for col in ['Артикул', 'Объемный вес, кг']:
-        catalog[col] = catalog[col].str.replace("'", "", regex=False)
-    # catalog['Категория'] = catalog['Наименование товара'].str.split(' |-').str[0]
-    # catalog['Размер'] = catalog['Артикул'].str.extract(r'_([^_]+)$')
-    # catalog['Размер'] = np.where((catalog['Категория'] == 'Бейсболка') |
-    #                              (catalog['Категория'] == 'Платч') |
-    #                              (catalog['Категория'] == 'Палантин'),
-    #                              0,
-    #                              catalog['Размер']
-    # )
-    # catalog['Barcode'] = pd.to_numeric(catalog['Barcode'], errors='coerce')
-    # catalog['Barcode'] = catalog['Barcode'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
-    # catalog['Barcode'] = catalog['Barcode'].apply(lambda x: str(x).split('.')[0] if pd.notnull(x) else x).astype('Int64')
-    catalog = catalog[['Артикул', 'Наименование товара', 'Barcode', 'Ozon Product ID', 'SKU']]
-    catalog.rename(columns={'Barcode': 'Штрихкод'}, inplace=True)
-
-    # Объединение данных каталога с данными о заказах и остатках
-    merged_df = catalog.merge(orderware, on='Артикул', how='left')
-    merged_df = merged_df.fillna(0)
-    # Сортировка для наглядности
-    # merged_df = merged_df.sort_values(by=['Заказы', 'Остатки'], ascending=False)
-
-    # Фильтрация данных по наличию кластеров
-    claster_report = merged_df[merged_df['Кластер'] != 0]
-
-    # Создание сводного отчета
-    summary = merged_df.groupby(['Артикул', 'SKU', 'Ozon Product ID', 'Наименование товара', 'Штрихкод',]).agg(
+    # Считаем сумму по артикулам
+    summary = orderware.groupby(['Артикул']).agg(
         Продажи=('Продажи', 'sum'),
         Заказы=('Заказы', 'sum'),
-        Заказы_руб=('Заказы_руб', 'sum'),
-        # Товары_в_пути=('Товары_в_пути', 'sum'),
+        Заказы_руб=('Заказы, руб.', 'sum'),
+        # Товары_в_пути=('Товары в пути', 'sum'),
         ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
         Остатки=('Остатки', 'sum'),
+        # У остатков fbs нет разбивки по кластерам
         Остатки_fbs=('Остатки_fbs', 'sum')
     ).reset_index()
-    # # Если есть заявки на поставку, добавляем их в отчет
-    # if supply_order_items.shape[0] > 0:
-    #     supply_order_items_total = supply_order_items.groupby('sku').agg(
-    #         ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('quantity', 'sum')
-    #     ).reset_index()
-    #     supply_order_items_total.rename(columns={'sku': 'SKU'}, inplace=True)
-    #     summary = summary.merge(supply_order_items_total, how='left', on='SKU')
-    #     summary = summary.fillna(0)
-    #     summary['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = summary['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'].astype(float)
-    # else:
-    #     summary['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = 0
-    # Если есть остатки на FBS складах, добавляем их в отчет
-    # if warehouses_fbs.shape[0] > 0:
-    #     warehouses_fbs.rename(columns={'Доступно на моем складе, шт': 'Остатки_fbs'}, inplace=True)
-    #     warehouses_fbs_total = warehouses_fbs.groupby('Артикул').agg(
-    #         Остатки_fbs=('Остатки_fbs', 'sum')
-    #     ).reset_index()
-    #     summary = summary.merge(warehouses_fbs_total, how='left', on='Артикул')
-    #     summary = summary.fillna(0)
-    # else:
-    #     summary['Остатки_fbs'] = 0
 
-    # Сортировка сводного отчета для наглядности
-    summary = summary.sort_values(by=['Артикул'])
-    claster_report = claster_report.sort_values(by=['Артикул', 'Кластер'])
 
+    # Объединение данных каталога с данными по кластерам
+    catalog_with_orderware = catalog.merge(orderware_by_cluster, on='Артикул', how='left')
+    catalog_with_orderware = catalog_with_orderware.fillna(0)
+    # Сортировка для наглядности
+    # catalog_with_orderware = catalog_with_orderware.sort_values(by=['Заказы', 'Остатки'], ascending=False)
+    catalog_with_orderware = catalog_with_orderware.sort_values(by=['Артикул', 'Кластер'], ascending=True)
+
+    # Объединение данных каталога с данными по артикулам
+    catalog_with_summary = catalog.merge(summary, on='Артикул', how='left')
+    catalog_with_summary = catalog_with_summary.fillna(0)
+    # Сортировка для наглядности
+    # catalog_with_orderware = catalog_with_orderware.sort_values(by=['Заказы', 'Остатки'], ascending=False)
+    catalog_with_summary = catalog_with_summary.sort_values(by=['Артикул'], ascending=True)
+
+
+    # Фильтрация данных по наличию кластеров
+    claster_report = catalog_with_orderware[catalog_with_orderware['Кластер'] != 0].reset_index(drop=True)
     # Сохранение итоговых данных в файл Excel с несколькими листами
-    writer = pd.ExcelWriter(f"{metricsdir}/{date_upload_files}_МетрикиИтоги.xlsx", engine='xlsxwriter')
+    metrics_file_name = metricsdir / f"{date_upload_files}_МетрикиИтоги.xlsx"
+    writer = pd.ExcelWriter(metrics_file_name, engine='xlsxwriter')
 
-    summary.to_excel(writer, sheet_name='summary', index=False)
+    catalog_with_summary.to_excel(writer, sheet_name='summary', index=False)
     claster_report.to_excel(writer, sheet_name='claster_report', index=False)
 
     # Закрытие записи в файл Excel

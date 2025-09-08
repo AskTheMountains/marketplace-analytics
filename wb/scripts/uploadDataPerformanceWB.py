@@ -190,7 +190,7 @@ def get_companies_info(headers, df_company_list):
 
     return result_companies_info
 
-
+# Функция выгрузки статистики кампаний
 def get_company_stats(
         headers,
         result_companies_info,

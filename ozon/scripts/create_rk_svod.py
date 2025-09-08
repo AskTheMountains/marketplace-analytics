@@ -77,14 +77,10 @@ def create_client_rk_svod_dir(client_name, date_report=str(date.today())):
     #     f"{BASE_DIR}/"
     #     f"Clients/{client_name}/ClientSvod/"
     #     f"{date_report}/{date_report}_Кампании_API"
-    # )
-    client_rk_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/ClientRKSvod/"
-    )
-    if not os.path.exists(client_rk_path):
-        os.makedirs(client_rk_path, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{client_rk_path}")
+    client_rk_path = BASE_DIR / "Clients" / client_name / "ClientRKSvod"
+    if not client_rk_path.exists():
+        client_rk_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Creating Companies Upload directory: {client_rk_path}")
 
     return client_rk_path
 
@@ -95,15 +91,12 @@ def create_upload_statistic_dir(client_name, date_report=str(date.today())):
     #     f"{BASE_DIR}/"
     #     f"Clients/{client_name}/ClientSvod/"
     #     f"{date_report}/{date_report}_Кампании_API"
-    # )
     upload_path_statistic = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_report}/{date_report}_Кампании_API"
+        BASE_DIR / "Clients" / client_name / "CampaignsReport" / date_report / f"{date_report}_Кампании_API"
     )
-    if not os.path.exists(upload_path_statistic):
-        os.makedirs(upload_path_statistic, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{upload_path_statistic}")
+    if not upload_path_statistic.exists():
+        upload_path_statistic.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Creating Companies Upload directory: {upload_path_statistic}")
 
     return upload_path_statistic
 
@@ -185,17 +178,11 @@ def create_input_companies(promotion_companies, df_date_range):
 # Функция проверки наличия отчета по РК
 def check_rk_report_exist(client_name, date_report=str(date.today())):
     # Директория, где хранятся отчеты по РК
-    rk_report_dir = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_report}/"
-    )
+    rk_report_dir = BASE_DIR / "Clients" / client_name / "CampaignsReport" / date_report
     # Имя файла с отчетом РК
-    rk_file_name = (
-        f"{date_report}_Отчет_РК_{client_name}_Ozon.xlsx"
-    )
+    rk_file_name = f"{date_report}_Отчет_РК_{client_name}_Ozon.xlsx"
     # Полный путь к файлу
-    filepath_rk_file = Path(f"{rk_report_dir}/{rk_file_name}")
+    filepath_rk_file = rk_report_dir / rk_file_name
 
     # Проверяем наличие файла в директории
     rk_report_exists = filepath_rk_file.exists()
@@ -445,16 +432,15 @@ def save_and_format_excel(
         date_report,
         df_dates
     ):
-    # Формируем директорию для сохранения
-    path_report = (
-        f"{client_rk_svod_dir}/{date_report}/"
-    )
-    name_report = (
-        f"{date_report}_Сводная_РК_{client_name}_Ozon.xlsx"
-    )
-    file_name_report = f"{path_report}/{name_report}"
-    if not os.path.exists(path_report):
-        os.makedirs(path_report, exist_ok=True)
+    # Формируем директорию для сохранения итогового отчета
+    path_report = client_rk_svod_dir / date_report
+    # Формируем имя файла отчета
+    name_report = f"{date_report}_Сводная_РК_{client_name}_Ozon.xlsx"
+    # Полный путь к файлу отчета
+    file_name_report = path_report / name_report
+    # Если директории не существует — создаем её
+    if not path_report.exists():
+        path_report.mkdir(parents=True, exist_ok=True)
     # Формируем даты для названия листа
     date_start_excel = (
         pd.to_datetime(df_dates['date_start'])

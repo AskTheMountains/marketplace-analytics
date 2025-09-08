@@ -16,6 +16,7 @@ import re
 from loguru import logger
 import getopt
 import sys
+from pathlib import Path
 
 
 # Файл с настройками и номером клиента
@@ -263,20 +264,23 @@ def getCompanyStatistics(
             # Если csv, то просто сохраняем файл
             if 'csv' in report_type:
                 file_type = 'csv'
-                with open(f"{companies_stats_dir}/{file_name}", 'wb') as w:
+                file_path = companies_stats_dir / file_name
+                with open(file_path, 'wb') as w:
                     w.write(resp_data_report.content)
-                    w.close()
             # Если zip, сохраняем архив, затем распаковываем его
             else:
                 file_type = 'zip'
-                with open(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'wb') as w:
+                zip_file_path = companies_stats_dir / f"{str(date.today())}_Кампании_{chunk}.{file_type}"
+                with open(zip_file_path, 'wb') as w:
                     w.write(resp_data_report.content)
-                    w.close()
-                with ZipFile(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'r') as zip_ref:
+                with ZipFile(zip_file_path, 'r') as zip_ref:
                     zip_ref.extractall(companies_stats_dir)
 
             # Увеличиваем число выгруженных кампаний
-            uploaded_companies_amount =+ current_companies_amount
+            uploaded_companies_amount += current_companies_amount
+            # Сброс task_id для следующего диапазона кампаний
+            task_id = None
+
 
 
 # Отчёт по товарам в продвижении в поиске
@@ -309,12 +313,14 @@ def getProductsSearchPromote(auth_token, date_start, date_end):
         params_get_report = {
             "UUID": resp_data_report_status['UUID']
         }
-        resp_data_report = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/report",
-                              params=params_get_report,
-                              headers=headers)
-        with open(f"{uploaddir_today}/{str(date.today())}_Отчет_Товары_Продвижение.csv", 'wb') as w:
+        resp_data_report = requests.get(
+            f"{ozon_performance_api_url}:443/api/client/statistics/report",
+            params=params_get_report,
+            headers=headers
+        )
+        file_path = uploaddir_today / f"{str(date.today())}_Отчет_Товары_Продвижение.csv"
+        with open(file_path, 'wb') as w:
             w.write(resp_data_report.content)
-            w.close()
         logger.info("Done uploading products promote report")
     else:
         logger.info("Error creating products promote report")
@@ -432,18 +438,18 @@ def get_search_promo_orders(
         # Если csv, то просто сохраняем файл
         if 'csv' in report_type:
             file_type = 'csv'
-            with open(f"{companies_stats_dir}/{file_name}", 'wb') as w:
+            file_path = companies_stats_dir / file_name
+            with open(file_path, 'wb') as w:
                 w.write(resp_data_report.content)
-                w.close()
                 logger.info(f"Pay for orders report saved: {file_name}")
         # Если zip, сохраняем архив, затем распаковываем его
         else:
             raise ValueError(f'Unknown report type: {report_type}')
             # file_type = 'zip'
-            # with open(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'wb') as w:
+            # zip_file_path = companies_stats_dir / f"{str(date.today())}_Кампании_{chunk}.{file_type}"
+            # with open(zip_file_path, 'wb') as w:
             #     w.write(resp_data_report.content)
-            #     w.close()
-            # with ZipFile(f"{companies_stats_dir}/{str(date.today())}_Кампании_{chunk}.{file_type}", 'r') as zip_ref:
+            # with ZipFile(zip_file_path, 'r') as zip_ref:
             #     zip_ref.extractall(companies_stats_dir)
 
 
@@ -492,18 +498,21 @@ def upload_data_performane(
 
 
 # %% Вызов всех функций
-if __name__ == '__main__':
-    # создаем отдельную папку для текущей выгрузки
-    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFilesPerformance"
-    if not os.path.exists(uploaddir):
-        os.makedirs(uploaddir)
-    uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
-    if os.path.exists(uploaddir_today):
-        shutil. rmtree(uploaddir_today)
-    # new_dir = os.mkdir(f"{uploaddir}/UploadFiles_"+str(date.today()))
-    os.mkdir(uploaddir_today)
-    companies_stats_dir = f"{uploaddir_today}/{str(date.today())}_Кампании"
-    os.mkdir(companies_stats_dir)
+if __name__ == "__main__":
+    # Создаем директорию для файлов выгрузки по API Performance
+    uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFilesPerformance"
+    uploaddir.mkdir(parents=True, exist_ok=True)
+
+    # Создаем директорию для выгрузки за сегодняшний день
+    uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
+    if uploaddir_today.exists():
+        # Если директория уже существует, удаляем её и создаём заново
+        shutil.rmtree(uploaddir_today)
+    uploaddir_today.mkdir()
+
+    # Создаем директорию для статистики кампаний
+    companies_stats_dir = uploaddir_today / f"{str(date.today())}_Кампании"
+    companies_stats_dir.mkdir()
 
     date_start = '2025-08-17T00:00:00Z'
     date_end = '2025-08-27T23:59:59Z'

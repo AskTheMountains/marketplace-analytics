@@ -6,6 +6,7 @@ from datetime import date,datetime,timedelta
 import pandas as pd
 import shutil
 import os
+from pathlib import Path
 import csv
 import numpy as np
 import re
@@ -26,10 +27,22 @@ from ozon.scripts.constants import (
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
 
+
+# Определяем имя директории для загрузки файлов
+uploaddir = (
+    marketplace_dir_name
+    / "Clients"
+    / client_name
+    / "UploadFiles"
+)
+uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
+
+
 # Пример использования
 def usage():
    print("Usage: script.py -days=31")
    return
+
 
 def read_params():
     # Обработка опций и аргументов
@@ -61,15 +74,20 @@ def read_params():
 
 
 # Функция создания директорий для текущей выгрузки
-def create_dirs():
-    # создаем отдельную папку для текущей выгрузки
-    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-    if not os.path.exists(uploaddir):
-        os.makedirs(uploaddir)
-    uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
-    if os.path.exists(uploaddir_today):
-        shutil. rmtree(uploaddir_today)
-    new_dir = os.mkdir(f"{uploaddir}/UploadFiles_"+str(date.today()))
+def create_upload_dir():
+    # Определяем имя директории для загрузки файлов
+    uploaddir = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+    )
+    uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
+    # Если директории нет, то создаем её
+    if not uploaddir_today.exists():
+        uploaddir_today.mkdir(parents=True, exist_ok=True)
+
+    return uploaddir_today
 
 
 def generateDates(days_ago = 30):
@@ -112,7 +130,8 @@ def save_dates_to_csv(date_start, date_end):
                              'date_end_file': date_end_file,
                              'date_start_file': date_start_file},
                              index=[0])
-    df_dates.to_csv(f"{uploaddir_today}/{str(date.today())}_dates_from_to.csv", sep=';', index=False)
+    path_save = uploaddir_today / f"{str(date.today())}_dates_from_to.csv"
+    df_dates.to_csv(path_save, sep=';', index=False)
 
 
 # Отчет по товарам (список товаров)
@@ -152,7 +171,8 @@ def getOzonProduct(headers, to_save=True):
         # Убираем лишние символы из артикула
         df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
         if to_save:
-            df_products.to_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
+            file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
+            df_products.to_csv(file_name_products, sep=';')
         else:
             return df_products
     else:
@@ -179,6 +199,9 @@ def get_products_info(headers, df_products=None):
     step = 1000
     df_products_['chunks'] = df_products_.index // step + 1
 
+    # Убираем скрытые товары
+    df_products_ = df_products_.loc[df_products_['SKU'] > 0, :]
+
     # df для информации о товарах
     df_products_info_api = pd.DataFrame()
 
@@ -187,13 +210,13 @@ def get_products_info(headers, df_products=None):
         # Делаем выборку первой 1000 товаров
         product_ids = (
             df_products_
-            .loc[df_products_['chunks'] == chunk, 'SKU']
-            .astype(int)
+            .loc[df_products_['chunks'] == chunk, 'Артикул']
+            .astype(str)
             .to_list()
         )
         # Формируем параметры запроса
         params = json.dumps({
-            "sku": product_ids,
+            "offer_id": product_ids,
             # "visibility": "ALL"
         })
         # Делаем запрос
@@ -377,6 +400,12 @@ def get_products_attributes(headers, df_products=None):
         'offer_id': 'Артикул',
         'sku': 'SKU',
         'id': 'Ozon Product ID',
+        'height': 'Высота',
+        'depth': 'Глубина',
+        'width': 'Ширина',
+        'dimension_unit': 'Единицы измерения габаритов',
+        'weight': 'Вес',
+        'weight_unit': 'Единицы измерения веса',
     })
     # Получаем информацию о количестве моделей в артикуле
     df_products_model_info = (
@@ -389,14 +418,27 @@ def get_products_attributes(headers, df_products=None):
         .rename(columns={
             'count': 'model_count'
         })
-        .loc[:, ['Артикул', 'model_id', 'model_count', 'attributes']]
+        .loc[:,[
+                 'Артикул',
+                 'model_id',
+                 'model_count',
+                 'Высота',
+                 'Глубина',
+                 'Ширина',
+                 'Единицы измерения габаритов',
+                 'Вес',
+                 'Единицы измерения веса',
+                 'type_id',
+                 'description_category_id',
+                 'attributes'
+        ]]
     )
 
     # Получаем df с характеристиками товара
     df_attributes_all = (
             df_products_model_info
             # Выбираем нужные колонки
-            .loc[:, ['Артикул', 'model_id', 'model_count', 'attributes']]
+            .loc[:, ['Артикул', 'model_id', 'model_count', 'type_id', 'description_category_id', 'attributes']]
             # Распаковываем столбец со словарями характеристик товаров
             .explode(['attributes'])
             # Делаем сброс индекса после распаковки
@@ -433,6 +475,10 @@ def get_products_attributes(headers, df_products=None):
     product_attributes_dict = {
         'Цвет': 10096,
         'Размер': 9533,
+        # 'Длина мм': 9802,
+        # 'Высота мм': 6606,
+        # 'Ширина мм': 6605,
+        # 'Вес товара г': 4383,
     }
 
     # df, в который будем добавлять характеристики товаров
@@ -467,12 +513,16 @@ def get_products_attributes(headers, df_products=None):
         # Заполняем пропуски в атрибутах
         df_products_attributes_final[attribute_name] = df_products_attributes_final[attribute_name].fillna(0)
 
+    # Определяем список нужных колонок для итогового DataFrame
+    required_columns = [
+        'Артикул', 'model_id', 'model_count', 'Высота', 'Глубина', 'Ширина',
+        'Единицы измерения габаритов', 'Вес', 'Единицы измерения веса'
+    ] + list(product_attributes_dict.keys())
+
     # Выбираем нужные колонки
     df_products_attributes_final = (
         df_products_attributes_final
-        .loc[:, df_products_attributes_final.columns.isin(
-            ['Артикул', 'model_id', 'model_count'] + list(product_attributes_dict.keys())
-        )]
+        .loc[:, required_columns]
     )
 
     # # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
@@ -483,6 +533,53 @@ def get_products_attributes(headers, df_products=None):
 
     # return  df_products_model_info
     return df_products_attributes_final
+
+
+# Описание характеристик товаров (не используется, вспомогательно для справки)
+def get_attributes_description(headers, df_attributes_all):
+    # Создаем уникальные значение id описание и id типа товара
+    df_attributes_descriptions_ids = (
+        df_attributes_all
+        .loc[:, ['type_id', 'description_category_id']]
+        .copy()
+        .drop_duplicates(keep='first')
+        .reset_index(drop=True)
+    )
+
+    # df, куда будем помещать описания характеристик
+    df_attributes_descriptions_api = pd.DataFrame()
+
+    # Цикл по каждой характеристике
+    for idx, row in df_attributes_descriptions_ids.iterrows():
+        # Выбираем id типа товара
+        type_id = int(row['type_id'])
+        # Выбираем id описания характеристики
+        description_category_id = int(row['description_category_id'])
+        # Формируем параметры запроса
+        params_category_descriptions = json.dumps({
+            'description_category_id':  description_category_id,
+            'type_id': type_id
+        })
+        # Отправляем запрос
+        resp_data_description_category = requests.post(
+            f'{ozon_seller_api_url}/v1/description-category/attribute',
+            headers=headers,
+            data=params_category_descriptions
+        )
+        # Если запрос прошел успешно, создаем df из результата запроса
+        if resp_data_description_category.status_code == 200:
+            tmp_df_category_description = pd.DataFrame(resp_data_description_category.json()['result'])
+            # Объединяем с предыдущим проходом цикла
+            df_attributes_descriptions_api = pd.concat([
+                df_attributes_descriptions_api,
+                tmp_df_category_description
+            ], ignore_index=True)
+
+        # Если запрос прошел с ошибкой, выводим текст ошибки:
+        else:
+            error_text = resp_data_description_category.text
+            logger.error(f"\nError getting attributes descriptions:\n {error_text}")
+
 
 
 # Функция объединения различных данных по товарам
@@ -526,8 +623,9 @@ def get_ozon_product(headers, to_save=True):
     )
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
+        file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
         df_products_all_data.to_csv(
-            f"{uploaddir_today}/{str(date.today())}_Товары.csv",
+            file_name_products,
             sep=';',
             encoding='utf-8-sig',
             index=False
@@ -577,13 +675,17 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
 
     # Если стоит флаг сохранения, то сохраняем файл
     if to_save:
+        # Задаем имя файла для заказов
+        file_name_orders = (
+            uploaddir_today /
+            f"{str(date.today())}_Заказы_temp_{delivery_schema}.csv"
+        )
         # Пишем заказы во временнй файлик
         r = requests.get(path_csv, stream=True)
         if r.status_code == 200:
-            # with open(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv', 'wb') as f:
             df_orders = pd.read_csv(path_csv, sep=';')
             df_orders.to_csv(
-                f"{uploaddir_today}/{str(date.today())}_Заказы_temp_{delivery_schema}.csv",
+                file_name_orders,
                 sep=';',
                 encoding='utf-8-sig',
                 index=False
@@ -600,9 +702,18 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
 
 # Кластеры отправлений (FBO)
 def getFinalOrders_fbo(headers):
-    # забираем кластер по номеру заказа
-    # df = pd.read_csv(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv',delimiter=";")
-    df = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbo.csv", sep=";")
+    # Имя файла с номерами заказов
+    file_name_tmp_orders = (
+        uploaddir_today /
+        f"{str(date.today())}_Заказы_temp_fbo.csv"
+    )
+    # Загружаем данные по заказам
+    df = pd.read_csv(file_name_tmp_orders, sep=";")
+    # Имя файла для заказов с кластерами
+    file_name_final_orders = (
+        uploaddir_today /
+        f"{str(date.today())}_Заказы_fbo.csv"
+    )
     posting_numbers = df['Номер отправления'].to_list()
     # Если были заказы FBO, начинаем выгружать по ним кластеры
     if len(posting_numbers) > 0:
@@ -638,9 +749,7 @@ def getFinalOrders_fbo(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBO orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-
-                #df.to_csv(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv',sep=";", index = False)
-                df.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbo.csv", sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False)
             except Exception as e:
                 print(f"{e}")
                 logger.info("Connection is lost. Waiting  2 minites and continue connection")
@@ -659,20 +768,30 @@ def getFinalOrders_fbo(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBO orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-                # df.to_csv(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv',sep=";", index = False)
-        # os.remove(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv')
-                df.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbo.csv",sep=";", index = False)
-        #os.remove(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbo.csv")
+                df.to_csv(file_name_final_orders, sep=";", index = False)
+
 
     # Если заказов FBO не было, сохраняем пустой df
     else:
         df_fbo_orders = pd.DataFrame(columns = ['Артикул', 'Кластер доставки', 'Статус', 'Сумма отправления', 'Объемный вес товаров, кг'])
-        df_fbo_orders.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbo.csv",sep=";", index = False)
+        df_fbo_orders.to_csv(file_name_final_orders, sep=";", index = False)
 
 
 # Кластеры отправлений (FBS)
 def getFinalOrders_fbs(headers):
-    df = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbs.csv", sep=";")
+    # Имя файла с загруженными заказами
+    file_name_tmp_orders = (
+        uploaddir_today /
+        f"{str(date.today())}_Заказы_temp_fbs.csv"
+    )
+    # Имя файла для заказов с кластерами
+    file_name_final_orders = (
+        uploaddir_today /
+        f"{str(date.today())}_Заказы_fbs.csv"
+    )
+    # Загружаем данные по заказам
+    df = pd.read_csv(file_name_tmp_orders, sep=";")
+    # Создаем столбцы с информацией по кластерам
     df['Кластер отправления'] = ''
     df['Кластер доставки'] = ''
     df['Склад'] = ''
@@ -708,9 +827,7 @@ def getFinalOrders_fbs(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBS orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-
-                #df.to_csv(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv',sep=";", index = False)
-                df.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbs.csv", sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False)
             except Exception as e:
                 print(f"{e}")
                 logger.info("Connection is lost. Waiting  2 minites and continue connection")
@@ -729,17 +846,33 @@ def getFinalOrders_fbs(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBS orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-            # df.to_csv(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv',sep=";", index = False)
-    # os.remove(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Заказы_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv')
-        df.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbs.csv",sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False)
     else:
-        df.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы_fbs.csv",sep=";", index = False)
+        df.to_csv(file_name_final_orders, sep=";", index = False)
 
     #os.remove(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbs.csv")
 
 
 # Остатки fbo (старый метод)
 def getStockRemainders_fbo(headers):
+
+    # Задаем имя файла для сохранения
+    file_name_stock_rem_fbo = (
+        uploaddir_today /
+        f"{str(date.today())}_Остатки_fbo.csv"
+    )
+    # Задаем имя файла для временных остатков
+    file_name_stock_rem_fbo_temp = (
+        uploaddir_today /
+        f"{str(date.today())}_Остатки_fbo_temp.csv"
+    )
+    # Задаем имя файла для обработанных данных по остаткам
+    file_name_stock_rem_fbo_processed = (
+        uploaddir_today /
+        f"{str(date.today())}_Остатки_fbo_all.csv"
+    )
+
+
     logger.info("Upload stock remainders on  "+ str(date.today()))
     # df, куда будет помещаться итоговый результат
     df_stock_rem_fbo = pd.DataFrame()
@@ -755,7 +888,7 @@ def getStockRemainders_fbo(headers):
         # Если есть остатки, то сохраняем результат запроса в файл и начинаем обработку файла
         if result.status_code == 200 and result.json()['result']['rows']:
             remind = result.json()
-            with open(f"{uploaddir_today}/{str(date.today())}_Остатки_temp.csv", "a", newline="",encoding="utf-8-sig") as f:
+            with open(file_name_stock_rem_fbo_temp, "a", newline="",encoding="utf-8-sig") as f:
             # with open(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Остатки_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv', "a", newline="",encoding="utf-8-sig") as f:
                 w = csv.DictWriter(f, remind['result']['rows'][0].keys(), delimiter =',')
                 w.writeheader()
@@ -765,19 +898,19 @@ def getStockRemainders_fbo(headers):
         # Если остатков нет, сохраняем пустой файл
         else:
             df_stock_rem_fbo = pd.DataFrame(columns=['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв'])
-            df_stock_rem_fbo.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки.csv", sep=";", index = False)
+            df_stock_rem_fbo.to_csv(file_name_stock_rem_fbo, sep=";", index = False)
 
     # Если есть остатки, начинаем обработку файла с остатками
-    if os.path.exists(f"{uploaddir_today}/{str(date.today())}_Остатки_temp.csv"):
+    if os.path.exists(file_name_stock_rem_fbo_temp):
         headerList = ['sku','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв']
-        df = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Остатки_temp.csv", delimiter=",")
+        df = pd.read_csv(file_name_stock_rem_fbo_temp, delimiter=",")
         if 'idc' in df.columns:
             df.drop(columns=['idc'], inplace=True)
         df = df[df['sku'] != 'sku']
-        df.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки_all_temp.csv", sep=";",header=headerList)
+        df.to_csv(file_name_stock_rem_fbo_processed, sep=";",header=headerList)
         # джойним остатки с кластерами и записываем в файл с остатками
         colnames=['sku','warehouse_name','item_code','item_name','promised_amount','free_to_sell_amount','reserved_amount']
-        df_stok_rem = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Остатки_all_temp.csv", delimiter=";",names=colnames,skiprows=1)
+        df_stok_rem = pd.read_csv(file_name_stock_rem_fbo_temp, delimiter=";",names=colnames,skiprows=1)
         colnames_df2 = ['warehouse_name', 'cluster']
         df_cluster = pd.read_csv('clasters_warehouse.csv',delimiter=";", names=colnames_df2,skiprows=1)
         data_with_cluster = df_stok_rem.merge(df_cluster, left_on='warehouse_name',right_on='warehouse_name',how='left')
@@ -785,9 +918,9 @@ def getStockRemainders_fbo(headers):
         headerList = ['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв']
         # Кластеры, которых нет в списке, помечаем как "Неизвестный кластер"
         new_df['cluster'] = new_df['cluster'].fillna('Неизвестный кластер')
-        new_df.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки.csv",sep=";",header=headerList, index = False)
-        os.remove(f"{uploaddir_today}/{str(date.today())}_Остатки_all_temp.csv")
-        os.remove(f"{uploaddir_today}/{str(date.today())}_Остатки_temp.csv")
+        new_df.to_csv(file_name_stock_rem_fbo,sep=";",header=headerList, index = False)
+        os.remove(file_name_stock_rem_fbo_temp)
+        os.remove(file_name_stock_rem_fbo_processed)
         # Выводим предупреждение, если есть кластеры, отсутствующие в файле
         warehouse_list_stock_rem = pd.DataFrame({'warehouse_name':df_stok_rem['warehouse_name'].unique()})
         df_all_clusters = pd.merge(df_cluster, warehouse_list_stock_rem,
@@ -804,9 +937,19 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
 
     logger.info("Uploading FBO reminders")
 
+    # Задаем имя файла для товаров
+    file_name_products = (
+        uploaddir_today /
+        f"{str(date.today())}_Товары.csv"
+    )
+    # Задаем имя файла для сохранения остатков
+    file_name_stock_rem_fbo = (
+        uploaddir_today /
+        f"{str(date.today())}_Остатки_fbo.csv"
+    )
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
-        df_products_ = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
+        df_products_ = pd.read_csv(file_name_products, sep=';')
     # Если список товаров задан, берем его из переданного аргумента
     else:
         df_products_ = df_products.copy()
@@ -883,7 +1026,7 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
         df_fbo_reminders = pd.DataFrame(columns=list(rename_dict.values()))
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
-        df_fbo_reminders.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки.csv",sep=";", index = False)
+        df_fbo_reminders.to_csv(file_name_stock_rem_fbo, sep=";", index=False)
 
     # иначе - возвращаем df с товарами
     else:
@@ -892,6 +1035,13 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
 
 # Остатки FBS
 def getStockReminders_fbs(headers, to_save=True):
+
+    # Задаем имя файла для остатков FBS
+    file_name_stock_rem_fbs = (
+        uploaddir_today /
+        f"{str(date.today())}_Остатки_fbs.csv"
+    )
+
     # Колонки, которые всегда возвращаются по апи в таком порядке
     fbs_reminders_columns = ['Идентификатор склада', 'Название склада', 'Артикул', 'Наименование товара', 'Доступно на моем складе, шт', 'Зарезервировано на моем складе, шт']
     # Получаем список складов FBS
@@ -902,8 +1052,10 @@ def getStockReminders_fbs(headers, to_save=True):
         fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
     # Если есть склады FBS, забираем по ним остатки
     else:
-        params_warehouses = json.dumps({"language": "DEFAULT",
-                                        "warehouseId": fbs_warehouses['warehouse_id'].to_list()})
+        params_warehouses = json.dumps({
+            "language": "DEFAULT",
+            "warehouseId": fbs_warehouses['warehouse_id'].to_list()
+        })
         result = requests.post(f"{ozon_seller_api_url}/v1/report/warehouse/stock", headers=headers, data=params_warehouses).json()
         code_id = json.dumps({
         "code": result["result"]["code"]
@@ -929,7 +1081,7 @@ def getStockReminders_fbs(headers, to_save=True):
 
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
-        df_fbs_reminders.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки_fbs.csv",sep=";", encoding='utf-8-sig', index = False)
+        df_fbs_reminders.to_csv(file_name_stock_rem_fbs, sep=";", encoding='utf-8-sig', index=False)
     # иначе - возвращаем df с товарами
     else:
         return df_fbs_reminders
@@ -982,6 +1134,12 @@ def getTransactionReport(headers, date_start, date_end):
     date_range_df = pd.DataFrame(intervals)
     # GPT END ----
 
+    # Задаем имя файла для списка транзакций
+    file_name_transactions = (
+        uploaddir_today /
+        f"{str(date.today())}_Транзакции.csv"
+    )
+
     # df, в который будем помещать результаты
     df_transaction_list = pd.DataFrame()
 
@@ -1027,14 +1185,24 @@ def getTransactionReport(headers, date_start, date_end):
     df_transaction_list['items_amount'] = df_transaction_list['items'].apply(lambda x: len(x))
     df_transaction_list['services_amount'] = df_transaction_list['services'].apply(lambda x: len(x))
     # Сохраняем csv
-    df_transaction_list.to_csv(f"{uploaddir_today}/{str(date.today())}_Список_транзакций.csv", sep=';', index=False)
+    df_transaction_list.to_csv(file_name_transactions, sep=';', index=False)
 
 
 # Продажи FBO
 def getSalesFBO(headers):
+    # Задаем имя файла для списка транзакций
+    file_name_transactions = (
+        uploaddir_today /
+        f"{str(date.today())}_Транзакции.csv"
+    )
+    # Задаем имя файла для продаж FBO
+    file_name_sales_fbo = (
+        uploaddir_today /
+        f"{str(date.today())}_Продажи_fbo.csv"
+    )
     # Считываем файл со списком транзакций
     # BUG: при чтении excel все словари в колонках переводятся в строки. Приходится их переводить обратно при помощи eval()
-    df_transaction_list = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Список_транзакций.csv", sep=';')
+    df_transaction_list = pd.read_csv(file_name_transactions, sep=';')
     df_transaction_list['posting'] = df_transaction_list['posting'].apply(literal_eval)
     # Достаем информацию об отправлениях из списка транзакций
     postings = pd.json_normalize(df_transaction_list['posting'])
@@ -1066,13 +1234,13 @@ def getSalesFBO(headers):
         total_posting_count = len(postings_fbo['posting_number'])
         for posting_number in postings_fbo['posting_number']:
             params_fbo = json.dumps({
-                        "posting_number": posting_number,
-                        "translit": True,
-                        "with": {
-                        "analytics_data": True,
-                        "financial_data": True
-                        }
-                    })
+                "posting_number": posting_number,
+                "translit": True,
+                "with": {
+                    "analytics_data": True,
+                    "financial_data": True
+                }
+            })
             result = requests.post(f"{ozon_seller_api_url}/v2/posting/fbo/get",headers=headers, data=params_fbo).json()
             # Получаем дату заказа (для логов)
             orderDate = str(re.findall(r'[0-9]*-[0-9]*-[0-9][0-9]',result['result']['created_at']))
@@ -1098,11 +1266,12 @@ def getSalesFBO(headers):
             # time.sleep(3)
 
         # Переименовываем некоторые колонки для удобства и убираем лишние
-        sales_fbo.rename(columns={'offer_id': 'Артикул',
-                                  'name': 'Название товара',
-                                  'quantity': 'Количество',
-                                  'currency_code': 'Валюта отправления'},
-                        inplace=True)
+        sales_fbo = sales_fbo.rename(columns={
+            'offer_id': 'Артикул',
+            'name': 'Название товара',
+            'quantity': 'Количество',
+            'currency_code': 'Валюта отправления'
+        })
         # Указываем, что схема доставки FBO
         sales_fbo['Схема доставки'] = 'FBO'
         sales_fbo = sales_fbo.loc[:, ~sales_fbo.columns.isin(['price', 'digital_codes'])]
@@ -1112,14 +1281,24 @@ def getSalesFBO(headers):
        'Валюта отправления', 'Номер_заказа', 'Номер_отправления', 'Склад',
        'Кластер_отправления', 'Кластер_доставки', 'Сумма_отправления', 'Схема доставки', 'Статус']
         sales_fbo = pd.DataFrame(columns=colnames_sales_fbo)
-    sales_fbo.to_csv(f"{uploaddir_today}/{str(date.today())}_Продажи_fbo.csv", sep=';', index=False)
+    sales_fbo.to_csv(file_name_sales_fbo, sep=';', index=False)
 
 
 # Продажи FBS
 def getSalesFBS(headers):
+    # Задаем имя файла для списка транзакций
+    file_name_transactions = (
+        uploaddir_today /
+        f"{str(date.today())}_Транзакции.csv"
+    )
+    # Задаем имя файла для продаж FBS
+    file_name_sales_fbs = (
+        uploaddir_today /
+        f"{str(date.today())}_Продажи_fbs.csv"
+    )
     # Считываем файл со списком транзакций
     # BUG: при чтении excel все словари в колонках переводятся в строки. Приходится их переводить обратно при помощи eval()
-    df_transaction_list = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Список_транзакций.csv", sep=';')
+    df_transaction_list = pd.read_csv(file_name_transactions, sep=';')
     df_transaction_list['posting'] = df_transaction_list['posting'].apply(literal_eval)
     # Достаем информацию об отправлениях из списка транзакций
     postings = pd.json_normalize(df_transaction_list['posting'])
@@ -1151,13 +1330,13 @@ def getSalesFBS(headers):
         total_posting_count = postings_fbs['posting_number'].shape[0]
         for posting_number in postings_fbs['posting_number']:
             params_fbo = json.dumps({
-                        "posting_number": posting_number,
-                        "translit": True,
-                        "with": {
-                        "analytics_data": True,
-                        "financial_data": True
-                        }
-                    })
+                "posting_number": posting_number,
+                "translit": True,
+                "with": {
+                    "analytics_data": True,
+                    "financial_data": True
+                }
+            })
             result = requests.post(f"{ozon_seller_api_url}/v3/posting/fbs/get",headers=headers, data=params_fbo).json()
             # Получаем дату заказа (для логов)
             orderDate = str(re.findall(r'[0-9]*-[0-9]*-[0-9][0-9]',result['result']['in_process_at']))
@@ -1183,11 +1362,12 @@ def getSalesFBS(headers):
             # time.sleep(3)
 
         # Переименовываем некоторые колонки для удобства и убираем лишние
-        sales_fbs.rename(columns={'offer_id': 'Артикул',
-                                  'name': 'Название товара',
-                                  'quantity': 'Количество',
-                                  'currency_code': 'Валюта отправления'},
-                        inplace=True)
+        sales_fbs = sales_fbs.rename(columns={
+            'offer_id': 'Артикул',
+            'name': 'Название товара',
+            'quantity': 'Количество',
+            'currency_code': 'Валюта отправления'
+        })
         # Указываем, что схема доставки FBS
         sales_fbs['Схема доставки'] = 'FBS'
         sales_fbs = sales_fbs.loc[:, ~sales_fbs.columns.isin(['price', 'digital_codes', 'mandatory_mark', 'dimensions'])]
@@ -1197,7 +1377,7 @@ def getSalesFBS(headers):
        'Номер_заказа', 'Номер_отправления', 'Склад', 'Кластер_отправления',
        'Кластер_доставки', 'Сумма_отправления', 'Статус', 'Схема доставки']
         sales_fbs = pd.DataFrame(columns=colnames_sales_fbs)
-    sales_fbs.to_csv(f"{uploaddir_today}/{str(date.today())}_Продажи_fbs.csv", sep=';', index=False)
+    sales_fbs.to_csv(file_name_sales_fbs, sep=';', index=False)
 
 
 # Функция выгрузки товаров в заявках на поставку
@@ -1212,10 +1392,20 @@ def get_supply_orders(
         ],
         to_save = True
     ):
+    # Задаем имя файла для сохранения
+    file_name_supply_orders = (
+        uploaddir_today / f"{str(date.today())}_Поставки.csv"
+    )
+    # Задаем имя файла с кластерами
+    file_name_clusters = (
+        Path(marketplace_dir_name)
+        / "scripts"
+        / "clusters_and_warehouses.csv"
+    )
     # Начальные значения для цикла
-    last_supply_order_id = 0 # Номер заявки на поставку из последнего запроса
-    supply_order_list = [1] # Список заявок на поставку из апи
-    df_supply_orders = pd.DataFrame() # df со списком поставок
+    last_supply_order_id = 0  # Номер заявки на поставку из последнего запроса
+    supply_order_list = [1]  # Список заявок на поставку из апи
+    df_supply_orders = pd.DataFrame()  # df со списком поставок
     logger.info('Getting supply order list')
     # Пока есть поставки, забираем список поставок
     while len(supply_order_list) > 0:
@@ -1292,7 +1482,7 @@ def get_supply_orders(
         #     how='left',
         #     on='warehouse_name'
         # )
-        df_clusters = pd.read_csv(f'{marketplace_dir_name}/scripts/clusters_and_warehouses.csv', sep=';')
+        df_clusters = pd.read_csv(file_name_clusters, sep=';')
         df_supply_orders_info = df_supply_orders_info.merge(
             df_clusters[['warehouse_id', 'warehouse_name', 'cluster_name']],
             how='left',
@@ -1383,7 +1573,7 @@ def get_supply_orders(
         ])
     # Если нужно сохранить результат, сохраняем его
     if to_save:
-        df_supply_orders_items.to_csv(f"{uploaddir_today}/{str(date.today())}_Поставки.csv", sep=';', index=False)
+        df_supply_orders_items.to_csv(file_name_supply_orders, sep=';', index=False)
     # Если нет, возвращаем результат
     else:
         return df_supply_orders_items
@@ -1391,14 +1581,10 @@ def get_supply_orders(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
-    # создаем отдельную папку для текущей выгрузки
-    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-    uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
-    if not os.path.exists(uploaddir):
-        os.makedirs(uploaddir, exist_ok=True)
-    if not os.path.exists(uploaddir_today):
-        # shutil. rmtree(uploaddir_today)
-        new_dir = os.makedirs(uploaddir_today, exist_ok=True)
+
+    # Создаем директорию для текущей выгрузки
+    uploaddir_today = create_upload_dir()
+
     # days_to_process = read_params()
     # days_to_process = 1
     # date_start, date_end = generateDates()

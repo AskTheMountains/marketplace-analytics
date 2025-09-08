@@ -471,67 +471,14 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
     # Сохранение обновленного файла
     wb.save(report_file_name)
-    # GPT END ----
-
-    # Сохраняем отчет
-    # with pd.ExcelWriter(report_dir, engine='openpyxl') as writer:
-    #     shop_name.to_excel(writer, sheet_name=client_name, startrow=1, startcol=1, index=False)
-    #     df_plan.to_excel(writer, sheet_name=client_name, startrow=5, startcol=1)
-    #     df_dates.to_excel(writer, sheet_name=client_name, startrow=11, startcol=1, index=False)
-
-
-# Функция форматирования Excel
-# def format_excel(date_report=str(date.today())):
-#     logger.info(f"Formatting Sales svod for client {client_name}")
-#     # Считываем отчет
-#     report_file = f"Clients/{client_name}/SalesOrdersSvod/{date_report}_Свод_продажи_Ozon_{client_name}.xlsx"
-#     wb = load_workbook(report_file)
-#     ws = wb[client_name]
-
-#     # Автоподбор ширины столбцов
-#     for col in ws.columns:
-#         max_length = 0
-#         column = col[0].column  # Номер текущего столбца
-#         column_letter = get_column_letter(column)  # Буква столбца
-#         for cell in col:
-#             try:
-#                 if cell.value:  # Проверка на наличие данных
-#                     max_length = max(max_length, len(str(cell.value)))
-#             except:
-#                 pass
-#         ws.column_dimensions[column_letter].width = max_length + 2
-
-#     # Применение числового форматирования с разделением разрядов (через пробелы)
-#     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-#         for cell in row:
-#             if isinstance(cell.value, (int, float)):  # Проверяем, является ли значение числом
-#                 cell.number_format = '#,##0'  # Формат с пробелами и двумя знаками после запятой
-
-#     # Добавление границ для всех ячеек с данными
-#     thin_border = Border(
-#         left=Side(style='thin'),
-#         right=Side(style='thin'),
-#         top=Side(style='thin'),
-#         bottom=Side(style='thin')
-#     )
-
-#     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-#         for cell in row:
-#             if cell.value is not None:  # Проверка на содержание данных
-#                 cell.border = thin_border
-
-#     # Сохранение обновленного файла
-#     wb.save(report_file)
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Формируем диапазон дат
-    # date_start = '2025-07-01T00:00:00.000Z'
-    # date_end = '2025-07-10T23:59:59.000Z'
     date_start, date_end = generate_date_range(
-        # start_date='2025-07-22',
-        # end_date='2025-08-05'
+        # start_date='2025-08-27',
+        # end_date='2025-09-02'
     )
     # Планы продаж и заказов в штуках и рублях
     plan_orders_rub = 0

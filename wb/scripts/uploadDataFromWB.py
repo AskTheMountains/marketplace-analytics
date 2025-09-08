@@ -14,6 +14,7 @@ import re
 from loguru import logger
 import getopt
 import sys
+from pathlib import Path
 pd.set_option('chained_assignment',None)
 
 # Файл с некоторыми константами
@@ -25,8 +26,8 @@ from wb.scripts.constants import (
 
 
 # Имя директории для текущей выгрузки
-uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
+uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
+uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 
 
 # Функция генерации дат периода выгрузки данных
@@ -63,12 +64,15 @@ def save_dates_to_csv(date_start, date_end):
     date_end_file = datetime.fromisoformat(date_end).strftime('%Y-%m-%d')
     date_start_file = datetime.fromisoformat(date_start).strftime('%Y-%m-%d')
     # Датафрейм с датами начала и окончания выгрузки данных
-    df_dates = pd.DataFrame({'date_end': date_end,
-                             'date_start': date_start,
-                             'date_end_file': date_end_file,
-                             'date_start_file': date_start_file},
-                             index=[0])
-    df_dates.to_csv(f"{uploaddir_today}/{str(date.today())}_dates_from_to.csv", sep=';', index=False)
+    df_dates = pd.DataFrame({
+        'date_end': date_end,
+        'date_start': date_start,
+        'date_end_file': date_end_file,
+        'date_start_file': date_start_file
+    }, index=[0])
+    # Сохраняем файл с датами через pathlib
+    dates_file = uploaddir_today / f"{str(date.today())}_dates_from_to.csv"
+    df_dates.to_csv(dates_file, sep=';', index=False)
 
 
 
@@ -110,23 +114,23 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         products_url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
         updated_name = 'updatedAt'
         start_params = {
-        "settings": {
-            "cursor": {},
-            "filter": {
-                "withPhoto": -1
+            "settings": {
+                "cursor": {},
+                "filter": {
+                    "withPhoto": -1
                 }
             }
         }
-        file_name_products = f"{uploaddir_today}/{str(date.today())}_Товары.csv"
+        file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
     else:
         products_url = "https://content-api.wildberries.ru/content/v2/get/cards/trash"
         updated_name = 'trashedAt'
         start_params = {
-        "settings": {
-            "cursor": {}
+            "settings": {
+                "cursor": {}
             }
         }
-        file_name_products = f"{uploaddir_today}/{str(date.today())}_Товары_Корзина.csv"
+        file_name_products = uploaddir_today / f"{str(date.today())}_Товары_Корзина.csv"
     # Начальные значения для цикла
     page_number = 1
     limit = 100
@@ -275,12 +279,12 @@ def get_prices_WB(headers, df_products, to_save=True):
     # На всякий случай удаляем дубликаты
     df_products_prices = df_products_prices.drop_duplicates(subset=['nmID', 'chrtID'], keep='first')
     # На всякий случай заполнение nan в размере
-    df_products_prices['Размер'] =  df_products_prices['Размер'].fillna(0)
+    df_products_prices['Размер'] = df_products_prices['Размер'].fillna(0)
     if to_save:
-        # Сохраняем df с ценами
-        df_products_prices.to_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';', index=False)
-    else:
-        return df_products_prices
+        # Сохраняем df с ценами через pathlib
+        products_prices_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
+        df_products_prices.to_csv(products_prices_file, sep=';', index=False)
+    else:  return df_products_prices
 
 
 # Функция объединения списка товаров
@@ -292,18 +296,21 @@ def get_wb_product(headers, to_save=True):
     df_products = getWBProduct(headers, to_save=False)
     # Получаем цены товаров
     df_products_prices = get_prices_WB(headers, df_products, to_save=False)
-    # Если стоит флаг сохранения, то сохраняем df
+    # Если стоит флаг сохранения, то сохраняем df через pathlib
     if to_save:
-        df_products_prices.to_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';', index=False)
+        products_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
+        df_products_prices.to_csv(products_file, sep=';', index=False)
 
     return df_products_prices
 
 
 # Заказы
 def getOrdersWB(headers, date_start, date_end, to_save=True):
-    params = {"dateFrom": date_start,
-              # "flag": 0
-              }
+    params = {
+        "dateFrom": date_start,
+        "dateTo": date_end,
+        # "flag": 0
+    }
     logger.info("Uploading orders")
     try:
         resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/orders",
@@ -320,13 +327,15 @@ def getOrdersWB(headers, date_start, date_end, to_save=True):
             result = resp_data.json()
             df_orders = pd.DataFrame(result)
             df_orders = df_orders[(df_orders['date'] >= date_start) & (df_orders['date'] <= date_end)]
-            df_orders.rename(columns={"techSize": "Размер",
-                                    "supplierArticle": "Артикул продавца",
-                                    "nmId": "Артикул WB"},
-                                    inplace=True)
+            df_orders = df_orders.rename(columns={
+                "techSize": "Размер",
+                "supplierArticle": "Артикул продавца",
+                "nmId": "Артикул WB"
+            })
             # Если стоит флаг сохранения, сохраняем отчет в csv, иначе - возвращаем df
             if to_save:
-                df_orders.to_csv(f"{uploaddir_today}/{str(date.today())}_Заказы.csv", sep=';', index=False)
+                orders_file = uploaddir_today / f"{str(date.today())}_Заказы.csv"
+                df_orders.to_csv(orders_file, sep=';', index=False)
             else:
                 return df_orders
     except Exception as e:
@@ -335,9 +344,11 @@ def getOrdersWB(headers, date_start, date_end, to_save=True):
 
 # Продажи
 def getSalesWB(headers, date_start, date_end, to_save=True):
-    params = {"dateFrom": date_start,
-              # "flag": 0
-              }
+    params = {
+        "dateFrom": date_start,
+        "dateTo": date_end,
+        # "flag": 0
+    }
     logger.info("Uploading sales")
     try:
         resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/sales",
@@ -353,13 +364,15 @@ def getSalesWB(headers, date_start, date_end, to_save=True):
             result = resp_data.json()
             df_sales = pd.DataFrame(result)
             df_sales = df_sales[(df_sales['date'] >= date_start) & (df_sales['date'] <= date_end)]
-            df_sales.rename(columns={"techSize": "Размер",
-                                    "supplierArticle": "Артикул продавца",
-                                    "nmId": "Артикул WB"},
-                                    inplace=True)
+            df_sales = df_sales.rename(columns={
+                            "techSize": "Размер",
+                            "supplierArticle": "Артикул продавца",
+                            "nmId": "Артикул WB"
+                        })
             # Если стоит флаг сохранения, сохраняем отчет в csv, иначе - возвращаем df
             if to_save:
-                df_sales.to_csv(f"{uploaddir_today}/{str(date.today())}_Продажи.csv", sep=';', index=False)
+                sales_file = uploaddir_today / f"{str(date.today())}_Продажи.csv"
+                df_sales.to_csv(sales_file, sep=';', index=False)
             else:
                 return df_sales
     except Exception as e:
@@ -367,9 +380,10 @@ def getSalesWB(headers, date_start, date_end, to_save=True):
 
 # Остатки
 def getStockRemindersWB(headers, date_start, date_end):
-    params = {"dateFrom": "2010-01-01T00:00:00Z",
-              # "flag": 0
-              }
+    params = {
+        "dateFrom": "2010-01-01T00:00:00Z",
+        # "flag": 0
+    }
     logger.info("Uploading stock reminders")
     try:
         resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/stocks",
@@ -388,7 +402,7 @@ def getStockRemindersWB(headers, date_start, date_end):
                 "supplierArticle": "Артикул продавца",
                 "nmId": "Артикул WB"
                 })
-            df_reminders.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки.csv", sep=';', index=False)
+            df_reminders.to_csv(uploaddir_today / f"{str(date.today())}_Остатки.csv", sep=';', index=False)
     except Exception as e:
         logger.error(f"Ошибка получения Остатков:{e}")
 
@@ -396,7 +410,7 @@ def getStockRemindersWB(headers, date_start, date_end):
 # Остатки fbs
 def getStockReminders_fbs(headers):
     # Считываем df со списком товаров
-    df_products = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
+    df_products = pd.read_csv(uploaddir_today / f"{str(date.today())}_Товары.csv", sep=';')
     # Получаем склады продавца
     resp_data_seller_warehouses = requests.get("https://marketplace-api.wildberries.ru/api/v3/warehouses", headers=headers).json()
     df_seller_warehouses = pd.DataFrame(resp_data_seller_warehouses)
@@ -434,7 +448,7 @@ def getStockReminders_fbs(headers):
                                      how='left',
                                      on='last_barcode')
     # Сохраняем файл
-    df_reminders_fbs.to_csv(f"{uploaddir_today}/{str(date.today())}_Остатки_fbs.csv", sep=';', index=False)
+    df_reminders_fbs.to_csv(uploaddir_today / f"{str(date.today())}_Остатки_fbs.csv", sep=';', index=False)
 
 # Воронка продаж
 def getSalesCrater(headers, date_start, date_end):
@@ -456,16 +470,17 @@ def getSalesCrater(headers, date_start, date_end):
                     "mode": "asc"
                 },
                 "page": page_number
-                }
+        }
         resp_data = requests.post("https://seller-analytics-api.wildberries.ru/api/v2/nm-report/detail", headers=headers, json=params).json()
         tmp_df = pd.DataFrame(resp_data['data']['cards'])
 
 
 # Поставки
 def get_supply_orders_WB(headers, date_start, date_end):
-    params = {"dateFrom": date_start,
-              # "flag": 0
-              }
+    params = {
+        "dateFrom": date_start,
+        # "flag": 0
+    }
     logger.info("Uploading supply orders")
     resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/incomes",
                              headers=headers, params=params)
@@ -493,7 +508,7 @@ def get_supply_orders_WB(headers, date_start, date_end):
                 'Размер',
                 'supplies'
             ])
-        df_supplies.to_csv(f"{uploaddir_today}/{str(date.today())}_Поставки.csv", sep=';', index=False)
+        df_supplies.to_csv(uploaddir_today / f"{str(date.today())}_Поставки.csv", sep=';', index=False)
     else:
         logger.error(f"Ошибка получения поставок")
 
@@ -529,7 +544,7 @@ def get_supply_orders_WB_fbs(headers):
     else:
         df_supplies_list_fbs = pd.DataFrame(columns=['supplies_fbs'])
     # Сохраняем файл
-    df_supplies_list_fbs.to_csv(f"{uploaddir_today}/{str(date.today())}_Поставки_fbs.csv", sep=';', index=False)
+    df_supplies_list_fbs.to_csv(uploaddir_today / f"{str(date.today())}_Поставки_fbs.csv", sep=';', index=False)
 
 
 # %% Вызов всех функций

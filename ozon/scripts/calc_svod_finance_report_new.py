@@ -7,6 +7,7 @@ from datetime import date,datetime,timedelta
 import pandas as pd
 import shutil
 import os
+from pathlib import Path
 import glob
 import csv
 import zipfile
@@ -50,22 +51,18 @@ from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
 
 
 
+
 # Функция чтения файла с отчетом
 def read_finance_report_file(finance_reports_dir, date_start, date_end):
     # Получения формата дат, которые содержатся в имени файла.
     date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d_%m_%Y')
     date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d_%m_%Y')
-    # Чтение excel с исходными данными
-    df_finance_report = pd.read_excel(f"{finance_reports_dir}/{client_name}_Отчет_по_начислениям_{date_start_file}_{date_end_file}.xlsx",
+    # Определение пути к файлу с отчетом
+    report_file = finance_reports_dir / f"{client_name}_Отчет_по_начислениям_{date_start_file}_{date_end_file}.xlsx"
+    df_finance_report = pd.read_excel(report_file,
                                       sheet_name='Начисления',
                                       skiprows=1)
-    # Переименование некоторых колонок для удобства
-    # df_finance_report = df_finance_report.rename(columns={
-    #     'За продажу или возврат до вычета комиссий и услуг': 'Выручка',
-    #     'Обработка отправления (Drop-off/Pick-up) (разбивается по товарам пропорционально количеству в отправлении)': 'Обработка отправления',
-    #     'Последняя миля (разбивается по товарам пропорционально доле цены товара в сумме отправления)': 'Последняя миля',
-    #     'Обработка отмененного или невостребованного товара (разбивается по товарам в отправлении в одинаковой пропорции)': 'Обработка отмененного товара',
-    #     })
+
     df_finance_report = df_finance_report.rename(columns={
         'Ozon SKU': 'SKU',
         'Сумма итого, руб.': 'Итого руб'
@@ -170,11 +167,14 @@ def calc_sku_costs(df_finance_report, groupby_cols = ['SKU', 'Артикул', '
     sku_costs_ids = df_finance_report_sku['id'].to_list()
     # Колонки, по которым делаем группировку
     groupby_cols = groupby_cols
+    # Переводим артикул в строку
+    df_finance_report_sku['Артикул'] = df_finance_report_sku['Артикул'].astype(str)
+
 
     # Типы начислений, относящиеся к продажам и возвратам
     sales_and_returns_ids = df_finance_report_sku.loc[df_finance_report_sku['Тип начисления'].isin(['Выручка', 'Возврат выручки']), 'id'].to_list()
     # Делаем выборку только по типам начислений с продажами и возвратами
-    df_sales_returns= df_finance_report_sku.loc[df_finance_report_sku['id'].isin(sales_and_returns_ids), :]
+    df_sales_returns = df_finance_report_sku.loc[df_finance_report_sku['id'].isin(sales_and_returns_ids), :]
     # Заменяем значения на "Продажа" и "Возврат"
     df_sales_returns['Тип начисления'] = (
         df_sales_returns['Тип начисления']
@@ -220,7 +220,7 @@ def calc_sku_costs(df_finance_report, groupby_cols = ['SKU', 'Артикул', '
     #     .groupby(by=groupby_cols, dropna=False)['Выручка'] \
     #         .sum()
 
-    # Делаем выборку только по типам начислений с продажами и возвратами
+    # Делаем выборку по типам начислений, не относящимся к продажам и возвратам
     df_sku_other_costs = df_finance_report_sku.loc[~df_finance_report_sku['id'].isin(sales_and_returns_ids), :]
     # Считаем прочие расходы в рублях
     df_sku_other_costs_stats = (
@@ -361,36 +361,22 @@ def get_companies_ids(df_finance_report):
 # Функция парсинга файлов со статистикой по кампаниям
 def parse_companies_files(finance_reports_dir, date_report):
     # Директория, где лежат данные по рекламным кампаниям
-    companies_stats_dir = f"{finance_reports_dir}/{date_report}_Кампании"
+    companies_stats_dir = finance_reports_dir / f"{date_report}_Кампании"
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir = f"{finance_reports_dir}/{date_report}_Кампании_parsed"
-    # Копируем выгруженные файлы по рекламных расходам из отдельной папки
-    # companies_upload_dir = f"Clients/{client_name}/UploadFilesPerformance/UploadFiles_{date_upload_performance}/{date_upload_performance}_Кампании"
-    # companies_upload_dir = companies_stats_dir
-
-    # Получаем список файлов в директории
-    # companies_stats_files = os.listdir(companies_stats_dir)
-    # Если директория с выгрузкой по рекламе существует за указанную дату
-    # if os.path.exists(companies_upload_dir):
-    #     companies_upload_files = os.listdir(companies_upload_dir)
-    #     # Если есть выгруженные файлы по рекламе и в папке с отчетом нет скопированных ранее файлов,
-    #     # то копируем файлы по рекламным кампаниям
-    #     if (len(companies_upload_files) > 0) & (len(companies_stats_files) == 0):
-    #         for upload_file in companies_upload_files:
-    #             src_path = os.path.join(companies_upload_dir, upload_file)
-    #             dst_path = os.path.join(companies_stats_dir, upload_file)
-    #             shutil.copy(src_path, dst_path)
+    companies_parsed_dir = finance_reports_dir / f"{date_report}_Кампании_parsed"
 
     # Получаем список csv файлов по кампаниям
     filenames_companies = {"path": []}
-    path_companies = f"{companies_stats_dir}/*.csv"
-    # Считывание файла с путем до него
-    for file in glob.glob(path_companies):
-        filenames_companies['path'].append(file)
+    # Расширения файлов для поиска
+    companies_stats_extensions = ['.csv', '.xlsx']
+    # Осуществляем поиск файлов с заданным расширением
+    for ext in companies_stats_extensions:
+        for file in companies_stats_dir.glob(f'*{ext}'):
+            filenames_companies['path'].append(file)
     # Считывание только имени файла
-    filenames_companies['file_name'] = [os.path.basename(x) for x in glob.glob(path_companies)]
+    filenames_companies['file_name'] = [file.name for file in filenames_companies['path']]
     # Размер файла
-    filenames_companies['file_size'] = [os.path.getsize(x) for x in glob.glob(path_companies)]
+    filenames_companies['file_size'] = [file.stat().st_size for file in filenames_companies['path']]
     # Перевод в df
     filenames_companies = pd.DataFrame(filenames_companies)
     # Номер заказа
@@ -405,7 +391,6 @@ def parse_companies_files(finance_reports_dir, date_report):
         # Если по кампании есть расходы, начинаем их обрабатывать
         if df_company.shape[0] >= 2:
             # Определяем тип отчета (по первой колонке в отчете)
-            # TODO: придумать более надежный способ
             if df_company.columns[0] == 'Дата':
                 # Убираем строку Всего и Корректировка
                 df_company = df_company.loc[~df_company['Дата'].isin(['Всего', 'Корректировка']), :]
@@ -417,7 +402,13 @@ def parse_companies_files(finance_reports_dir, date_report):
                 df_company = df_company.rename(columns={'Наименование': 'Наименование товара'})
                 # Выбираем нужные колонки
                 df_company = df_company.loc[:, ['Дата', 'sku', 'Наименование товара', 'Расходы']]
-                df_company.to_csv(f"{companies_parsed_dir}/{filenames_companies['order_number'][i]}.csv", sep=';')
+                # Сохраняем обработанный файл
+                df_company.to_csv(
+                    companies_parsed_dir / f"{filenames_companies['order_number'][i]}.csv",
+                    sep=';',
+                    encoding='utf-8-sig',
+                    index=False
+                )
             else:
                 # Убираем строку Всего и Корректировка
                 df_company = df_company.loc[~df_company['sku'].isin(['Всего', 'Корректировка']), :]
@@ -427,7 +418,13 @@ def parse_companies_files(finance_reports_dir, date_report):
                 df_company = df_company.rename(columns={'Название товара': 'Наименование товара'})
                 # Выбираем нужные колонки
                 df_company = df_company.loc[:, ['sku', 'Наименование товара', 'Расходы']]
-                df_company.to_csv(f"{companies_parsed_dir}/{filenames_companies['order_number'][i]}.csv", sep=';', index=False)
+                # Сохраняем обработанный файл
+                df_company.to_csv(
+                    companies_parsed_dir / f"{filenames_companies['order_number'][i]}.csv",
+                    sep=';',
+                    encoding='utf-8-sig',
+                    index=False
+                )
 
 
 # Функция расчета расходов по рекламным кампаниям
@@ -484,9 +481,13 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
         df_companies_api = pd.DataFrame()
         for i in range(len(df_companies_costs_total)):
             # Файл с данными по кампании
-            company_file_path = f"{finance_reports_dir}/{date_report}_Кампании_parsed/{df_companies_costs_total['Номер кампании'][i]}.csv"
+            company_file_path = (
+                finance_reports_dir
+                / f"{date_report}_Кампании_parsed"
+                / f"{df_companies_costs_total['Номер кампании'][i]}.csv"
+            )
             # Если данный файл есть, начинаем считать расходы по данной кампании
-            if os.path.exists(company_file_path):
+            if company_file_path.exists():
                 # Считываем данные по данной кампании
                 df_company = pd.read_csv(company_file_path, sep=';')
             # Если нет, считаем, что расходы по данной кампании были равны 0
@@ -560,14 +561,14 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
         )
 
     # Словарь с результатами
-    result_companies_costs = {
+    result_companies_costs_no_article = {
         'df_companies_api_stats': df_result_companies_stats,
         'df_companies_stats_from_report': df_companies_stats_from_report,
         'df_companies_api_report_stats': df_companies_api_report_stats,
         'companies_costs_ids': companies_costs_ids
     }
 
-    return result_companies_costs
+    return result_companies_costs_no_article
 
 
 # Функция добавления артикулов и наименований товаров к расходам по рекламным кампаниям
@@ -657,19 +658,6 @@ def calc_companies_costs(
     result_companies_costs = add_articles_to_companies_costs(result_companies_costs_no_article, df_sku_list_all)
 
     return result_companies_costs
-
-
-# Функция выгрузки товаров в заявках на поставку
-# def upload_supplies_items(supply_order_list):
-#     # Если нет выгруженного файла с поставками, то выгружаем его
-#     if not os.path.isfile(f"{finance_reports_dir}/{client_name}_Товары_в_поставках.xlsx"):
-#         df_supplies_items = get_supply_orders(headers=headers, states=[], to_save=False)
-#         df_supplies_items.to_excel(f"{finance_reports_dir}/{client_name}_Товары_в_поставках.xlsx")
-#     # Если такой файл есть, считываем его
-#     else:
-#         df_supplies_items = pd.read_excel(f"{finance_reports_dir}/{client_name}_Товары_в_поставках.xlsx")
-
-#     return df_supplies_items
 
 
 # Функция расчета расходов по поставкам
@@ -773,6 +761,8 @@ def calc_supplies_costs(df_finance_report):
             # df_supplies_found_total = df_supplies_found_total.rename(columns={'sku': 'SKU'})
             # Переименовываем index
             df_supplies_found_total.index.name = None
+            # Переводим артикул в строку
+            df_supplies_found_total['Артикул продавца'] = df_supplies_found_total['Артикул продавца'].astype(str)
             # Сохраняем результат в отдельную переменную, которую будет возвращать функция
             supplies_costs_matched = df_supplies_found_total.copy()
 
@@ -793,12 +783,23 @@ def calc_supplies_costs(df_finance_report):
 
 # Функция чтения справочной таблицы
 def read_catalog(client_name):
+    # Задаем путь к справочной таблице
+    path_catalog = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "catalog"
+        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+    )
     # Считывание справочной таблицы
-    catalog = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_Ozon.xlsx")
+    catalog = pd.read_excel(path_catalog)
+
     # Из справочной таблицы убираем товары, у которых нет SKU или Артикула
     # catalog_ = catalog.dropna(subset=['SKU', 'Артикул продавца'])
     # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
     catalog['Себестоимость'] = catalog['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+    # Переводим артикул в строку
+    catalog['Артикул продавца'] = catalog['Артикул продавца'].astype(str)
     # Переименовываем колонку с наименованием товара
     catalog = catalog.rename(columns={
         'Название': 'Наименование товара'
@@ -817,6 +818,10 @@ def create_all_sku_df(result_sku_costs, result_supplies_costs, catalog):
     catalog_ = catalog_.dropna(subset=['SKU', 'Артикул продавца'])
     # Формируем лист с датафреймами
     df_list = [df_sku_costs, df_supplies_costs, catalog_]
+    # Переводи артикул в каждом df в строку
+    for df in df_list:
+        if 'Артикул продавца' in df.columns:
+            df['Артикул продавца'] = df['Артикул продавца'].astype(str)
     # Выбираем нужные колонки
     sku_columns = ['SKU', 'Артикул продавца', 'Наименование товара']
     # Используем reindex для добавления отсутствующих колонок
@@ -900,12 +905,22 @@ def calc_other_costs(df_finance_report, df_sku_costs_all_stats, result_sku_costs
 
 # Функция добавления данных из справочной таблицы
 def add_data_from_catalog(result_all_costs):
+    # Задаем путь к справочной таблице
+    path_catalog = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "catalog"
+        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+    )
     # Считывание справочной таблицы
-    catalog_reference = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_Ozon.xlsx")
+    catalog_reference = pd.read_excel(path_catalog)
     # Из справочной таблицы убираем товары, у которых нет SKU
     catalog_reference_ = catalog_reference.loc[~catalog_reference['SKU'].isna(), :]
     # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
     catalog_reference_['Себестоимость'] = catalog_reference_['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+    # Переводим артикул в строку
+    catalog_reference_['Артикул продавца'] = catalog_reference_['Артикул продавца'].astype(str)
     # Переименовываем некоторые колонки
     catalog_reference_ = catalog_reference_.rename(columns={
         'Название': 'Наименование товара'
@@ -1122,7 +1137,8 @@ def save_finance_svod_to_excel(
 
     # Путь для сохранения файла (с именем)
     filepath_finance_svod = (
-        f"{finance_reports_dir}/{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx"
+        finance_reports_dir
+        / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
     )
     # Сохраняем отчет
     with pd.ExcelWriter(filepath_finance_svod) as w:
@@ -1151,16 +1167,92 @@ def format_excel(
         promotion_columns,
         columns_to_exclude_from_final_costs,
     ):
+
     logger.info(f"Formatting FinanceReport for client {client_name}")
 
     # Формируем путь к итоговому файлу Excel
     filepath_finance_svod = (
-        f"{finance_reports_dir}/{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx"
+        finance_reports_dir
+        / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
     )
     # Открываем итоговый Excel-файл
     wb = openpyxl.load_workbook(filepath_finance_svod)
 
-    # --- ШАГ 1. Автоматически подобрать ширины столбцов, применить числа, фильтр ---
+    # --- ШАГ 1. Форматируем лист "Итоговой таблицы" ---
+    final_costs_worksheet = wb['Итоговая таблица']
+
+    # Готовим dataframe для сопоставления: название -> номер столбца -> буква Excel
+    # excel_columns = pd.DataFrame({
+    #     "column": df_final_costs.columns,
+    #     "column_number": np.arange(1, len(df_final_costs.columns) + 1)
+    # })
+    # excel_columns['excel_column'] = excel_columns['column_number'].apply(get_column_letter)
+
+    # svod_len = df_final_costs.shape[0]
+    # row_start = 2  # С какой строки начинаются данные (1 — только заголовок)
+
+    # min_col = excel_columns.excel_column.iloc[0]
+    # max_col = excel_columns.excel_column.iloc[-1]
+
+    # --- ШАГ 2. Формирование формул для рекламных расходов и маржинальности ---
+
+    # Список реально присутствующих в файле колонок по рекламе
+    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
+    # Колонки для расчёта затрат (все, кроме явно исключённых)
+    cost_columns = [col for col in df_final_costs.columns if col not in columns_to_exclude_from_final_costs]
+
+    # Маппинг название столбца -> буква столбца Excel
+    col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
+    start_row = 2
+    end_row = final_costs_worksheet.max_row
+
+    for row in range(start_row, end_row + 1):
+        # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
+        if existing_promotion_columns:
+            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
+            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = f"={promo_sum}"
+        else:
+            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
+        # --- "% Затрат на рекламу": делим затраты на выручку после возвратов (в руб.), не делим на 0!
+        # Имена используемых столбцов должны ТОЧНО совпадать с DataFrame
+        cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
+        cell_sales_minus_returns = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
+        final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
+
+        # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
+        base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        formula = base
+        for col in cost_columns:
+            formula += f"+{col_map[col]}{row}"
+        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+
+        # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_sales = f"{col_map['Продажи руб']}{row}"
+        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
+        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+
+        # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
+        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        formula_na_ed = (
+            f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
+        )
+        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+
+        # --- ШАГ 3. Сделать формат процентов только для столбца "Маржинальность %"
+        try:
+            # Получаем букву столбца для "Маржинальность %"
+            percent_col_letter = col_map['Маржинальность %']
+            # Диапазон строк (от row_start до svod_len + 1)
+            cell_range = final_costs_worksheet[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
+            for row in cell_range:
+                for cell in row:
+                    cell.number_format = '0%'
+        except KeyError:
+            logger.warning('Столбец "Маржинальность %" не найден в col_map для форматирования процентов')
+
+    # --- ШАГ 4. Форматирование всех листов (без формул) ---
     # Задаем стиль границы
     thin_border = Side(border_style="thin", color="000000")
     # Исключаем колонки из числового форматирования
@@ -1203,84 +1295,6 @@ def format_excel(
                     else:
                         cell.number_format = '#,##0.00'
 
-    # --- ШАГ 2. Форматируем лист "Итоговой таблицы" ---
-    final_costs_worksheet = wb['Итоговая таблица']
-
-    # Готовим dataframe для сопоставления: название -> номер столбца -> буква Excel
-    # excel_columns = pd.DataFrame({
-    #     "column": df_final_costs.columns,
-    #     "column_number": np.arange(1, len(df_final_costs.columns) + 1)
-    # })
-    # excel_columns['excel_column'] = excel_columns['column_number'].apply(get_column_letter)
-
-    # svod_len = df_final_costs.shape[0]
-    # row_start = 2  # С какой строки начинаются данные (1 — только заголовок)
-
-    # min_col = excel_columns.excel_column.iloc[0]
-    # max_col = excel_columns.excel_column.iloc[-1]
-
-    # --- ШАГ 3. Формирование формул для рекламных расходов и маржинальности ---
-
-    # Список реально присутствующих в файле колонок по рекламе
-    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
-    # Колонки для расчёта затрат (все, кроме явно исключённых)
-    cost_columns = [col for col in df_final_costs.columns if col not in columns_to_exclude_from_final_costs]
-
-    # Маппинг название столбца -> буква столбца Excel
-    col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
-    start_row = 2
-    end_row = final_costs_worksheet.max_row
-
-    for row in range(start_row, end_row + 1):
-        # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
-        if existing_promotion_columns:
-            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
-            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = f"={promo_sum}"
-        else:
-            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
-        # --- "% Затрат на рекламу": делим затраты на выручку после возвратов (в руб.), не делим на 0!
-        # Имена используемых столбцов должны ТОЧНО совпадать с DataFrame
-        cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
-        cell_sales_minus_returns = f"{col_map['Продажи - Возвраты (руб)']}{row}"
-        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
-        final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
-
-        # --- "Все затраты (руб)": если есть, можно добавить сумму по всем cost_columns (иначе пропустить)
-        # all_costs_sum = '+'.join(f"{col_map[col]}{row}" for col in final_costs_columns)
-        # final_costs_worksheet[f"{col_map['Все затраты (руб)']}{row}"].value = f"={all_costs_sum}"
-
-        # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
-        base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
-        formula = base
-        for col in cost_columns:
-            formula += f"-{col_map[col]}{row}"
-        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
-
-        # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
-        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-        cell_sales = f"{col_map['Продажи руб']}{row}"
-        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
-        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
-
-        # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
-        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
-        formula_na_ed = (
-            f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
-        )
-        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
-
-        # --- ШАГ 4. Сделать формат процентов только для столбца "Маржинальность %"
-        try:
-            # Получаем букву столбца для "Маржинальность %"
-            percent_col_letter = col_map['Маржинальность %']
-            # Диапазон строк (от row_start до svod_len + 1)
-            cell_range = final_costs_worksheet[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
-            for row in cell_range:
-                for cell in row:
-                    cell.number_format = '0%'
-        except KeyError:
-            logger.warning('Столбец "Маржинальность %" не найден в col_map для форматирования процентов')
-
     wb.save(filepath_finance_svod)
 
 
@@ -1294,9 +1308,15 @@ if __name__ == "__main__":
     # Дата, когда были выгружены данные по рекламе
     date_upload_performance = str(date.today())
     # Директория для сохранения результатов
-    finance_reports_dir = f"{marketplace_dir_name}/Clients/{client_name}/FinanceReports/{date_report}"
-    if not os.path.exists(finance_reports_dir):
-        os.makedirs(finance_reports_dir)
+    finance_reports_dir = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "FinanceReports"
+        / date_report
+    )
+    if not finance_reports_dir.exists():
+        finance_reports_dir.mkdir(parents=True, exist_ok=True)
 
     # Считывание файла с фин. отчетом
     df_finance_report = read_finance_report_file(finance_reports_dir, date_start, date_end)

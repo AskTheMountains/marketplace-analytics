@@ -69,33 +69,25 @@ from generic_functions import move_columns
 
 # Функция создания директории, куда будет помещен итоговый отчет
 def create_client_cabinet_svod_dir(client_name, date_report=str(date.today())):
-    client_cabinet_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/ClientCabinetSvod/"
-    )
-    if not os.path.exists(client_cabinet_path):
-        os.makedirs(client_cabinet_path, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{client_cabinet_path}")
+
+    client_cabinet_path = BASE_DIR / "Clients" / client_name / "ClientCabinetSvod"
+    if not client_cabinet_path.exists():
+        client_cabinet_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Creating Companies Upload directory: {client_cabinet_path}")
 
     return client_cabinet_path
 
 
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
-    # Задаем путь к директории
-    # upload_path_statistic = (
-    #     f"{BASE_DIR}/"
-    #     f"Clients/{client_name}/ClientSvod/"
-    #     f"{date_report}/{date_report}_Кампании_API"
-    # )
+    # Формируем путь к директории
     upload_path_statistic = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_report}/{date_report}_Кампании_API"
+        BASE_DIR / "Clients" / client_name / "CampaignsReport" / date_report / f"{date_report}_Кампании_API"
     )
-    if not os.path.exists(upload_path_statistic):
-        os.makedirs(upload_path_statistic, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{upload_path_statistic}")
+    # Создаем директорию, если её нет
+    if not upload_path_statistic.exists():
+        upload_path_statistic.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Creating Companies Upload directory: {upload_path_statistic}")
 
     return upload_path_statistic
 
@@ -465,25 +457,25 @@ def read_report_files(
     ):
     # Маска поиска файлов
     cabinet_reports_file_mask = f'*Сводная_по_кабинету_{client_name}_Ozon.xlsx'
-    search_pattern = os.path.join(client_cabinet_svod_dir, cabinet_reports_file_mask)
+    search_dir = Path(client_cabinet_svod_dir)
 
     # Фильтрация временных файлов excel
     files = [
         file_path
-        for file_path in glob.glob(search_pattern)
-        if not os.path.basename(file_path).startswith('~$')
+        for file_path in search_dir.glob(cabinet_reports_file_mask)
+        if not file_path.name.startswith('~$')
     ]
 
     # Сбор информации о файлах
     data = []
     for file_path in files:
-        file_name = os.path.basename(file_path)
-        modified_time = os.path.getmtime(file_path)
+        file_name = file_path.name
+        modified_time = file_path.stat().st_mtime
         modified_datetime = datetime.fromtimestamp(modified_time)
         data.append({
             'Имя файла': file_name,
             'Дата изменения': modified_datetime.strftime('%Y-%m-%d %H:%M:%S'),
-            'Полный путь': file_path
+            'Полный путь': str(file_path)
         })
 
     # Создание DataFrame
@@ -648,15 +640,14 @@ def save_and_format_excel(
         df_dates
     ):
     # Формируем директорию для сохранения
-    path_report = (
-        f"{client_cabinet_svod_dir}/"
-    )
-    name_report = (
-        f"{date_report}_Сводная_по_кабинету_{client_name}_Ozon.xlsx"
-    )
-    file_name_report = f"{path_report}/{name_report}"
-    if not os.path.exists(path_report):
-        os.makedirs(path_report, exist_ok=True)
+    path_report = client_cabinet_svod_dir
+    # Создаем директорию, если она не существует
+    if not path_report.exists():
+        path_report.mkdir(parents=True, exist_ok=True)
+    # Формируем имя отчета
+    name_report = f"{date_report}_Сводная_по_кабинету_{client_name}_Ozon.xlsx"
+    file_name_report = path_report / name_report
+
     # Формируем даты для названия листа
     # date_start_excel = (
     #     pd.to_datetime(df_dates['date_start'])

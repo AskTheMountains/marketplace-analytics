@@ -45,12 +45,14 @@ def create_report_path(date_campaign_report, client_name):
     #     f"{dt_start_dir}-{dt_end_dir}_API/"
     # )
     report_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_campaign_report}"
+        BASE_DIR
+        / "Clients"
+        / client_name
+        / "CampaignsReport"
+        / date_campaign_report
     )
-    if not os.path.exists(report_path):
-        os.makedirs(report_path, exist_ok=True)
+    if not report_path.exists():
+        report_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Creating Companies Upload directory:{report_path}")
 
     return report_path
@@ -873,7 +875,6 @@ def get_company_stats_v2(
     return df_companies_stats_nms
 
 
-
 # Функция определения минимальной и максимальной даты в кампаниях
 def get_min_max_dates(df_input_companies):
     # Создаем копию для избежания изменений в оригинальном df
@@ -1429,7 +1430,9 @@ def save_and_format_excel(
     logger.info(f"Formatting campaigns report for client {client_name}")
 
     # Имя файла для сохранения
-    file_name = f"{report_path}/{date_campaign_report}_Отчет_РК_{client_name}_WB.xlsx"
+    file_name = (
+        report_path / f"{date_campaign_report}_Отчет_РК_{client_name}_WB.xlsx"
+    )
 
     # Создаем книгу excel и сохраняем в неё df из словаря с результатами
     with pd.ExcelWriter(file_name) as w:

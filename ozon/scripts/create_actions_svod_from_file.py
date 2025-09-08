@@ -7,6 +7,7 @@ from datetime import date,datetime,timedelta
 import pandas as pd
 import shutil
 import os
+from pathlib import Path
 import csv
 import numpy as np
 from openpyxl import Workbook
@@ -36,19 +37,21 @@ from ozon.scripts.constants import (
 # Некоторые дополнительные функции
 from generic_functions import move_columns, add_element_to_list
 
-# Директория файлов с данными по акциям (обязательно / в конце)
+# Директория файлов с данными по акциям
 path_download_actions = (
-    'd:/artem/downloads/'
+    Path('d:/')
+    / 'artem'
+    / 'downloads'
 )
 
 # Имя файла с данными по акциям (с расширением)
-actions_file_name = 'products-1977747(1).xlsx'
+actions_file_name = None
 
 
 # Функция чтения файла с акциями "Бустинг"
 def read_action_file(path_download_actions, actions_file_name):
     # Добавляем название файла к пути
-    filepath_download_actions = f"{path_download_actions}/{actions_file_name}"
+    filepath_download_actions = path_download_actions / actions_file_name
     # Считываем файл по акциям в бустинге
     df_actions_from_file = pd.read_excel(
         filepath_download_actions,
@@ -179,10 +182,61 @@ def process_action_file(df_actions_from_file):
     return action_list_from_file, df_actions_from_file_processed
 
 
+# Функция вызова функций, связанных с файлом по акциям
+def add_data_from_actions_file(
+       df_action_list_api,
+       df_products_candidates_api,
+       df_products_in_actions_api,
+       path_download_actions,
+       actions_file_name=None,
+):
+    # Если задан путь файла с акциями из ЛК, то добавляем данные из него
+    if actions_file_name is not None:
+        # Считываем данные по акциям из файла
+        df_actions_from_file = read_action_file(path_download_actions, actions_file_name)
+        # Обрабатываем файл по акциям
+        action_list_from_file, df_actions_from_file_processed = process_action_file(df_actions_from_file)
+        # Объединяем список акций из АПИ и из файла
+        df_action_list_all = add_actions_from_file(
+            df_action_list_api,
+            action_list_from_file
+        )
+        # Добавляем цену для определения участия в акциях бустинг
+        # catalog_with_boosting_prices = add_boosting_price_to_catalog(
+        #     df_actions_from_file_processed,
+        #     catalog_with_discount_columns
+        # )
+        # Переводим таблицу из файла по акциям под формат АПИ
+        df_actions_from_file_reformatted = reformat_actions_file(
+            action_list_from_file,
+            df_action_list_all,
+            df_actions_from_file_processed
+        )
+        # Объединяем товары в акциях из АПИ и из файла
+        df_products_candidates_all, df_products_in_actions_all = union_products_actions_from_api_file(
+            df_actions_from_file_reformatted,
+            df_products_candidates_api,
+            df_products_in_actions_api,
+        )
+    # Если не задан путь файла с акциями из ЛК, то используем только данные из АПИ
+    else:
+        df_action_list_all = df_action_list_api.copy()
+        df_products_candidates_all = df_products_candidates_api.copy()
+        df_products_in_actions_all = df_products_in_actions_api.copy()
+
+    return df_action_list_all, df_products_candidates_all, df_products_in_actions_all
+
 
 # Функция чтения дат формирования отчета
 def read_dates_file(date_report_created):
-    report_dates = pd.read_csv(f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
+    # Задаем путь к файлу
+    path_dates_file = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}/UploadFiles/UploadFiles_{date_report_created}"
+        / f"{date_report_created}_dates_from_to.csv"
+    )
+    report_dates = pd.read_csv(path_dates_file, sep=';')
     for col in report_dates:
         report_dates[col] = pd.to_datetime(report_dates[col])
     return report_dates
@@ -530,8 +584,16 @@ def get_prices(catalog, headers):
 
 # Получение каталога
 def get_catalog(date_report_created, headers):
+    # Имя файла со списком товаров
+    products_file_name = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / "UploadFiles"
+        / f"UploadFiles_{date_report_created}/{date_report_created}_Товары.csv"
+    )
     # Считываем список товаров, который пришел по апи
-    catalog = pd.read_csv(f"Clients/{client_name}/UploadFiles/UploadFiles_{date_report_created}/{date_report_created}_Товары.csv", sep=';')
+    catalog = pd.read_csv(products_file_name, sep=';')
     # Убираем ненужные колонки
     catalog = catalog.loc[:, ~catalog.columns.isin([
         'FBS OZON SKU ID', 'Контент-рейтинг', 'Бренд', 'Размер', 'Цвет',
@@ -836,8 +898,16 @@ def add_data_from_wb(headers_wb, catalog_processed):
 
 # Получение колонок и обработка справочной таблицы
 def get_catalog_reference_columns(catalog_ozon_wb):
+    # Путь к справочной таблице
+    reference_table_path = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / f"catalog"
+        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+    )
     # Загрузка справочной таблицы
-    catalog_reference = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_Ozon.xlsx")
+    catalog_reference = pd.read_excel(reference_table_path)
     catalog_reference.rename(columns={"Основной артикул": "Основной Артикул"}, inplace=True)
     # Переименовываем колонки для удобства
     catalog_reference = catalog_reference.rename(columns={
@@ -869,14 +939,24 @@ def get_catalog_reference_columns(catalog_ozon_wb):
 
 # Получение заказов, остатков и продаж из файла с метриками
 def add_columns_from_metrics(catalog_with_reference, date_report_created):
+    # Путь к файлу с метриками
+    metrics_file_name = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / f"Metrics"
+        / f"{date_report_created}_МетрикиИтоги.xlsx"
+    )
     # Чтение файла с метриками
-    metrics = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/Metrics/{date_report_created}_МетрикиИтоги.xlsx", sheet_name='summary')
+    metrics = pd.read_excel(metrics_file_name, sheet_name='summary')
     # Создаем копию для избежания изменений в оригинальном df
     catalog_with_metrics = catalog_with_reference.copy()
     # Мерджим список товаров с метриками
-    catalog_with_metrics = catalog_with_metrics.merge(metrics[['Ozon Product ID', 'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ']],
-                              how='left',
-                              on='Ozon Product ID')
+    catalog_with_metrics = catalog_with_metrics.merge(
+        metrics[['Ozon Product ID', 'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ']],
+        how='left',
+        on='Ozon Product ID'
+    )
     return catalog_with_metrics
 
 
@@ -887,9 +967,15 @@ def add_reminders_prev_day(catalog, date_report_created):
     date_report_created_ = datetime.strptime(date_report_created, "%Y-%m-%d")
     date_prev_day = datetime.strftime(date_report_created_ - timedelta(days=1), '%Y-%m-%d')
     # Путь до файла с метриками за предыдущий день
-    path_metrics = f"Clients/{client_name}/Metrics/{date_prev_day}_МетрикиИтоги.xlsx"
+    path_metrics = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / f"Metrics"
+        / f"{date_prev_day}_МетрикиИтоги.xlsx"
+    )
     # Если файл есть
-    if os.path.exists(path_metrics):
+    if path_metrics.exists():
         # Считываем метрики за пред. день
         metrics_prev_day = pd.read_excel(path_metrics, sheet_name='summary')
         # Переименовываем колонку с остатками для избежания дубликатов
@@ -935,7 +1021,7 @@ def add_boosting_price_to_catalog(df_actions_from_file_processed, catalog_with_d
         'Артикул': 'Артикул продавца',
         'Итоговая цена по акции': 'Цена для участия в акциях Бустинг'
     })
-    # Убираем ненужные колонки
+    # Выбираем нужные колонки
     df_boosting_price = df_boosting_price.loc[
         :,
         ['Артикул продавца', 'Цена для участия в акциях Бустинг']
@@ -1047,7 +1133,15 @@ def calc_action_columns(
 
 
 # Создание свода по шаблону
-def create_svod_for_excel(svod_actions, action_cols, date_report_created, date_start, date_end):
+def create_svod_for_excel(
+        svod_actions,
+        action_cols,
+        date_report_created,
+        date_start,
+        date_end,
+        actions_file_name,
+    ):
+    # Создаем копию для избежания изменений в оригинальном df
     svod_actions_excel = svod_actions.copy()
 
     # Вычисление даты предыдущего дня
@@ -1063,12 +1157,13 @@ def create_svod_for_excel(svod_actions, action_cols, date_report_created, date_s
     # Нужные колонки для свода
     svod_cols = svod_actions_cols
     # Добавляем колонку с ценой по акциям в бустинге
-    svod_cols = add_element_to_list(
-        svod_cols,
-        'Цена после скидки',
-        ['Цена для участия в акциях Бустинг'],
-        after=True
-    )
+    if actions_file_name is not None:
+        svod_cols = add_element_to_list(
+            svod_cols,
+            'Цена после скидки',
+            ['Цена для участия в акциях Бустинг'],
+            after=True
+        )
     # Добавляем цену WB
     if client_name in ['SENS', 'SENS_IP']:
         svod_cols = add_element_to_list(
@@ -1106,8 +1201,11 @@ def save_excel(svod_actions_excel, df_action_list, date_report_created):
     })
     # Имя файла для сохранения
     file_name_actions_excel = (
-        f"{marketplace_dir_name}/Clients/{client_name}/Actions/"
-        f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "Actions"
+        / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
     )
     with pd.ExcelWriter(file_name_actions_excel) as w:
         svod_actions_excel.to_excel(w, sheet_name='Акции', index=False, na_rep='')
@@ -1118,8 +1216,8 @@ def save_excel(svod_actions_excel, df_action_list, date_report_created):
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Дата, за которую были выгружены данные
-    # date_report_created = '2025-04-14'
-    date_report_created = str(date.today())
+    date_report_created = '2025-09-02'
+    # date_report_created = str(date.today())
     # Считываем данные по акциям из файла
     df_actions_from_file = read_action_file(path_download_actions, actions_file_name)
     # Обрабатываем файл по акциям
@@ -1153,12 +1251,20 @@ if __name__ == '__main__':
         catalog_with_discount_columns
     )
 
-    # Получение списка акций
+    # Получение списка акций из API
     df_action_list_api = get_action_list(headers, filter_dates=False)
-    # Получение товаров, доступных для акций и участвующих в акциях
+    # Получение товаров, доступных для акций и участвующих в акциях по API
     df_products_candidates_api = get_available_products_for_actions(df_action_list_api, headers)
     df_products_in_actions_api = get_products_in_actions(df_action_list_api, headers)
 
+    # Получаем данные из файла с бустингами ЛК, если он есть
+    df_action_list_all, df_products_candidates_all, df_products_in_actions_all = add_data_from_actions_file(
+       df_action_list_api,
+       df_products_candidates_api,
+       df_products_in_actions_api,
+       path_download_actions,
+       actions_file_name=actions_file_name,
+    )
     # Объединяем список акций из АПИ и из файла
     df_action_list_all = add_actions_from_file(
         df_action_list_api,
@@ -1171,6 +1277,7 @@ if __name__ == '__main__':
         df_action_list_all,
         df_actions_from_file_processed
     )
+
     # Объединяем товары в акциях из АПИ и из файла
     df_products_candidates_all, df_products_in_actions_all = union_products_actions_from_api_file(
         df_actions_from_file_reformatted,

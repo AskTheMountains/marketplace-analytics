@@ -67,12 +67,15 @@ def create_upload_statistic_dir(client_name, date_report=str(date.today())):
     #     f"{date_report}/{date_report}_Кампании_API"
     # )
     upload_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/CampaignsReport/"
-        f"{date_report}/{date_report}_Кампании_API"
+        BASE_DIR
+        / f"Clients"
+        / f"{client_name}"
+        / f"CampaignsReport"
+        / f"{date_report}"
+        / f"{date_report}_Кампании_API"
     )
-    if not os.path.exists(upload_path):
-        os.makedirs(upload_path, exist_ok=True)
+    if not upload_path.exists():
+        upload_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Creating Companies Upload directory:{upload_path}")
 
     return upload_path
@@ -96,7 +99,7 @@ def generate_dates(
     elif start_date or end_date:
         raise ValueError("Нужно задать одновременно start_date и end_date.")
     else:
-        # Старая логика по reference_date
+        # Если указан reference_date, то используем его
         if reference_date is None:
             today = datetime.now()
         else:
@@ -218,7 +221,7 @@ def create_companies_upload_df(
     )
     # Формируем полный путь к файлу
     df_input_companies['file_path_company'] = df_input_companies['file_name_company'].apply(
-        lambda x: os.path.join(upload_path, x)
+        lambda x: upload_path / x
     )
     # Выводим информацию о выгружаемых кампаниях в консоль
     df_input_companies_print = (
@@ -265,7 +268,7 @@ def get_company_list(
         )
         # Формируем полный путь к файлу
         df_input_companies['file_path_company'] = df_input_companies['file_name_company'].apply(
-            lambda x: os.path.join(upload_path, x)
+            lambda x: upload_path / x
         )
 
         # Добавляем вспомогательные столбцы
@@ -359,14 +362,14 @@ def get_missing_companies(
     # expected_files = [f"{company_id}_{date_part}{extension}" for company_id in companies_list]
     expected_files = df_input_companies_parsed['file_name_company'].to_list()
     # Получаем список всех файлов в папке
-    actual_files = set(os.listdir(upload_path))
+    actual_files = set([p.name for p in upload_path.iterdir() if p.is_file()])
 
     # Проверяем наличие файлов для нужных кампаний и составляем итоговый список
     result_files = []
     missing = []
     for fname in expected_files:
         if fname in actual_files:
-            result_files.append(os.path.join(upload_path, fname))
+            result_files.append(str(upload_path / fname))  # upload_path / fname даёт новый Path
         else:
             missing.append(fname)
 
@@ -412,33 +415,30 @@ def get_companies_files_list(
     dt_start_file = pd.to_datetime(date_start).strftime('%d.%m.%Y')
     dt_end_file = pd.to_datetime(date_end).strftime('%d.%m.%Y')
     date_part = f'{dt_start_file}-{dt_end_file}'    # Формируем часть с датами в названии файлов
-    extension = '.csv'                     # расширение файлов
+    extension = '.csv'                             # расширение файлов
 
     # Список файлов с наименованиями кампаний (будет заполнен далее)
     filenames_companies_files = []
 
     # # Формируем список файлов по заданным кампаниям, если они заданы
     # if companies_list:
-    #     filenames_companies_files = [f"{upload_path}/{id_}_{date_part}{extension}" for id_ in companies_list]
+    #     filenames_companies_files = [str(upload_path / f"{id_}_{date_part}{extension}") for id_ in companies_list]
     # # Если список кампаний не задан, считываем все файлы по кампаниям
     # else:
     # Маска имени файлов статистики РК
-    path_companies = f"{upload_path}/*_{date_part}.{extension}"
+    pattern = f"*_{date_part}{extension}"
     # Считывание файла с путем до него
-    for file in glob.glob(path_companies):
-        filenames_companies_files.append(file)
+    for file in upload_path.glob(pattern):
+        filenames_companies_files.append(str(file))
 
     # Получаем список csv файлов по кампаниям
     df_filenames_companies = pd.DataFrame({
         "path": filenames_companies_files,
     })
     # Считывание только имени файла
-    df_filenames_companies['file_name'] = df_filenames_companies['path'].apply(lambda x: os.path.basename(x))
-    # [os.path.basename(x) for x in glob.glob(filenames_companies['path'])]
+    df_filenames_companies['file_name'] = df_filenames_companies['path'].apply(lambda x: Path(x).name)
     # Размер файла
-    df_filenames_companies['file_size'] = df_filenames_companies['path'].apply(lambda x: os.path.getsize(x))
-    # filenames_companies['file_size'] = [os.path.getsize(x) for x in glob.glob(filenames_companies_files)]
-
+    df_filenames_companies['file_size'] = df_filenames_companies['path'].apply(lambda x: Path(x).stat().st_size)
     # Номер кампании
     df_filenames_companies['Номер кампании'] = df_filenames_companies['file_name'].str.split('_').str[0]
     # Сортировка по размеру
@@ -528,7 +528,7 @@ def parse_companies_files(
         dt_start_file = row['dt_start_file']
         dt_end_file = row['dt_end_file']
         # Если файла по данной кампании нет, выводим предупреждение
-        if not os.path.exists(path_statistics_file):
+        if not path_statistics_file.exists():
             logger.warning(f"No statistics file for company {company_number}_{dt_start_file}_{dt_end_file}.csv")
         # Если файл есть, то начинаем его обратоку
         else:
@@ -662,10 +662,8 @@ def get_promo_orders(
         .strftime('%d.%m.%Y')
     )
     # Формируем имя ожидаемого файла с отчетом
-    payment_orders_report_file_name = Path(
-        f"{upload_path}/"
-        f"search_promo_organisation_orders_report_"
-        f"{date_start_file}-{date_end_file}.csv"
+    payment_orders_report_file_name = (
+        upload_path / f"search_promo_organisation_orders_report_{date_start_file}-{date_end_file}.csv"
     )
     # Проверяем наличие файла
     payment_orders_report_exists = payment_orders_report_file_name.is_file()
@@ -703,7 +701,7 @@ def parse_search_promo_report(
         df_payment_orders_report
         .groupby(['SKU', 'Название товара'], as_index=False)
         .agg(**{
-            'Расход в оплате за заказ, руб': ('Расход ₽', 'sum'),
+            'Расход в оплате за заказ, руб': ('Расход, ₽', 'sum'),
         })
     )
     # Переводим столбец с SKU в int, чтобы не было ошибок при merge
@@ -2009,8 +2007,12 @@ def save_and_format_excel(
 ):
     # Имя файла для сохранения
     file_name_report = (
-        f"{BASE_DIR}/Clients/{client_name}/CampaignsReport/{date_campaign_report}/"
-        f"{date_campaign_report}_Отчет_РК_{client_name}_Ozon.xlsx"
+        BASE_DIR
+        / "Clients"
+        / client_name
+        / "CampaignsReport"
+        / date_campaign_report
+        / f"{date_campaign_report}_Отчет_РК_{client_name}_Ozon.xlsx"
     )
     # Сохраняем отчет в файл excel
     with pd.ExcelWriter(file_name_report) as w:
@@ -2183,16 +2185,16 @@ def create_campaigns_report(
     # Если стоит флаг удаления файлов после выполнения скрипта
     if delete_files:
         # Нормализуем путь (прямые\обратные слеши)
-        upload_path_norm = os.path.normpath(upload_path)
+        # upload_path_norm = os.path.normpath(upload_path)
         # Проверка, что директория существует
-        if os.path.isdir(upload_path):
+        if upload_path.exists():
             try:
-                send2trash.send2trash(upload_path_norm)
-                print(f"Directory '{upload_path_norm}' and its contents deleted successfully.")
+                send2trash.send2trash(upload_path)
+                print(f"Directory '{upload_path}' and its contents deleted successfully.")
             except OSError as e:
-                print(f"Error: {upload_path_norm} : \n{e.strerror}")
+                print(f"Error: {upload_path} : \n{e.strerror}")
         else:
-            print(f"Directory '{upload_path_norm}' does not exist.")
+            print(f"Directory '{upload_path}' does not exist.")
 
     logger.info(f"Done creating campaigns report for client {client_name}")
 
@@ -2206,8 +2208,8 @@ if __name__ == '__main__':
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        start_date='2025-08-18',
-        end_date='2025-08-27'
+        # start_date='2025-08-18',
+        # end_date='2025-08-27'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(promotion_companies, df_date_range)

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 # Файл с настройками и номером клиента
 from options import settings, client_number
 
@@ -10,8 +12,10 @@ headers = {
 "Content-Type": "application/json",
 }
 
-# Наименование директории для МП WB
-marketplace_dir_name = 'wb'
+# Путь к текущему скрипту
+script_path = Path(__file__).resolve()
+# Путь к директории с маркетплейсом
+marketplace_dir_name = script_path.parents[1]  # ozon или wb
 
 # Имя клиента
 client_name = settings['client_name'][client_number]
@@ -200,6 +204,7 @@ else:
 # Колонки, которые берем из справочной таблицы для свода по акциям
 if client_name in ['SENS', 'SENS_IP', 'TRIBE', 'Orsk_Combinat']:
     catalog_action_columns = [
+        'Артикул_Размер',
         'Артикул продавца',
         'Размер',
         'Статус',
@@ -209,6 +214,7 @@ if client_name in ['SENS', 'SENS_IP', 'TRIBE', 'Orsk_Combinat']:
     ]
 if client_name in ['Neva_Metall']:
     catalog_action_columns = [
+        'Артикул_Размер',
         'Артикул продавца',
         'Размер',
         'Статус',
@@ -290,22 +296,19 @@ if client_name in ['Neva_Metall']:
 # ID Рекламных кампаний для отчета РК
 if client_name == 'Orsk_Combinat':
     promotion_companies = [
-        [27510438],
-        [27163894],
-        [23402839],
-        [27510444],
-        [27361337],
-        [22686786],
-        [27513567],
-        [27361332],
-        [27218787],
-        [27098220],
-        [23502219],
-        [27605462],
-        [24201562],
-        [22710455],
-        [27605430],
-        [27519179],
+        # # 1 группа
+        # [27519179],
+        # [28097088],
+        # 2 группа
+        [28214316],
+        [28097081],
+        [28096488],
+        # # 3 группа
+        # [28121902],
+        # [27513567],
+        # 4 группа
+        # [28181228],
+        # [27605430],
     ]
 elif client_name == 'Neva_Metall':
     promotion_companies = [
