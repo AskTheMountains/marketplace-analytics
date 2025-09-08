@@ -35,8 +35,7 @@ from generic_functions import move_columns
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 
-# Функция выгрузки статистики РК
-# Функция получения статистики кампаний
+# Функция получения статистики рекламных кампаний
 def get_company_stats(
         headers,
         df_input_companies,
@@ -277,7 +276,7 @@ def split_into_intervals(start_date, end_date, max_days=31):
     return intervals
 
 
-# Функция получения статистики кампаний (v2)
+# Функция получения статистики рекламных кампаний (v2)
 def get_company_stats_v2(
         headers,
         df_input_companies,

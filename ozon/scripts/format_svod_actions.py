@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import os
+import shutil
+from pathlib import Path
 import openpyxl
 from loguru import logger
 from datetime import date,datetime,timedelta
@@ -13,9 +15,33 @@ from openpyxl.formatting.rule import ColorScale, ColorScaleRule, FormatObject
 from openpyxl.utils import get_column_letter
 
 from ozon.scripts.constants import marketplace_dir_name, net_cost_koef
+from pathlib import Path
 # from options import settings, client_number
 # date_report_created = '2024-10-22'
 # svod_excel_actions = pd.read_excel(f"Clients/{client_name}/Actions/{date_report_created}_Таблица_по_акциям_{client_name}.xlsx")
+
+# Создание копии оригинального файла, в котором будет производиться форматирование
+def copy_actions_file(client_name, date_report_created, boostings_file=False):
+    # Имя файла с акциями
+    if boostings_file:
+        file_name_actions = (
+            marketplace_dir_name
+            / "Clients" / client_name / "Actions"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
+        )
+        file_name_actions_formatted = f"{file_name_actions}_formatted.xlsx"
+    else:
+        file_name_actions = (
+            marketplace_dir_name
+            / "Clients" / client_name / "Actions"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
+        )
+        file_name_actions_formatted = f"{file_name_actions}_formatted.xlsx"
+
+    src_file = file_name_actions
+    dst_file = file_name_actions_formatted
+    shutil.copy(src_file, dst_file)
+
 
 def format_excel_actions(
         client_name,
@@ -23,19 +49,21 @@ def format_excel_actions(
         date_report_created,
         date_start,
         date_end,
-        boostings_file=False
+        actions_file_name,
 ):
     logger.info(f"Formatting action svod for client {client_name}")
     # Имя файла с акциями
-    if boostings_file:
+    if actions_file_name is not None:
         file_name_actions = (
-            f"{marketplace_dir_name}/Clients/{client_name}/Actions/"
-            f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
+            marketplace_dir_name
+            / "Clients" / client_name / "Actions"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
         )
     else:
         file_name_actions = (
-            f"{marketplace_dir_name}/Clients/{client_name}/Actions/"
-            f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
+            marketplace_dir_name
+            / "Clients" / client_name / "Actions"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
         )
     # Открываем файл с расчетами Excel
     wb = openpyxl.load_workbook(file_name_actions)
@@ -387,17 +415,3 @@ def format_excel_actions(
     # Сохранение
     wb.save(f"{file_name_actions}_Formatted.xlsx")
     logger.info("Finished formatting actions file")
-
-
-# Файл с настройками и номером клиента
-# from options import settings, headers, client_number
-# date_report_created = '2024-07-22'
-# svod_excel_actions = pd.read_excel(f"Clients/{client_name}/Actions/{date_report_created}_Таблица_по_акциям_{client_name}.xlsx")
-# report_dates = pd.read_csv(f"Clients/{client_name}/UploadFiles/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
-# for col in report_dates:
-#     report_dates[col] = pd.to_datetime(report_dates[col])
-# date_start = report_dates['date_start_file'][0]
-# date_end = report_dates['date_end_file'][0]
-
-# format_excel_actions(settings, client_number, svod_excel_actions,
-#                      date_report_created, date_start, date_end)

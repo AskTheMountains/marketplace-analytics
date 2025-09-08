@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import shutil
+from pathlib import Path
 from loguru import logger
 import openpyxl
 from datetime import date,datetime,timedelta
@@ -25,8 +26,8 @@ from openpyxl.utils import get_column_letter
 
 # Создание копии оригинального файла, в котором будет производиться форматирование
 def copy_supply_svod_file(path_supply_svod, client_name, date_report_created):
-    src_file = f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon.xlsx"
-    dst_file = f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx"
+    src_file = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_Ozon.xlsx"
+    dst_file = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx"
     shutil.copy(src_file, dst_file)
 
 # Форматирование листа "Всего"
@@ -42,8 +43,10 @@ def format_sheet_total(
 
     logger.info(f"Formatting sheet \"{sheet_name}\"")
 
+    file_name_supply_svod = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx"
+
     # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx")
+    wb = openpyxl.load_workbook(file_name_supply_svod)
     ws = wb[sheet_name]
 
     # Кол-во строк в df
@@ -295,8 +298,8 @@ def format_sheet_total(
 
     #return wb
     # Сохранение файла Excel
-    wb.save(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx")
-    logger.info("Finished formatting sheet \"Всего\"'")
+    wb.save(file_name_supply_svod)
+    logger.info(f"Finished formatting sheet \"{ws.title}\"")
 
 
 # Форматирование листа "Сводная по кластерам"
@@ -313,7 +316,8 @@ def format_sheet_clusters(
     # Номер строки, откуда начинается запись
     logger.info('Formatting sheet \"По кластерам\"')
     # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx")
+    file_name_supply_svod = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx"
+    wb = openpyxl.load_workbook(file_name_supply_svod)
     ws = wb['По кластерам']
 
     # Кол-во строк в df
@@ -489,5 +493,5 @@ def format_sheet_clusters(
                                                             vertical = "center")
     #return wb
     # Сохранение файла Excel
-    wb.save(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_Ozon_formatted.xlsx")
-    logger.info("Finished formatting sheet \"По кластерам\"'")
+    wb.save(file_name_supply_svod)
+    logger.info(f"Finished formatting sheet \"{ws.title}\"")

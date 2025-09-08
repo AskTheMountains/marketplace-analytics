@@ -19,10 +19,10 @@ def format_excel_actions(
         svod_excel_actions,
         date_report_created
 ):
-    # Путь к файлу с отчетом по акциям
+    # Задаем имя файла для сохранения
     filepath_actions_svod = (
-        f"{marketplace_dir_name}/Clients/{client_name}/Actions/"
-        f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
+        marketplace_dir_name / "Clients" / client_name / "Actions"
+        / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
     )
     # Переводим дату создания свода из строки в дату
     date_report_created_ = datetime.strptime(date_report_created, '%Y-%m-%d')

@@ -34,7 +34,14 @@ from wb.scripts.constants import(
 
 # Функция чтения дат формирования отчета
 def read_dates_file(date_report_created):
-    report_dates = pd.read_csv(f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
+    report_dates = pd.read_csv(
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+        / f"UploadFiles_{date_report_created}"
+        / f"{date_report_created}_dates_from_to.csv", sep=';'
+    )
     for col in report_dates:
         report_dates[col] = pd.to_datetime(report_dates[col])
     return report_dates
@@ -300,7 +307,7 @@ def unpack_sizes(df_products_actions_all, df_products):
 # Функция чтения и обработки справочной таблицы
 def read_catalog():
     # Чтение справочной таблицы
-    catalog = pd.read_excel(f"Clients/{client_name}/catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(marketplace_dir_name / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
     # Удаляем товары, где не указан размер
     catalog_ = catalog.dropna(subset=['Размер'])
     # Если каких-то колонок не хватает, искуственно создаем их, чтобы не было ошибок
@@ -329,16 +336,26 @@ def add_marketing_price_to_actions(catalog, df_products_actions_with_sizes):
 # Получение колонок из файла с метриками
 def add_columns_from_metrics(df_products):
     df_products_ = df_products.copy()
-    # Чтение файла с метриками
-    metrics = pd.read_excel(f"Clients/{client_name}/Metrics/{date_report_created}_МетрикиИтоги.xlsx", sheet_name='summary')
+    # Считываем файл с метриками за указанную дату
+    metrics = pd.read_excel(
+            marketplace_dir_name
+            / "Clients"
+            / client_name
+            / f"Metrics/{date_report_created}_МетрикиИтоги.xlsx",
+        sheet_name='summary'
+    )
     if client_name in ['KU_And_KU', 'Soyuz']:
         metrics['Размер'] = metrics['Размер'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         metrics['Размер'] = metrics['Размер'].fillna(0)
         df_products_['Размер'] = df_products_['Размер'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         df_products_['Размер'] = df_products_['Размер'].fillna(0)
-    df_products_with_metrics = df_products_.merge(metrics[['Артикул продавца', 'Размер', 'Остатки']],
-                              how='left',
-                              on=['Артикул продавца', 'Размер'])
+
+    df_products_with_metrics = df_products_.merge(
+        metrics[['Артикул продавца', 'Размер', 'Остатки']],
+        how='left',
+        on=['Артикул продавца', 'Размер']
+    )
+
     return df_products_with_metrics
 
 # Получение колонок из справочной таблицы
@@ -484,8 +501,13 @@ def save_excel(
         df_actions_svod_excel,
         actions_with_products
     ):
-
-    with pd.ExcelWriter(f"Clients/{client_name}/Actions/{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx") as w:
+    # Задаем имя файла для сохранения
+    filepath_actions_svod = (
+        marketplace_dir_name / "Clients" / client_name / "Actions"
+        / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
+    )
+    # Сохраняем файл по акциям
+    with pd.ExcelWriter(filepath_actions_svod) as w:
         df_actions_svod_excel.to_excel(w, sheet_name='Акции', index=False, na_rep='')
         actions_with_products.to_excel(w, sheet_name='Названия акций', index=False, na_rep='')
 

@@ -7,6 +7,7 @@ from datetime import date,datetime,timedelta
 import pandas as pd
 import shutil
 import os
+from pathlib import Path
 import glob
 import csv
 import numpy as np
@@ -33,7 +34,14 @@ from wb.scripts.constants import (
 
 # Функция чтения дат формирования отчета
 def read_dates_file(date_report_created):
-    report_dates = pd.read_csv(f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
+    report_dates = pd.read_csv(
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+        / f"UploadFiles_{date_report_created}"
+        / f"{date_report_created}_dates_from_to.csv", sep=';'
+    )
     for col in report_dates:
         report_dates[col] = pd.to_datetime(report_dates[col])
     return report_dates
@@ -41,29 +49,39 @@ def read_dates_file(date_report_created):
 # Функция чтения файлов с акциями
 def read_actions_files(date_report_created):
     filenames = {"path": [], "file_name": [], "action_name": []}
-    path_actions = f"{marketplace_dir_name}/Clients/{client_name}/Actions/Данные по акциям/{date_report_created}/*"
+    # Путь к папке с данными по акциям ЛК
+    path_actions = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "Actions"
+        / "Данные по акциям"
+        / date_report_created
+    )
+
     # Считывание файла с путем до него
-    for file in glob.glob(path_actions):
-        filenames['path'].append(file)
+    for file in path_actions.glob('*'):
+        filenames['path'].append(str(file))
     # Считывание только имени файла
-    filenames['file_name'] = [os.path.basename(x) for x in glob.glob(path_actions)]
+    filenames['file_name'] = [file.name for file in path_actions.glob('*')]
     # Список возможных вариантов наименований файлов с акциями, после которых идет названия акций
-    delimeters = ['Акция_',
-                  'Товары_для_исключения_из_акции_',
-                  'Товары_для_акции_',
-                  'Все_товары_подходящие_для_акции_',
-                  'Товары_для_возврата_в_акцию_',
-                  'Акция_',
-                  'Товары для исключения из акции_',
-                  'Товары для акции_',
-                  'Все товары подходящие для акции_',
-                  'Товары для возврата в акцию_']
+    delimeters = [
+        'Акция_',
+        'Товары_для_исключения_из_акции_',
+        'Товары_для_акции_',
+        'Все_товары_подходящие_для_акции_',
+        'Товары_для_возврата_в_акцию_',
+        'Акция_',
+        'Товары для исключения из акции_',
+        'Товары для акции_',
+        'Все товары подходящие для акции_',
+        'Товары для возврата в акцию_'
+    ]
     # Соединяем в одну строку
     delim = '|'.join(delimeters) + '|.xlsx'
     # Получение названий акций
-    # delim = 'Акция_|Товары_для_исключения_из_акции_|Товары_для_акции_|Все_товары_подходящие_для_акции_|.xlsx'
-    for i in range(len(filenames['file_name'])):
-        res = re.split(delim, filenames['file_name'][i])
+    for file_name in filenames['file_name']:
+        res = re.split(delim, file_name)
         filenames["action_name"].append(res[1])
     filenames_df = pd.DataFrame(filenames)
     filenames_df['action_number'] = filenames_df.index + 1
@@ -74,8 +92,12 @@ def read_actions_files(date_report_created):
 def read_products_file(date_report_created):
     # Путь к файлу со списком товаром
     filepath_products = (
-        f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-        f"/UploadFiles_{date_report_created}/{date_report_created}_Товары.csv"
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+        / f"UploadFiles_{date_report_created}"
+        / f"{date_report_created}_Товары.csv"
     )
     # Считываем df с товарами
     df_products = pd.read_csv(filepath_products, sep=';')
@@ -105,7 +127,7 @@ def process_product_list(df_products):
 
 # Функция получения столбцов из справочной таблицы
 def get_columns_from_catalog(df_products_processed):
-    catalog = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(marketplace_dir_name / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
     # Для размера отдельно прописываем, что колонку нужно сделать 0
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = 0
@@ -145,7 +167,13 @@ def calc_additional_columns(df_products_with_catalog):
 # Функция получения столбцов из файла с метриками
 def get_columns_from_metrics(date_report_created, df_products):
     # Считываем файл с метриками за указанную дату
-    metrics = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/Metrics/{date_report_created}_МетрикиИтоги.xlsx", sheet_name='summary')
+    metrics = pd.read_excel(
+            marketplace_dir_name
+            / "Clients"
+            / client_name
+            / f"Metrics/{date_report_created}_МетрикиИтоги.xlsx",
+        sheet_name='summary'
+    )
     # Переводим столбец с размером в str
     metrics['Размер'] = metrics['Размер'].astype(str)
     # Создаем колонку Артикул_Размер
@@ -168,7 +196,7 @@ def add_reminders_prev_day(catalog, date_report_created):
     date_report_created_ = datetime.strptime(date_report_created, "%Y-%m-%d")
     date_prev_day = datetime.strftime(date_report_created_ - timedelta(days=1), '%Y-%m-%d')
     # Путь до файла с метриками за предыдущий день
-    path_metrics = f"{marketplace_dir_name}/Clients/{client_name}/Metrics/{date_prev_day}_МетрикиИтоги.xlsx"
+    path_metrics = marketplace_dir_name / "Clients" / client_name / f"Metrics/{date_prev_day}_МетрикиИтоги.xlsx"
     # Если файл есть
     if os.path.exists(path_metrics):
         # Считываем метрики за пред. день
@@ -287,8 +315,8 @@ def save_excel(catalog_excel, action_list_df, date_report_created):
     })
     # Задаем имя файла для сохранения
     filepath_actions_svod = (
-        f"{marketplace_dir_name}/Clients/{client_name}/Actions/"
-        f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
+        marketplace_dir_name / "Clients" / client_name / "Actions"
+        / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
     )
     # Сохраняем файл по акциям
     with pd.ExcelWriter(filepath_actions_svod) as w:

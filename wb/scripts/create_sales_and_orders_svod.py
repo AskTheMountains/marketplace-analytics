@@ -37,13 +37,12 @@ from generic_functions import move_columns
 # Создание нужных директорий
 def create_dirs():
     # Папка с клиентом
-    client_dir = f"{marketplace_dir_name}/Clients/{client_name}/"
+    client_dir = marketplace_dir_name / "Clients" / client_name
     # Список директорий для создания
     dir_names = ['SalesOrdersSvod']
     for dir_name in dir_names:
-        dir_path = os.path.join(client_dir, dir_name)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
+        dir_path = client_dir / dir_name
+        dir_path.mkdir(parents=True, exist_ok=True)
 
 # Функция создания диапазона дат
 # GPT START ----
@@ -457,16 +456,21 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
     # Создаем df с именем клиента
     shop_name = pd.DataFrame({'Магазин': [client_name]})
     # Создаем df с диапазоном формирования отчета
-    df_dates = pd.DataFrame({'Начальная дата': [date_start],
-                             'Конечная дата': [date_end]})
+    df_dates = pd.DataFrame({
+        'Начальная дата': [date_start],
+        'Конечная дата': [date_end]
+    })
     # Даты для имени файла
     date_start_file = pd.to_datetime(date_start).strftime('%d-%m-%Y')
     date_end_file = pd.to_datetime(date_end).strftime('%d-%m-%Y')
 
     # Имя файла для сохранения отчета
-    report_file_name = (f"{marketplace_dir_name}/Clients/{client_name}/SalesOrdersSvod/"
-                        f"{date_start_file}_{date_end_file}"
-                        f"_Свод_продажи_WB_{client_name}.xlsx"
+    report_file_name = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "SalesOrdersSvod"
+        / f"{date_start_file}_{date_end_file}_Свод_продажи_WB_{client_name}.xlsx"
     )
 
     # GPT START ----
@@ -546,7 +550,10 @@ if __name__ == '__main__':
     # date_end = '2025-07-08T23:59:59.000Z'
     # date_range = generate_date_range(date_start, date_end)
 
-    date_start, date_end = generate_date_range()
+    date_start, date_end = generate_date_range(
+        # start_date='2025-08-27',
+        # end_date='2025-09-03'
+    )
     date_range_df = generate_date_range_df(date_start, date_end)
 
 

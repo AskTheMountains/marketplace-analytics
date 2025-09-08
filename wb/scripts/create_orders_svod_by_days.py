@@ -109,14 +109,17 @@ def generate_date_range(df_dates):
 # Функция создания директории, куда будет помещен итоговый отчет
 def create_orders_svod_dir(client_name, date_report=str(date.today())):
     orders_svod_path = (
-        f"{BASE_DIR}/"
-        f"Clients/{client_name}/OrdersSvod/"
+        BASE_DIR
+        / "Clients"
+        / client_name
+        / "OrdersSvod"
     )
-    if not os.path.exists(orders_svod_path):
-        os.makedirs(orders_svod_path, exist_ok=True)
+    if not orders_svod_path.exists():
+        orders_svod_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Creating Companies Upload directory:{orders_svod_path}")
 
     return orders_svod_path
+
 
 # Функция чтения предыдущих отчетов
 def read_report_files(
@@ -125,26 +128,26 @@ def read_report_files(
         # date_current_report=str(date.today())
     ):
     # Маска поиска файлов
-    orders_reports_file_mask = f'*Свод_Заказы_{client_name}_Ozon.xlsx'
-    search_pattern = os.path.join(orders_svod_dir, orders_reports_file_mask)
+    orders_reports_file_mask = f'*Свод_Заказы_{client_name}_WB.xlsx'
+    search_dir = Path(orders_svod_dir)
 
     # Фильтрация временных файлов excel
     files = [
         file_path
-        for file_path in glob.glob(search_pattern)
-        if not os.path.basename(file_path).startswith('~$')
+        for file_path in search_dir.glob(orders_reports_file_mask)
+        if not file_path.name.startswith('~$')
     ]
 
     # Сбор информации о файлах
     data = []
     for file_path in files:
-        file_name = os.path.basename(file_path)
-        modified_time = os.path.getmtime(file_path)
+        file_name = file_path.name
+        modified_time = file_path.stat().st_mtime
         modified_datetime = datetime.fromtimestamp(modified_time)
         data.append({
             'Имя файла': file_name,
             'Дата изменения': modified_datetime.strftime('%Y-%m-%d %H:%M:%S'),
-            'Полный путь': file_path
+            'Полный путь': str(file_path)
         })
 
     # Создание DataFrame
@@ -677,14 +680,16 @@ def save_and_format_excel(
     ):
     # Формируем директорию для сохранения
     path_report = (
-        f"{orders_svod_dir}/"
+        orders_svod_dir
     )
+    path_report.mkdir(parents=True, exist_ok=True)
+    # Формируем имя файла для сохранения
     name_report = (
-        f"{date_report}_Свод_Заказы_{client_name}_Ozon.xlsx"
+        f"{date_report}_Свод_Заказы_{client_name}_WB.xlsx"
     )
-    file_name_report = f"{path_report}/{name_report}"
-    if not os.path.exists(path_report):
-        os.makedirs(path_report, exist_ok=True)
+    # Создаем путь + имя файла
+    file_name_report = path_report / name_report
+
     # Формируем даты для названия листа
     # date_start_excel = (
     #     pd.to_datetime(df_dates['date_start'])

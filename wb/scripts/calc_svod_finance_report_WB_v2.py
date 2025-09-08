@@ -1784,7 +1784,13 @@ def calc_other_costs(df_realization_report_date_filtered, result_sku_costs):
 # Функция добавления данных из справочной таблицы
 def add_data_from_catalog(result_other_costs):
     # Чтение справочной таблицы
-    catalog = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "catalog"
+        / f"Справочная_таблица_{client_name}_WB.xlsx"
+    )
     # Создаем колонку размера, если её нет в справочной таблице
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = 0
@@ -2035,7 +2041,7 @@ def save_excel(
     df_paid_acceptance = result_paid_acceptance['df_paid_acceptance']
     # Получаем результаты по прочим расходам
     df_other_costs_by_operation = result_other_costs['df_other_costs_by_operation']
-    with pd.ExcelWriter(f"{finance_reports_dir}/{date_report}_Свод_реализации_WB_{client_name}.xlsx") as w:
+    with pd.ExcelWriter(finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx") as w:
         report_dates.to_excel(w, sheet_name='Список отчетных недель', index=False)
         df_realization_report_new_columns.to_excel(w, sheet_name='Исходный отчет АПИ', index=False)
         df_final_costs.to_excel(w, sheet_name='Итоговая таблица', index=False)
@@ -2055,7 +2061,7 @@ def format_excel(
     columns_to_exclude_from_final_costs,
 ):
     # Формируем путь к итоговому файлу Excel
-    filename = f"{finance_reports_dir}/{date_report}_Свод_реализации_WB_{client_name}.xlsx"
+    filename = finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
     # Загружаем рабочую книгу Excel
     wb = openpyxl.load_workbook(filename)
 
@@ -2158,9 +2164,14 @@ if __name__ == '__main__':
     date_start = '2025-08-01T00:00:00'
     date_end = '2025-08-31T23:59:59'
     # Директория для сохранения результатов
-    finance_reports_dir = f"{marketplace_dir_name}/Clients/{client_name}/FinanceReports/{date_report}"
-    if not os.path.exists(finance_reports_dir):
-        os.makedirs(finance_reports_dir)
+    finance_reports_dir = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "FinanceReports"
+        / date_report
+    )
+    finance_reports_dir.mkdir(parents=True, exist_ok=True)
 
     # Получение отчета о реализации по АПИ
     df_realization_report = upload_realization_report_v2(

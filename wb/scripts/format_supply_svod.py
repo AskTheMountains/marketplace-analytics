@@ -23,8 +23,8 @@ from openpyxl.utils import get_column_letter
 
 # Создание копии оригинального файла, в котором будет производиться форматирование
 def copy_supply_svod_file(path_supply_svod, client_name, date_report_created):
-    src_file = f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB.xlsx"
-    dst_file = f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx"
+    src_file = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB.xlsx"
+    dst_file = path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx"
     shutil.copy(src_file, dst_file)
 
 # Форматирование листа "Всего"
@@ -42,7 +42,7 @@ def format_sheet_total(
     logger.info(f"Formatting sheet \"{sheet_name}\"")
 
     # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
+    wb = openpyxl.load_workbook(path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
     ws = wb[sheet_name]
 
     # Кол-во строк в df
@@ -314,7 +314,7 @@ def format_sheet_total(
 
     #return wb
     # Сохранение файла Excel
-    wb.save(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
+    wb.save(path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
     logger.info(f"Finished formatting sheet {sheet_name}")
 
 # Форматирование листа "По кластерам"
@@ -329,7 +329,7 @@ def format_sheet_clusters(
     logger.info(f"Formatting sheet \"{sheet_name}\"")
 
     # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
+    wb = openpyxl.load_workbook(path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
     ws = wb[sheet_name]
 
     # Кол-во строк в df
@@ -520,5 +520,5 @@ def format_sheet_clusters(
 
     #return wb
     # Сохранение файла Excel
-    wb.save(f"{path_supply_svod}/{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
+    wb.save(path_supply_svod / f"{date_report_created}_Расчет_Поставок_{client_name}_WB_formatted.xlsx")
     logger.info(f"Finished formatting sheet {sheet_name}")

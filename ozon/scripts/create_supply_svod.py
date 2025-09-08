@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 import os
+from pathlib import Path
 import openpyxl
 import json
 from loguru import logger
@@ -26,29 +27,115 @@ import ozon.scripts.format_supply_svod as format_supply_svod
 
 
 # Директории с загруженными файлами из апи
-uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
+uploaddir = (
+    Path(marketplace_dir_name)
+    / "Clients"
+    / client_name
+    / "UploadFiles"
+)
 # uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
 
 # Директория с метриками
-metricsdir = f"{marketplace_dir_name}/Clients/{client_name}/Metrics"
+metricsdir = (
+    Path(marketplace_dir_name)
+    / "Clients"
+    / client_name
+    / "Metrics"
+)
 
 # Таблица объединения кластеров в один (какие в какой объединяем)
 clusters_mapping_df = pd.DataFrame(clusters_mapping)
 clusters_mapping_jewelry_df = pd.DataFrame(clusters_mapping_jewelry)
 
 
+# Функция чтения списка товаров
+def read_products_file(date_metrics):
+    df_products = pd.read_csv(
+        uploaddir / f"UploadFiles_{date_metrics}" / f"{date_metrics}_Товары.csv",
+        sep=';'
+    )
+
+    return df_products
+
+
+# Функция обработки списка товаров
+def process_product_list(df_products):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_products_processed = df_products.copy()
+    # Выбираем нужные колонки
+    df_products_processed = df_products_processed.loc[:, df_products_processed.columns.isin([
+        'Артикул',
+        'Super-товар',
+        'Высота',
+        'Глубина',
+        'Ширина',
+        'Единицы измерения габаритов',
+        'Вес',
+        'Единицы измерения веса',
+    ])]
+    # Удаляем лишние символы из артикула
+    df_products_processed['Артикул'] = df_products_processed['Артикул'].str.replace("'", "", regex=False)
+    # Переводим Артикул в строку
+    df_products_processed['Артикул'] = df_products_processed['Артикул'].astype(str)
+    # Задаём границы сортируемости товара
+    sortable = {
+        'длина': 450,
+        'ширина': 320,
+        'высота': 320,
+        'вес': 10000
+    }
+    unsortable = {
+        'длина_min': 450, 'длина_max': 1200,
+        'ширина_min': 320, 'ширина_max': 800,
+        'высота_min': 320, 'высота_max': 600,
+        'вес_max': 35000
+    }
+    # Список условий
+    conditions = [
+        (df_products_processed['Вес'] <= sortable['вес']) &
+        (df_products_processed['Глубина'] <= sortable['длина']) &
+        (df_products_processed['Ширина'] <= sortable['ширина']) &
+        (df_products_processed['Высота'] <= sortable['высота']),
+
+        (df_products_processed['Вес'] <= unsortable['вес_max']) &
+        (df_products_processed['Глубина'].between(unsortable['длина_min'], unsortable['длина_max'])) &
+        (df_products_processed['Ширина'].between(unsortable['ширина_min'], unsortable['ширина_max'])) &
+        (df_products_processed['Высота'].between(unsortable['высота_min'], unsortable['высота_max']))
+    ]
+    # Выборы по условиям
+    choices = ['Сортируемый товар', 'Несортируемый товар']
+    # Создание колонки
+    df_products_processed['Сортируемость товара'] = np.select(conditions, choices, default='Не определена')
+
+    # Убираем колонки с весом и габаритами товара
+    df_products_processed = df_products_processed.drop(columns=[
+        'Вес',
+        'Глубина',
+        'Ширина',
+        'Высота',
+        'Единицы измерения габаритов',
+        'Единицы измерения веса',
+    ])
+
+    return df_products_processed
+
 # Функция чтения дат формирования отчета
-def read_dates_file(date_report_created):
-    report_dates = pd.read_csv(f"{uploaddir}/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
+def read_dates_file(date_metrics):
+    report_dates = pd.read_csv(
+        uploaddir / f"UploadFiles_{date_metrics}" / f"{date_metrics}_dates_from_to.csv",
+        sep=';'
+    )
     for col in report_dates:
         report_dates[col] = pd.to_datetime(report_dates[col])
     return report_dates
 
 
 # Функция чтения файла с метриками
-def read_metrics_file(date_report_created, sheet_name='summary'):
-    metrics = pd.read_excel(f"{metricsdir}/{date_report_created}_МетрикиИтоги.xlsx",
-                            sheet_name=sheet_name)
+def read_metrics_file(date_metrics, sheet_name='summary'):
+    metrics = pd.read_excel(
+        metricsdir / f"{date_metrics}_МетрикиИтоги.xlsx",
+        sheet_name=sheet_name
+    )
     # Удаляем ненужные колонки
     for col in ['Размер', 'Цвет', 'РРЦ']:
         if col in metrics.columns:
@@ -57,12 +144,12 @@ def read_metrics_file(date_report_created, sheet_name='summary'):
 
 
 # Добавление недостающих кластеров к товарам
-def add_clusters(date_report_created):
+def add_clusters(date_metrics):
     # Чтение файла с метриками
-    metrics_clusters = read_metrics_file(date_report_created, sheet_name='claster_report')
+    metrics_clusters = read_metrics_file(date_metrics, sheet_name='claster_report')
 
     # Чтение файла с метрками (лист со всеми товарами)
-    metrics_summary = read_metrics_file(date_report_created, sheet_name='summary')
+    metrics_summary = read_metrics_file(date_metrics, sheet_name='summary')
 
     # Чтение файла с кластерами
     clusters = pd.read_csv(f'{marketplace_dir_name}/scripts/clusters_and_warehouses.csv', sep=';')
@@ -80,14 +167,12 @@ def add_clusters(date_report_created):
     sales_columns = ['Заказы', 'Заказы_руб', 'Продажи', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки', 'Остатки_fbs']
     # Мердж с комбинациями Артикул-Кластер.
     # Таким образом, получим все товары во всех кластерах
-    metrics_df_all_clusters = sku_clusters.merge(metrics_clusters[['SKU', 'Кластер'] + sales_columns],
-                                    on=['SKU', 'Кластер'],
-                                    how='left')
-    # metrics_df_all_clusters = metrics_cluster.merge(sku_clusters,
-    # 								left_on=['SKU', 'Кластер'],
-    # 								right_on=['SKU', 'cluster'],
-    # 								how='right')
-    # metrics_df_all_clusters.sort_values(by=['SKU', 'cluster'], inplace=True)
+    metrics_df_all_clusters = sku_clusters.merge(
+        metrics_clusters[['SKU', 'Кластер'] + sales_columns],
+        on=['SKU', 'Кластер'],
+        how='left'
+    )
+
 
     # В пропусках считаем, что в данном кластере по данному товару
     # не было товаров, заказов и продаж
@@ -95,18 +180,12 @@ def add_clusters(date_report_created):
         metrics_df_all_clusters[col] = metrics_df_all_clusters[col].fillna(0)
 
     # Мердж для получения остальных колонок
-    metrics_df_all_clusters = metrics_df_all_clusters.merge(metrics_summary.drop(columns=sales_columns),
-                                       on='SKU',
-                                       how='left')
-    # Заполняем пропуски в остальных колонках,
-    # которые получились в результате мерджа
-    # for col in metrics_df_all_clusters.columns[:-2]:
-    # 	metrics_df_all_clusters[col] = metrics_df_all_clusters.groupby('SKU')[col].ffill().bfill()
+    metrics_df_all_clusters = metrics_df_all_clusters.merge(
+        metrics_summary.drop(columns=sales_columns),
+        on='SKU',
+        how='left'
+    )
 
-    # Меняем старый кластер на кластер из мерджа
-    # metrics_df_all_clusters['Кластер'] = metrics_df_all_clusters['cluster']
-    # Удаляем вспомогательные колонки
-    # metrics_df_all_clusters.drop(columns=['SKU', 'cluster'], inplace=True)
     return metrics_df_all_clusters
 
 
@@ -229,7 +308,17 @@ def add_demand_for_cluster_columns(
     return svod_for_sku
 
 
-# Заполнение некоторых столбцов из справочных таблиц, заполненных вручную
+# Добавление доп. колонок из списка товаров
+def add_columns_from_products(svod, df_products_processed):
+    # Объединяем по артикулу
+    svod_with_additional_columns = svod.merge(
+        df_products_processed,
+        how='left',
+        on='Артикул'
+    )
+    return svod_with_additional_columns
+
+# Добавление столбцов из справочной таблицы
 def add_columns_from_catalog(metrics_df_by_sku_with_stats):
     # Создаем копию для избежания изменений в оригинальном df
     metrics_df_by_sku_with_stats_ = metrics_df_by_sku_with_stats.copy()
@@ -261,7 +350,7 @@ def create_jewelry_clusters_svod(metrics_df_all_clusters):
         # metrics_df_by_cluster = calc_svod_by_clusters(metrics_df_with_stats)
         df_pivot_by_replaced_clusters = create_pivot_clusters(svod_for_replaced_clusters)
         # Лист "Всего". Берем из файла с метриками
-        metrics_df_by_sku = read_metrics_file(date_report_created)
+        metrics_df_by_sku = read_metrics_file(date_metrics)
         # Считаем доп. колонки с оборачиваемостью и потребностью для листа "Всего"
         metrics_df_by_sku_stats = calc_svod_for_sku(metrics_df_by_sku)
         # Добавляем колонки с потребностью по кластерам
@@ -271,13 +360,13 @@ def create_jewelry_clusters_svod(metrics_df_all_clusters):
         # svod_with_catalog_by_sku = svod.copy()
         # svod_with_catalog_for_clusters = add_columns_from_catalog(svod_for_clusters)
         # Чтение файла с датами формирования выгрузок
-        report_dates = read_dates_file(date_report_created)
+        report_dates = read_dates_file(date_metrics)
         # Добавляем недостающие колонки для excel
         cluster_list = clusters_mapping_jewelry_df['cluster'].unique().tolist()
         svod_excel_by_sku = add_columns_for_excel(
             svod_with_catalog_for_sku,
             cluster_list,
-            date_report_created,
+            date_metrics,
             report_dates['date_start_file'][0],
             report_dates['date_end_file'][0],
             svod_type='Всего'
@@ -326,7 +415,7 @@ def create_pivot_clusters(svod_for_clusters):
 def add_columns_for_excel(
         df_with_stats,
         cluster_list,
-        date_report_created,
+        date_metrics,
         day_start,
         day_end,
         svod_type='Всего'
@@ -334,7 +423,7 @@ def add_columns_for_excel(
 
     # Создаем копию для избежания изменений в оригинальном df
     svod_excel = df_with_stats.copy()
-    date_report_created_ = datetime.strptime(date_report_created, '%Y-%m-%d')
+    date_metrics_ = datetime.strptime(date_metrics, '%Y-%m-%d')
 
 
     # Колонки, которые должны быть в итоговом файле на листе "Всего"
@@ -364,15 +453,15 @@ def add_columns_for_excel(
         'Наименование товара': 'Наименование',
         'Заказы': f"ЗАКАЗЫ с {day_start.strftime('%d.%m')} по {day_end.strftime('%d.%m')}, шт.",
         'Продажи': f"ПРОДАЖИ с {day_start.strftime('%d.%m')} по {day_end.strftime('%d.%m')}, шт.",
-        'Остатки': f"ОСТАТОК {date_report_created_.strftime('%d.%m')}",
-        'Остатки_fbs': f"ОСТАТОК FBS {date_report_created_.strftime('%d.%m')}",
+        'Остатки': f"ОСТАТОК {date_metrics_.strftime('%d.%m')}",
+        'Остатки_fbs': f"ОСТАТОК FBS {date_metrics_.strftime('%d.%m')}",
         },
         inplace=True)
 
 
 
     # Запись в Excel
-    # svod_excel.to_excel("Svod" +"\\" + date_report_created +"_Расчет поставок.xlsx", sheet_name='Всего', index=False)
+    # svod_excel.to_excel("Svod" +"\\" + date_metrics +"_Расчет поставок.xlsx", sheet_name='Всего', index=False)
     return svod_excel
 
 
@@ -383,12 +472,14 @@ def save_sheets_to_excel(
         svod_excel_for_clusters,
         df_pivot_by_clusters,
         svod_excel_for_sku_jewelry,
-        date_report_created
+        date_metrics
     ):
     # Задаем имя файла (с путем) для сохранения
     file_name_supply_svod = (
-        f"{marketplace_dir_name}/Clients/{client_name}/SupplySvod/"
-        f"{date_report_created}_Расчет_поставок_{client_name}_Ozon.xlsx"
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / f"SupplySvod/{date_metrics}_Расчет_поставок_{client_name}_Ozon.xlsx"
     )
     with pd.ExcelWriter(file_name_supply_svod) as w:
         svod_excel_for_sku.to_excel(w, sheet_name='Всего', index=False)
@@ -402,7 +493,7 @@ def save_sheets_to_excel(
 # Функция форматирования Excel по отдельным листам (формулы, цвета и т.д.)
 def format_excel(
         client_name,
-        date_report_created,
+        date_metrics,
         svod_excel_for_sku,
         svod_excel_for_sku_jewelry,
         svod_excel_for_clusters,
@@ -410,14 +501,19 @@ def format_excel(
         clusters_mapping_jewelry_df
     ):
     # Определяем путь, где лежат расчеты поставок
-    path_supply_svod = f"{marketplace_dir_name}/Clients/{client_name}/SupplySvod"
+    path_supply_svod = (
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / f"SupplySvod"
+    )
     # Создаем файл excel, в котором будет производиться форматирование
-    format_supply_svod.copy_supply_svod_file(path_supply_svod, client_name, date_report_created)
+    format_supply_svod.copy_supply_svod_file(path_supply_svod, client_name, date_metrics)
     # Форматирование листа "Всего"
     format_supply_svod.format_sheet_total(
         path_supply_svod,
         client_name,
-        date_report_created,
+        date_metrics,
         svod_excel_for_sku,
         svod_excel_for_clusters,
         clusters_mapping_df,
@@ -428,7 +524,7 @@ def format_excel(
             format_supply_svod.format_sheet_total(
                 path_supply_svod,
                 client_name,
-                date_report_created,
+                date_metrics,
                 svod_excel_for_sku_jewelry,
                 svod_excel_for_clusters,
                 clusters_mapping_jewelry_df,
@@ -438,22 +534,22 @@ def format_excel(
     format_supply_svod.format_sheet_clusters(
         path_supply_svod,
         client_name,
-        date_report_created,
+        date_metrics,
         svod_excel_for_clusters
     )
 
     # Сохранение файла Excel
-    # wb.save("Svod" + "\\" + date_report_created + "_Расчет Поставок_formatted.xlsx")
+    # wb.save("Svod" + "\\" + date_metrics + "_Расчет Поставок_formatted.xlsx")
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Дата формирования отчета
-    # date_report_created = '2024-12-17'
-    date_report_created = str(date.today())
-    logger.info(f"Creating supply svod for client {client_name} for date {date_report_created}")
+    # date_metrics = '2024-12-17'
+    date_metrics = str(date.today())
+    logger.info(f"Creating supply svod for client {client_name} for date {date_metrics}")
     # Добавляем недостающие кластеры
-    metrics_df_all_clusters = add_clusters(date_report_created)
+    metrics_df_all_clusters = add_clusters(date_metrics)
     # Отдельный df для записи в excel на лист "По кластерам" (без объединения кластеров)
     svod_for_clusters = calc_svod_for_clusters(metrics_df_all_clusters)
     # Сводная таблица по кластерам для записи в excel
@@ -467,25 +563,32 @@ if __name__ == '__main__':
     # metrics_df_by_cluster = calc_svod_by_clusters(metrics_df_with_stats)
     df_pivot_by_replaced_clusters = create_pivot_clusters(svod_for_replaced_clusters)
     # Лист "Всего". Берем из файла с метриками
-    metrics_df_by_sku = read_metrics_file(date_report_created)
+    metrics_df_by_sku = read_metrics_file(date_metrics)
     # Считаем доп. колонки с оборачиваемостью и потребностью для листа "Всего"
     metrics_df_by_sku_stats = calc_svod_for_sku(metrics_df_by_sku)
     # Добавляем колонки с потребностью по кластерам
     svod_for_sku = add_demand_for_cluster_columns(df_pivot_by_replaced_clusters, metrics_df_by_sku_stats)
+    # Считываем список товаров
+    df_products = read_products_file(date_metrics)
+    # Делаем обработку списка товаров
+    df_products_processed = process_product_list(df_products)
+    # Добавляем доп. колонки из списка товаров
+    svod_with_additional_columns_for_sku = add_columns_from_products(svod_for_sku, df_products_processed)
+    svod_with_additional_columns_for_clusters = add_columns_from_products(svod_for_clusters, df_products_processed)
     # Добавляем колонки из справочной таблицы
-    svod_with_catalog_for_sku = add_columns_from_catalog(svod_for_sku)
+    svod_with_catalog_for_sku = add_columns_from_catalog(svod_with_additional_columns_for_sku)
     # svod_with_catalog_by_sku = svod.copy()
-    svod_with_catalog_for_clusters = add_columns_from_catalog(svod_for_clusters)
+    svod_with_catalog_for_clusters = add_columns_from_catalog(svod_with_additional_columns_for_clusters)
     # svod_with_catalog_for_clusters = svod_for_clusters.copy()
     # Чтение файла с датами формирования выгрузок
-    report_dates = read_dates_file(date_report_created)
+    report_dates = read_dates_file(date_metrics)
     # Добавляем недостающие колонки для excel
     cluster_list = clusters_mapping_df['cluster'].unique().tolist()
     # Лист "Всего"
     svod_excel_for_sku = add_columns_for_excel(
         svod_with_catalog_for_sku,
         cluster_list,
-        date_report_created,
+        date_metrics,
         report_dates['date_start_file'][0],
         report_dates['date_end_file'][0],
         svod_type='Всего'
@@ -496,7 +599,7 @@ if __name__ == '__main__':
     svod_excel_for_clusters = add_columns_for_excel(
         svod_with_catalog_for_clusters,
         cluster_list,
-        date_report_created,
+        date_metrics,
         report_dates['date_start_file'][0],
         report_dates['date_end_file'][0],
         svod_type='По кластерам'
@@ -507,13 +610,13 @@ if __name__ == '__main__':
         svod_excel_for_clusters,
         df_pivot_by_clusters,
         svod_excel_for_sku_jewelry,
-        date_report_created
+        date_metrics
     )
 
     # Форматирование файла Excel
     format_excel(
         client_name,
-        date_report_created,
+        date_metrics,
         svod_excel_for_sku,
         svod_excel_for_sku_jewelry,
         svod_excel_for_clusters,

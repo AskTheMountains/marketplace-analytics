@@ -8,6 +8,7 @@ import numpy as np
 from openpyxl import Workbook
 from loguru import logger
 import warnings
+from pathlib import Path
 warnings.simplefilter(action='ignore', category=FutureWarning)
 # Файл с константами
 from wb.scripts.constants import (
@@ -22,18 +23,17 @@ from wb.scripts.constants import (
 
 def calcMetrics(date_upload_files=str(date.today())):
     # Директории с загруженными файлами из апи
-    uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-    uploaddir = f"{uploaddir}/UploadFiles_{date_upload_files}"
-    dates_from_to = pd.read_csv(f"{uploaddir}/{date_upload_files}_dates_from_to.csv", sep=';')
+    uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles" / f"UploadFiles_{date_upload_files}"
+    dates_from_to = pd.read_csv(uploaddir / f"{date_upload_files}_dates_from_to.csv", sep=';')
     logger.info(f"Calculation metrics for client {client_name} for dates {dates_from_to['date_start'][0]} - {dates_from_to['date_end'][0]}")
     # Загрузка данных из CSV файлов
-    catalog = pd.read_csv(f"{uploaddir}/{date_upload_files}_Товары.csv", sep=';')
-    order = pd.read_csv(f"{uploaddir}/{date_upload_files}_Заказы.csv", sep=';')
-    sales = pd.read_csv(f"{uploaddir}/{date_upload_files}_Продажи.csv", sep=';')
-    reminders = pd.read_csv(f"{uploaddir}/{date_upload_files}_Остатки.csv", sep=';')
-    reminders_fbs = pd.read_csv(f"{uploaddir}/{date_upload_files}_Остатки_fbs.csv", sep=';')
-    supply_orders = pd.read_csv(f"{uploaddir}/{date_upload_files}_Поставки.csv", sep=';')
-    # supply_orders_fbs = pd.read_csv(f"{uploaddir}/{date_upload_files}_Поставки_fbs.csv", sep=';')
+    catalog = pd.read_csv(uploaddir / f"{date_upload_files}_Товары.csv", sep=';')
+    order = pd.read_csv(uploaddir / f"{date_upload_files}_Заказы.csv", sep=';')
+    sales = pd.read_csv(uploaddir / f"{date_upload_files}_Продажи.csv", sep=';')
+    reminders = pd.read_csv(uploaddir / f"{date_upload_files}_Остатки.csv", sep=';')
+    reminders_fbs = pd.read_csv(uploaddir / f"{date_upload_files}_Остатки_fbs.csv", sep=';')
+    supply_orders = pd.read_csv(uploaddir / f"{date_upload_files}_Поставки.csv", sep=';')
+    # supply_orders_fbs = pd.read_csv(uploaddir / f"{date_upload_files}_Поставки_fbs.csv", sep=';')
 
     # Обработка данных
     df_list = [catalog, order, sales, reminders, reminders_fbs, supply_orders]
@@ -241,15 +241,16 @@ def calcMetrics(date_upload_files=str(date.today())):
         'Заказы', 'Заказы_руб', 'Продажи', 'Продажи_руб', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки', 'Остатки_fbs']
         ]
 
-    with pd.ExcelWriter(f"{metricsdir}/{date_upload_files}_МетрикиИтоги.xlsx") as w:
+    with pd.ExcelWriter(metricsdir / f"{date_upload_files}_МетрикиИтоги.xlsx") as w:
         summary.to_excel(w, sheet_name='summary', index=False)
         claster_report.to_excel(w, sheet_name='claster_report', index=False)
 
     logger.info("Done")
 
+
 if __name__ == '__main__':
-    metricsdir = f"{marketplace_dir_name}/Clients/{client_name}/Metrics"
-    if not os.path.exists(metricsdir):
-        os.mkdir(metricsdir)
+    metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
+    if not metricsdir.exists():
+        metricsdir.mkdir(parents=True, exist_ok=True)
     # calcMetrics(date_upload_files)
     calcMetrics()

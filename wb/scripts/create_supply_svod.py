@@ -19,15 +19,15 @@ from wb.scripts.constants import (
 
 
 # Директории с загруженными файлами из апи
-uploaddir = f"{marketplace_dir_name}/Clients/{client_name}/UploadFiles"
-uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
+uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
+uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 
 # Директория с метриками
-metricsdir = f"{marketplace_dir_name}/Clients/{client_name}/Metrics"
+metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
 
 # Функция чтения дат фомрирования отчета
 def read_dates_file(date_report_created):
-    report_dates = pd.read_csv(f"{uploaddir}/UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
+    report_dates = pd.read_csv(uploaddir / f"UploadFiles_{date_report_created}/{date_report_created}_dates_from_to.csv", sep=';')
     for col in report_dates:
         report_dates[col] = pd.to_datetime(report_dates[col])
     return report_dates
@@ -35,8 +35,10 @@ def read_dates_file(date_report_created):
 
 # Функция чтения метрик
 def read_metrics_file(date_report_created, sheet_name='summary'):
-    metrics = pd.read_excel(f"{metricsdir}/{date_report_created}_МетрикиИтоги.xlsx",
-                                        sheet_name=sheet_name)
+    metrics = pd.read_excel(
+        metricsdir / f"{date_report_created}_МетрикиИтоги.xlsx",
+        sheet_name=sheet_name
+    )
     # Создаем копию для избежания изменений в оригинальном df
     metrics_processed = metrics.copy()
     # Для некоторых клиентов делаем размер строковой переменной
@@ -107,7 +109,7 @@ def read_clusters_mapping(cargo_type):
         cluster_sheet_name = 'Короба'
     # Считываем df с группировкой складов
     clusters_mapping_df = pd.read_excel(
-        f'{marketplace_dir_name}/scripts/wb_warehouses_mapping.xlsx',
+        marketplace_dir_name / "scripts" / "wb_warehouses_mapping.xlsx",
         sheet_name=cluster_sheet_name
     )
     # Удаляем дубликаты на всякий случай
@@ -289,7 +291,13 @@ def add_demand_for_cluster_columns(metrics_df_by_cluster,
 # Функция чтения и обработки справочной таблицы
 def read_catalog():
     # Чтение справочной таблицы
-    catalog = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(
+        marketplace_dir_name
+        / f"Clients"
+        / f"{client_name}"
+        / "catalog"
+        / f"Справочная_таблица_{client_name}_WB.xlsx"
+    )
     # Создаем копию, в которой будем проводить обработку
     catalog_processed = catalog.copy()
     # Добавляем колонку с размером, если она отсутствует в справочной таблице
@@ -318,9 +326,11 @@ def add_columns_from_catalog(metrics_df_by_sku_with_stats, catalog):
     metrics_df_by_sku_with_stats_ = metrics_df_by_sku_with_stats.copy()
     catalog_ = catalog.copy()
     # Мерджим со справочной таблицей
-    metrics_df_by_sku_with_stats_with_catalog = metrics_df_by_sku_with_stats_.merge(catalog_[catalog_supply_columns],
-                                                                   how='left',
-                                                                   on=['Артикул_Размер'])
+    metrics_df_by_sku_with_stats_with_catalog = metrics_df_by_sku_with_stats_.merge(
+        catalog_[catalog_supply_columns],
+        how='left',
+        on=['Артикул_Размер']
+    )
     # metrics_df_by_sku_with_stats.drop(columns=['Артикул продавца'])
     return metrics_df_by_sku_with_stats_with_catalog
 
@@ -421,8 +431,11 @@ def save_sheets_to_excel(
     ):
     # Директория для сохранения с именем файла
     filepath_supply_svod = (
-        f"{marketplace_dir_name}/Clients/{client_name}/SupplySvod/"
-        f"{date_report_created}_Расчет_поставок_{client_name}_WB.xlsx"
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "SupplySvod"
+        / f"{date_report_created}_Расчет_поставок_{client_name}_WB.xlsx"
     )
     with pd.ExcelWriter(
         filepath_supply_svod,
@@ -449,7 +462,7 @@ def format_excel(
         svod_excel_clusters
     ):
     # Директория хранения отчетов по расчету поставок
-    path_supply_svod = f"{marketplace_dir_name}/Clients/{client_name}/SupplySvod"
+    path_supply_svod = marketplace_dir_name / "Clients" / client_name / "SupplySvod"
 
     # Создаем файл excel, в котором будет производиться форматирование
     format_supply_svod.copy_supply_svod_file(
