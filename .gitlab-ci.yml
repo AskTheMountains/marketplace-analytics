@@ -1,0 +1,32 @@
+stages:
+  - sync_wiki
+
+sync_develop_docs_to_wiki:
+  stage: sync_wiki
+  image: alpine:latest
+  script:
+    - apk add --no-cache git rsync
+    # Клонируем develop ветку основного репозитория
+    - git clone --single-branch --branch develop https://$CI_REPOSITORY_URL main_repo
+    - cd main_repo
+
+    # Клонируем wiki-репозиторий (авторизация через токен)
+    - git clone https://oauth2:${WIKI_PUSH_TOKEN}@${CI_PROJECT_URL}.wiki.git ../wiki_repo
+
+    # Копируем содержимое docs/ (или нужные файлы) в wiki-репозиторий
+    - rsync -av --delete docs/ ../wiki_repo/
+
+    # Коммитим и пушим
+    - cd ../wiki_repo
+    - git config user.name "GitLab CI Bot"
+    - git config user.email "ci-bot@example.com"
+    - git add .
+    - |
+      if ! git diff --cached --quiet; then
+        git commit -m "Sync Wiki from develop branch"
+        git push
+      else
+        echo "Нет изменений для Wiki."
+      fi
+  only:
+    - manual
