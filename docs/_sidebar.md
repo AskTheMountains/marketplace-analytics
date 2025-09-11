@@ -1,0 +1,7 @@
+- [Главная](home)
+- [Описание структуры проекта](project_structure)
+- Файлы настроек проекта
+    - [Файл настроек settings.json](settings_description/settings_json_description)
+    - [Файл выбора клиента options.py](settings_description/options_py_description)
+- Инструкции
+    - [Инструкции Ozon](ozon_instructions/ozon_reports_instructions)
