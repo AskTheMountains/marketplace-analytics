@@ -5,7 +5,6 @@ sync_develop_docs_to_wiki:
   stage: sync_wiki
   image: alpine:latest
   script:
-    # Добавляем нужные приложения
     - apk add --no-cache git rsync
     # Клонируем develop ветку основного репозитория
     - git clone --single-branch --branch develop https://$CI_REPOSITORY_URL main_repo
