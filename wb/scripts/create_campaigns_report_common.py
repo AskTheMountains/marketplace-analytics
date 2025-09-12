@@ -1653,8 +1653,8 @@ def save_and_format_excel(
 if __name__ == '__main__':
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        start_date='2025-08-25',
-        end_date='2025-09-02'
+        start_date='2025-09-01',
+        end_date='2025-09-09'
     )
     # Список кампаний и даты для каждой кампании,
     # за которые нужно сформировать отчет
@@ -1666,7 +1666,7 @@ if __name__ == '__main__':
     # Получаем список кампаний
     df_company_list = get_company_list(headers)
     # Получаем список номенклатур кампании
-    df_companies_nms = get_companies_info(headers, df_input_companies)
+    # df_companies_nms = get_companies_info(headers, df_input_companies)
     # Получаем статистику кампаний
     df_companies_stats = get_company_stats_v2(headers, df_input_companies, request_type='interval')
     # Получаем список товаров
