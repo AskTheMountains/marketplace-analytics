@@ -172,4 +172,5 @@ wb/scripts/wb_warehouse_list.csv
 wb/scripts/your_file_formatted.xlsx
 wb/scripts/Склады поставки для группировки.xlsx
 mkdocs.yml
-/docs
+docs/
+docs-mkdocs/
