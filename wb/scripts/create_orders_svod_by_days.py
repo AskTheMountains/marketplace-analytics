@@ -34,14 +34,12 @@ months_ru = {
 }
 
 
-# Папка, где лежит текущий скрипт
-BASE_DIR = Path(__file__).parent.parent
-
 
 # Некоторые константы
 from wb.scripts.constants import (
     headers,
     client_name,
+    marketplace_dir_name
 )
 # Функции выгрузки данных по API WB
 from wb.scripts.uploadDataFromWB import (
@@ -109,7 +107,7 @@ def generate_date_range(df_dates):
 # Функция создания директории, куда будет помещен итоговый отчет
 def create_orders_svod_dir(client_name, date_report=str(date.today())):
     orders_svod_path = (
-        BASE_DIR
+        marketplace_dir_name
         / "Clients"
         / client_name
         / "OrdersSvod"
@@ -129,7 +127,7 @@ def read_report_files(
     ):
     # Маска поиска файлов
     orders_reports_file_mask = f'*Свод_Заказы_{client_name}_WB.xlsx'
-    search_dir = Path(orders_svod_dir)
+    search_dir = orders_svod_dir
 
     # Фильтрация временных файлов excel
     files = [
@@ -650,7 +648,7 @@ def calc_month_result_column(
         df_excel_orders_svod[total_col] = df_excel_orders_svod[cols_sorted].sum(axis=1)
         total_cols[(year, month)] = total_col
 
-    # 3. Характеристики товара — это не даты и не "Итого ..."
+    # 3. Добавляем столбцы с характеристикой товара
     date_cols = set(date_col_to_dt.keys())
     total_name_pattern = re.compile(r"Итого [А-Яа-я]+ \d{4}$")
     characteristics_cols = [c for c in df_excel_orders_svod.columns if (c not in date_cols) and (not total_name_pattern.match(str(c)))]
