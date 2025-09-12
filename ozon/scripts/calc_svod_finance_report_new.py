@@ -613,13 +613,11 @@ def calc_companies_costs(
         task_id=None
     ):
     # Директория, где будут лежать данные по рекламным кампаниям
-    companies_stats_dir = f"{finance_reports_dir}/{date_report}_Кампании"
-    if not os.path.exists(companies_stats_dir):
-        os.mkdir(companies_stats_dir)  # Создаем, если директория не существует
+    companies_stats_dir = finance_reports_dir / f"{date_report}_Кампании"
+    companies_stats_dir.mkdir(parents=True, exist_ok=True)  # Создаем, если директория не существует
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir = f"{finance_reports_dir}/{date_report}_Кампании_parsed"
-    if not os.path.exists(companies_parsed_dir):
-        os.mkdir(companies_parsed_dir)
+    companies_parsed_dir = finance_reports_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Проверяем, что в отчете были расходы по рекламе
     companies_costs_flag = check_companies_costs(df_finance_report)
