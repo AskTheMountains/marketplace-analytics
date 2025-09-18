@@ -24,6 +24,8 @@ import re
 from loguru import logger
 import getopt
 import sys
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 
 
