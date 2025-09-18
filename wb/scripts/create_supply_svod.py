@@ -430,11 +430,17 @@ def save_sheets_to_excel(
         date_report_created
     ):
     # Директория для сохранения с именем файла
-    filepath_supply_svod = (
+    path_supply_svod = (
         marketplace_dir_name
         / "Clients"
         / client_name
         / "SupplySvod"
+    )
+    # Создаем директорию, если её нет
+    path_supply_svod.mkdir(parents=True, exist_ok=True)
+    # Задаем имя файла
+    filepath_supply_svod = (
+        path_supply_svod
         / f"{date_report_created}_Расчет_поставок_{client_name}_WB.xlsx"
     )
     with pd.ExcelWriter(
