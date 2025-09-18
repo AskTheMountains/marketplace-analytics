@@ -1586,7 +1586,6 @@ if __name__ == '__main__':
     uploaddir_today = create_upload_dir()
 
     # days_to_process = read_params()
-    # days_to_process = 1
     # date_start, date_end = generateDates()
     date_start, date_end = generate_dates_new()
     # date_end = '2025-07-12T23:59:59.000Z'
