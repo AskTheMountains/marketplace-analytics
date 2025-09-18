@@ -16,7 +16,7 @@ import numpy as np
 from openpyxl import Workbook
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side
+from openpyxl.styles import Border, Side, Font, Alignment
 from openpyxl.styles.numbers import FORMAT_NUMBER_00
 import re
 from loguru import logger
@@ -546,7 +546,7 @@ def parse_companies_files(
                         'Наименование': 'Наименование товара',
                         'sku': 'SKU',
                         'Цена товара, ₽': 'Цена товара, руб',
-                        'Ср. цена клика, ₽': 'Ср. цена клика, руб',
+                        'Средняя стоимость клика, ₽': 'Ср. цена клика, руб',
                         'Расход, ₽, с НДС': 'Расход по кампаниям с НДС, руб',
                         'Заказы': 'Заказы шт (из отчета РК)',
                         'Заказы модели': 'Заказы модели шт (из отчета РК)',
@@ -574,7 +574,7 @@ def parse_companies_files(
                         'Наименование': 'Наименование товара',
                         'sku': 'SKU',
                         'Цена товара, ₽': 'Цена товара, руб',
-                        'Ср. цена клика, ₽': 'Ср. цена клика, руб',
+                        'Средняя стоимость клика, ₽': 'Ср. цена клика, руб',
                         'Расход, ₽, с НДС': 'Расход по кампаниям с НДС, руб',
                         'Заказы': 'Заказы шт (из отчета РК)',
                         'Заказы модели': 'Заказы модели шт (из отчета РК)',
@@ -1291,7 +1291,7 @@ def add_model_products(
         'unique_company_id',
         'Номер кампании',
         'Дата начала статистики РК',
-       'Дата окончания статистики РК',
+        'Дата окончания статистики РК',
     ]
     df_company_products_with_models_orders[columns_to_fill_models] = (
         df_company_products_with_models_orders[columns_to_fill_models].ffill()
@@ -1509,87 +1509,6 @@ def calc_orders_by_models_v2(
 
     return grouped_dfs_company
 
-# Функция расчета заказов и остатков для товаров в РК
-def calc_orders_for_companies(
-        df_companies_products_data,
-        df_orders_products_data,
-        df_products_processed,
-):
-    # Создаем копии для избежания изменений в оригинальных df
-    # df_orders_products_data_ = df_orders_products_data.copy()
-    df_companies_with_orders = df_companies_products_data.copy()
-
-    # df, куда будем помещать итоговый результат
-    df_companies_with_orders_and_models = pd.DataFrame()
-
-    # Убираем лишние столбцы
-    df_companies_with_orders = (
-        df_companies_with_orders
-        .loc[:, df_companies_with_orders.columns.isin([
-                'unique_company_id',
-                'Номер кампании',
-                'Тип кампании',
-                'Дата начала статистики РК',
-                'Дата окончания статистики РК',
-                'SKU',
-                'Артикул',
-                'ID Размерного ряда',
-                'Количество размеров в артикуле',
-                'model_id',
-                'Наименование товара',
-                'Цена товара, ₽',
-                'Показы',
-                'Клики',
-                'CTR (%)',
-                'В корзину',
-                'Ср. цена клика, ₽',
-                'Расход по кампаниям с НДС, руб',
-                'Расход в оплате за заказ, руб',
-                'Дата добавления',
-        ])]
-    )
-    # Делаем цикл по каждой рекламной кампании
-    for unique_company_id in df_companies_products_data['unique_company_id'].unique():
-        # Временный df с данными текущей кампании
-        tmp_df_company = (
-            df_companies_products_data
-            .loc[df_companies_products_data['unique_company_id'] == unique_company_id, :]
-            # .drop_duplicates(subset=['Номер кампании'])
-        )
-        # Получаем номер кампании
-        company_number = tmp_df_company['Номер кампании'].iloc[0]
-        # Получаем даты начала и окончания кампании
-        date_start_company = tmp_df_company['Дата начала статистики РК'].iloc[0]
-        date_end_company = tmp_df_company['Дата окончания статистики РК'].iloc[0]
-        # Получаем список исходных SKU кампании
-        company_sku_list = tmp_df_company['Артикул'].to_list()
-        # Считаем заказы с фильтром по данным датам
-        grouped_dfs_company = calc_orders_by_models_v2(
-            date_start_company,
-            date_end_company,
-            unique_company_id,
-            company_number,
-            df_orders_products_data,
-            df_products_processed
-        )
-        # Добавляем товары по сшивке
-        tmp_df_company_with_models = add_model_products_v2(
-            tmp_df_company,
-            grouped_dfs_company,
-            df_products_processed,
-            unique_company_id,
-            company_number,
-            company_sku_list
-        )
-        # Объединяем с данными предыдущей кампании
-        df_companies_with_orders_and_models = pd.concat([
-            df_companies_with_orders_and_models,
-            tmp_df_company_with_models
-        ], ignore_index=True)
-
-    return df_companies_with_orders_and_models
-
-
 # Функция добавления сшитых товаров (v2)
 def add_model_products_v2(
         tmp_df_company,
@@ -1649,7 +1568,12 @@ def add_model_products_v2(
         .copy()
         # Добавляем тип товара - товар из РК
         .assign(**{
-            'Тип товара': 'Товар из РК'
+            'Тип товара': lambda x:
+            np.where(
+                x['Дата добавления'] == '01.01.0001',
+                'Товар из заказов',
+                'Товар из РК'
+            )
         })
         # К товарам из РК добавляем различные типы заказов
         .merge(
@@ -1685,7 +1609,7 @@ def add_model_products_v2(
     #     how='left',
     # )
 
-    # Определяем артикулы, по которым нужно добавить сшивку
+    # --- Определяем артикулы, по которым нужно добавить сшивку ---
     df_company_products_with_models = (
         tmp_df_company_with_orders
         .loc[tmp_df_company_with_orders['Количество размеров в артикуле'] <= 1, :]
@@ -1881,6 +1805,89 @@ def add_model_products_v2(
     return df_company_result_orders
 
 
+# Функция расчета заказов и остатков для товаров в РК
+def calc_orders_for_companies(
+        df_companies_products_data,
+        df_orders_products_data,
+        df_products_processed,
+):
+    # Создаем копии для избежания изменений в оригинальных df
+    # df_orders_products_data_ = df_orders_products_data.copy()
+    df_companies_with_orders = df_companies_products_data.copy()
+
+    # df, куда будем помещать итоговый результат
+    df_companies_with_orders_and_models = pd.DataFrame()
+
+    # Убираем лишние столбцы
+    # df_companies_with_orders = (
+    #     df_companies_with_orders
+    #     .loc[:, df_companies_with_orders.columns.isin([
+    #             'unique_company_id',
+    #             'Номер кампании',
+    #             'Тип кампании',
+    #             'Дата начала статистики РК',
+    #             'Дата окончания статистики РК',
+    #             'SKU',
+    #             'Артикул',
+    #             'ID Размерного ряда',
+    #             'Количество размеров в артикуле',
+    #             'model_id',
+    #             'Наименование товара',
+    #             'Цена товара, руб',
+    #             'Показы',
+    #             'Клики',
+    #             'CTR (%)',
+    #             'В корзину',
+    #             'Ср. цена клика, руб',
+    #             'Расход по кампаниям с НДС, руб',
+    #             'Расход в оплате за заказ, руб',
+    #             'Дата добавления',
+    #     ])]
+    # )
+    # Делаем цикл по каждой рекламной кампании
+    for unique_company_id in df_companies_products_data['unique_company_id'].unique():
+        # Временный df с данными текущей кампании
+        tmp_df_company = (
+            df_companies_products_data
+            .loc[df_companies_products_data['unique_company_id'] == unique_company_id, :]
+            # .drop_duplicates(subset=['Номер кампании'])
+        )
+        # Получаем номер кампании
+        company_number = tmp_df_company['Номер кампании'].iloc[0]
+        # Получаем даты начала и окончания кампании
+        date_start_company = tmp_df_company['Дата начала статистики РК'].iloc[0]
+        date_end_company = tmp_df_company['Дата окончания статистики РК'].iloc[0]
+        # Получаем список исходных SKU кампании
+        company_sku_list = tmp_df_company['Артикул'].to_list()
+        # Считаем заказы с фильтром по данным датам
+        grouped_dfs_company = calc_orders_by_models_v2(
+            date_start_company,
+            date_end_company,
+            unique_company_id,
+            company_number,
+            df_orders_products_data,
+            df_products_processed
+        )
+        # Добавляем товары по сшивке
+        tmp_df_company_with_models = add_model_products_v2(
+            tmp_df_company,
+            grouped_dfs_company,
+            df_products_processed,
+            unique_company_id,
+            company_number,
+            company_sku_list
+        )
+        # Объединяем с данными предыдущей кампании
+        df_companies_with_orders_and_models = pd.concat([
+            df_companies_with_orders_and_models,
+            tmp_df_company_with_models
+        ], ignore_index=True)
+
+    return df_companies_with_orders_and_models
+
+
+
+
 
 # Функция добавления остатков
 def add_reminders(df_companies_with_orders_and_models, df_reminders_all):
@@ -1907,14 +1914,16 @@ def calc_final_orders(df_companies_with_orders_and_reminders):
         # У артикулов с размерным рядом - берем сумму всех заказов размерного ряда артикула
         df_final_orders['Заказы размерного ряда шт (из отчета по Заказам)'],
         # У артикулов без размерного ряда - суммируем заказы модели из отчета РК и заказы только этого артикула
-        df_final_orders['Заказы модели шт (из отчета РК)'] + df_final_orders['Заказы шт (из отчета по Заказам)']
+        # df_final_orders['Заказы модели шт (из отчета РК)'] + df_final_orders['Заказы шт (из отчета по Заказам)']
+        df_final_orders['Заказы шт (из отчета по Заказам)']
     )
     df_final_orders['Заказы всего руб'] = np.where(
         df_final_orders['Количество размеров в артикуле'] > 1,
         # У артикулов с размерным рядом - берем сумму всех заказов размерного ряда артикула
         df_final_orders['Заказы размерного ряда руб (из отчета по Заказам)'],
         # У артикулов без размерного ряда - суммируем заказы модели из отчета РК и заказы только этого артикула
-        df_final_orders['Заказы модели руб (из отчета РК)'] + df_final_orders['Заказы руб (из отчета по Заказам)']
+        # df_final_orders['Заказы модели руб (из отчета РК)'] + df_final_orders['Заказы руб (из отчета по Заказам)']
+        df_final_orders['Заказы руб (из отчета по Заказам)']
     )
     # Если заказы модели из отчета по заказам нулевые, а из отчета РК - нет, то берем заказы модели из отчета РК
     # epsilon = 1e-5
@@ -1939,14 +1948,28 @@ def calc_final_orders(df_companies_with_orders_and_reminders):
         df_final_orders['Расход по кампаниям с НДС, руб']
         + df_final_orders['Расход в оплате за заказ, руб']
     )
-    df_final_orders['ДРР, %'] = np.where(
-        df_final_orders['Заказы всего руб'] == 0,
-        np.nan,  # Заменить на nan при делении на 0
-        np.round(
-            df_final_orders['Расход по кампаниям с НДС, руб'] / df_final_orders['Заказы всего руб'] * 100,
-            2
-        )
+    # Считаем расходы по кампаниям в разрезе размерного ряда
+    df_final_orders['Расход по кампаниям по размерному ряду, руб'] = (
+        df_final_orders
+        .groupby('ID Размерного ряда')['Расход по кампаниям с НДС, руб']
+        .transform('sum')
     )
+    # Словарик для расчета ДРР
+    drr_dict = {
+        'ДРР, %': 'Расход по кампаниям с НДС, руб',
+        'ДРР по артикулу, %': 'Расход по кампаниям по размерному ряду, руб'
+    }
+    for drr_type, costs_column in drr_dict.items():
+        # Считаем разные типы дрр
+        df_final_orders[drr_type] = np.where(
+            df_final_orders['Заказы всего руб'] == 0,
+            np.nan,  # Заменить на nan при делении на 0
+            np.round(
+                df_final_orders[costs_column] / df_final_orders['Заказы всего руб'] * 100,
+                2
+            )
+        )
+
     # Переводим целые числа в тип int
     for col in df_final_orders.select_dtypes(include=['float']):
         if np.all(df_final_orders[col].dropna() % 1 == 0):  # Убираем NaN, проверяем дробную часть
@@ -1986,6 +2009,7 @@ def create_excel_report(df_final_orders):
         'Расход в оплате за заказ, руб',
         'Расход по кампаниям и в оплате за заказ, руб',
         'ДРР, %',
+        'ДРР по артикулу, %',
         'Остаток',
         'Дата добавления',
     ]
@@ -2020,57 +2044,72 @@ def save_and_format_excel(
 
     logger.info('Formatting companies report')
 
-    # Форматируем файл с отчетом
+    # ---- Форматируем файл с отчетом ----
+
+    # Исключаем колонки из числового форматирования
+    exclude_columns = ["SKU"]
 
     # Открываем книгу excel
     wb = load_workbook(file_name_report)
-    # Выбираем нужный лист
-    ws = wb['Sheet1']
 
-    # Определяем стиль границ
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
+    # Общее форматирование для всех листов
+    for work_sheet in wb.sheetnames:
+        # Выбираем нужный лист
+        ws = wb[work_sheet]
 
-    # Создаем границы
-    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
+        # Границы листа
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
+
+        # Определяем стиль границ
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Создаем границы
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                for cell in row:
+                    cell.border = thin_border
+
+        # Получаем заголовки и их индексы
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        exclude_idx = {idx for idx, header in enumerate(headers) if header in exclude_columns}
+
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                # Граница для каждой ячейки
                 cell.border = thin_border
+                # Шапка: жирный текст
+                if cell.row == 1:
+                    cell.font = Font(name="Calibri", size=11, bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                # Формат "число" только если не исключён, не шапка и это действительно число
+                elif idx not in exclude_idx and isinstance(cell.value, (int, float)):
+                    if float(cell.value).is_integer():
+                        cell.number_format = '#,##0'
+                    else:
+                        cell.number_format = '#,##0.00'
 
-    # Применение числового форматирования с разделением разрядов (через пробелы)
-    # Получаем типы данных из исходного датафрейма
-    columns = list(df_excel_companies_report.columns)
-    dtypes = df_excel_companies_report.dtypes
 
-    for idx, col in enumerate(columns, start=1):
-        if pd.api.types.is_integer_dtype(dtypes[col]):
-            num_format = '# ##0'  # Excel формат - разделение пробелом между тысячами
-        elif pd.api.types.is_float_dtype(dtypes[col]):
-            num_format = '# ##0.00'  # Разделение и 2 знака после запятой
-        else:
-            continue  # Пропускаем нечисловые
+        # Автоподбор ширины столбцов + фильтр на столбцы
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for i, cell in enumerate(col):
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            # Если это заголовок (первая строка), учитываем значок фильтра
+            head_len = len(str(col[0].value)) if col[0].value else 0
+            filter_icon_length = 3 if head_len == max_len else 2  # 3 для filter icon
+            ws.column_dimensions[col_letter].width = max_len + filter_icon_length
 
-        for cell in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):  # min_row=2 чтобы пропустить шапку
-            for c in cell:
-                c.number_format = num_format
-
-    # Автоподбор ширины столбцов + фильтр на столбцы
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for i, cell in enumerate(col):
-            if cell.value:
-                max_len = max(max_len, len(str(cell.value)))
-        # Если это заголовок (первая строка), учитываем значок фильтра
-        head_len = len(str(col[0].value)) if col[0].value else 0
-        filter_icon_length = 3 if head_len == max_len else 2  # 3 для filter icon
-        ws.column_dimensions[col_letter].width = max_len + filter_icon_length
-
-    # Значок фильтра на столбцы
-    ws.auto_filter.ref = ws.dimensions
+        # Значок фильтра на столбцы
+        ws.auto_filter.ref = ws.dimensions
 
     # Сохранение обновленного файла
     wb.save(file_name_report)

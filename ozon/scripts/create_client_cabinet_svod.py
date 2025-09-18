@@ -16,13 +16,15 @@ import numpy as np
 from openpyxl import Workbook
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side, Alignment
+from openpyxl.styles import Border, Side, Font, Alignment
 from openpyxl.styles.numbers import FORMAT_NUMBER_00
 from openpyxl.formatting.rule import ColorScaleRule
 import re
 from loguru import logger
 import getopt
 import sys
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 
 
@@ -675,12 +677,21 @@ def save_and_format_excel(
     # Открываем книгу excel
     wb = load_workbook(file_name_report)
 
+    # Исключаем колонки из числового форматирования
+    exclude_columns = ["SKU"]
+
     # Общее форматирование для всех листов
     for work_sheet in wb.sheetnames:
         # Список колонок
         svod_columns = list(df_current_and_previous_report.columns)
         # Выбираем нужный лист
         ws = wb[work_sheet]
+
+        # Границы листа
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
 
         # Определяем стиль границ
         thin_border = Border(
@@ -695,23 +706,25 @@ def save_and_format_excel(
                 for cell in row:
                     cell.border = thin_border
 
-        # Форматирование числовых ячеек
-        exclude_number_format_substrings = ['SKU']
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
-                # Определяем номер колонки с заголовком
-                col_idx = cell.column - 1  # openpyxl: колонка начинается с 1
-                col_name = svod_columns[col_idx]
+        # Получаем заголовки и их индексы
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        exclude_idx = {idx for idx, header in enumerate(headers) if header in exclude_columns}
 
-                # Пропускаем форматирование некоторых столбцов
-                if any(substr in str(col_name) for substr in exclude_number_format_substrings):
-                    continue
-
-                if isinstance(cell.value, (int, float)):
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                # Граница для каждой ячейки
+                cell.border = thin_border
+                # Шапка: жирный текст
+                if cell.row == 1:
+                    cell.font = Font(name="Calibri", size=11, bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                # Формат "число" только если не исключён, не шапка и это действительно число
+                elif idx not in exclude_idx and isinstance(cell.value, (int, float)):
                     if float(cell.value).is_integer():
                         cell.number_format = '#,##0'
                     else:
                         cell.number_format = '#,##0.00'
+
 
         # --- Перенос текста во всех заголовках ---
         for idx in range(1, ws.max_column + 1):
@@ -807,8 +820,8 @@ if __name__ == '__main__':
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем даты начала и окончания периода выгрузки
     df_dates = generate_dates(
-        # start_date='2025-07-01',
-        # end_date='2025-07-31'
+        start_date='2025-09-08',
+        end_date='2025-09-14'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]

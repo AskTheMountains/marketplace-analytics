@@ -1,9 +1,5 @@
 
 # %% Определение всех функций
-# import sys
-# print("PYTHONPATH:", sys.path)
-# import os
-# print("CWD:", os.getcwd())
 import json
 import time
 from datetime import date,datetime,timedelta
@@ -20,7 +16,7 @@ import numpy as np
 from openpyxl import Workbook
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side
+from openpyxl.styles import Border, Side, Font, Alignment
 from openpyxl.styles.numbers import FORMAT_NUMBER_00
 from openpyxl.formatting.rule import ColorScaleRule
 import re
@@ -439,8 +435,7 @@ def save_and_format_excel(
     # Полный путь к файлу отчета
     file_name_report = path_report / name_report
     # Если директории не существует — создаем её
-    if not path_report.exists():
-        path_report.mkdir(parents=True, exist_ok=True)
+    path_report.mkdir(parents=True, exist_ok=True)
     # Формируем даты для названия листа
     date_start_excel = (
         pd.to_datetime(df_dates['date_start'])
@@ -466,6 +461,9 @@ def save_and_format_excel(
 
     # ---- Форматируем файл с отчетом ----
 
+    # Исключаем колонки из числового форматирования
+    exclude_columns = ["SKU"]
+
     # Открываем книгу excel
     wb = load_workbook(file_name_report)
 
@@ -473,6 +471,12 @@ def save_and_format_excel(
     for work_sheet in wb.sheetnames:
         # Выбираем нужный лист
         ws = wb[work_sheet]
+
+        # Границы листа
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
 
         # Определяем стиль границ
         thin_border = Border(
@@ -487,14 +491,25 @@ def save_and_format_excel(
                 for cell in row:
                     cell.border = thin_border
 
-        # Форматирование числовых ячеек
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
-                if isinstance(cell.value, (int, float)):
+        # Получаем заголовки и их индексы
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        exclude_idx = {idx for idx, header in enumerate(headers) if header in exclude_columns}
+
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                # Граница для каждой ячейки
+                cell.border = thin_border
+                # Шапка: жирный текст
+                if cell.row == 1:
+                    cell.font = Font(name="Calibri", size=11, bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                # Формат "число" только если не исключён, не шапка и это действительно число
+                elif idx not in exclude_idx and isinstance(cell.value, (int, float)):
                     if float(cell.value).is_integer():
                         cell.number_format = '#,##0'
                     else:
                         cell.number_format = '#,##0.00'
+
 
         # Автоподбор ширины столбцов + фильтр на столбцы
         for col in ws.columns:
@@ -514,26 +529,6 @@ def save_and_format_excel(
 
     # Форматирование для листа со сводной таблицей по клиенту
     ws = wb[sheet_name_client_svod]
-    # Применение числового форматирования с разделением разрядов (через пробелы)
-    # Получаем типы данных из исходного датафрейма
-    columns = list(df_client_excel_svod.columns)
-    dtypes = df_client_excel_svod.dtypes
-
-    # for idx, col in enumerate(columns, start=1):
-    #     col_dtype = dtypes[col]
-    #     for cell in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
-    #         for c in cell:
-    #             val = c.value
-    #             if val is None:
-    #                 continue
-    #             if pd.api.types.is_integer_dtype(col_dtype):
-    #                 c.number_format = '# ##0'
-    #             elif pd.api.types.is_float_dtype(col_dtype):
-    #                 # Проверяем, целое ли число в float
-    #                 if isinstance(val, float) and val.is_integer():
-    #                     c.number_format = '# ##0'
-    #                 else:
-    #                     c.number_format = '# ##0.00'
 
     # ---  Форматирование процентных колонок ---
     for col_name in percent_cols:
@@ -576,8 +571,8 @@ if __name__ == '__main__':
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем диапазон дат
     df_dates= generate_dates(
-        # start_date='2025-07-01',
-        # end_date='2025-07-31'
+        start_date='2025-09-08',
+        end_date='2025-09-14'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]
