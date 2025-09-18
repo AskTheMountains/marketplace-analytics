@@ -31,14 +31,21 @@ from wb.scripts.constants import (
 )
 
 # Уже написанные ранее функции выгрузки данных из АПИ
-from wb.scripts.uploadDataFromWB import getWBProduct, get_prices_WB, getOrdersWB
+from wb.scripts.uploadDataFromWB import (
+    getWBProduct,
+    get_prices_WB,
+    getOrdersWB
+)
 
 # Функция выгрузки для АПИ Продвижение
 from wb.scripts.uploadDataPerformanceWB import get_costs_history
 
 # Вспомогательные функции
 from generic_functions import move_columns
-from wb.scripts.wb_generic_functions import get_company_stats_v2
+from wb.scripts.wb_generic_functions import(
+    get_company_stats_v2,
+    load_full_report as upload_realization_report_new
+)
 
 # Функция выгрузки отчета о реализации по апи
 def upload_realization_report(headers, date_start, date_end):
@@ -77,9 +84,6 @@ def upload_realization_report_v2(headers, date_start, date_end):
     df_realization_report_api = pd.DataFrame({'A': [1]})
     rrd_id = 0
 
-    # Если количество строк отчета превышает 100к,
-    # то подключаем логику выгрузки отчета частями
-    # if df_realization_report_api.shape[0] >= 100000:
     # Цикл до тех пор, пока выгружаемый отчет не будет пустым
     while not df_realization_report_api.empty:
         # Параметры запроса
@@ -91,8 +95,7 @@ def upload_realization_report_v2(headers, date_start, date_end):
         logger.info(
             f"\nUploading realization report for client\n"
             f"{client_name}\n"
-            f"for dates\n"
-            f"{date_start} - {date_end}\n"
+            f"Request dates: {date_start} - {date_end}\n"
             f"rrd_id: {rrd_id}"
         )
 
@@ -108,9 +111,27 @@ def upload_realization_report_v2(headers, date_start, date_end):
         )
         # Создаем df с отчетом
         df_realization_report_api = pd.DataFrame(resp_data_realization_report)
-        # Добавляем столбцы года и месяца, за который был сформирован отчет
-        df_realization_report_api['year'] = datetime.strptime(date_start, '%Y-%m-%dT%H:%M:%S').year
-        df_realization_report_api['month'] = datetime.strptime(date_start, '%Y-%m-%dT%H:%M:%S').month
+
+        # Добавляем инфу о периоде выгрузки текущего отчета
+        if not df_realization_report_api.empty:
+            # Переводим колонки в формат datetime
+            date_from_column = pd.to_datetime(df_realization_report_api['date_from'])
+            date_to_column = pd.to_datetime(df_realization_report_api['date_to'])
+            # Переводим в читаемый строковый формат
+            min_date = date_from_column.min().strftime('%Y-%m-%d')
+            max_date = date_to_column.max().strftime('%Y-%m-%d')
+            # Получаем id строки отчета
+            rrd_id = int(df_realization_report_api['rrd_id'].iloc[-1])
+            logger.info(
+                f"\nCurrent chunk:\n"
+                f"date_from min: {min_date}\n"
+                f"date_to max: {max_date}\n"
+                f"rrd_id: {rrd_id}"
+            )
+
+        #  Добавляем столбцы года и месяца, за который был сформирован отчет
+        # df_realization_report_api['year'] = datetime.strptime(date_start, '%Y-%m-%dT%H:%M:%S').year
+        # df_realization_report_api['month'] = datetime.strptime(date_start, '%Y-%m-%dT%H:%M:%S').month
         # Добавляем столбец с id строки
         df_realization_report_api['id'] = np.arange(1, df_realization_report_api.shape[0] + 1)
         # Перемещаем столбец с id в начало отчета
@@ -129,7 +150,7 @@ def upload_realization_report_v2(headers, date_start, date_end):
         if report_row_length >= 100000:
             logger.info(f"Returned 100 000 rows, uploading realization report by parts")
             # Получаем строку отчета, которую будем передавать в следующий запрос
-            rrd_id = int(df_realization_report_api['rrd_id'].iloc[-1])
+            rrd_id = int(df_realization_report_api['rrd_id'].max())
                 # Ждем одну минуту перед следующим запросом
             logger.info(f"Waiting 1 minute before next request")
             time.sleep(60)
@@ -194,7 +215,8 @@ def rename_report_columns(df_realization_report):
 def add_new_columns(df_realization_report_renamed):
     # Создаем копию для избежания изменений в оригинальном df
     df_realization_report_new_columns = df_realization_report_renamed.copy()
-
+    # Создаем столбец с id строки
+    df_realization_report_new_columns['id'] = np.arange(1, df_realization_report_new_columns.shape[0] + 1)
     # Создание колонок, которые не всегда приходят с апи
     variable_api_columns = ['Обоснование штрафов и доплат', 'Возмещение издержек по перевозке']
     for col in variable_api_columns:
@@ -203,8 +225,14 @@ def add_new_columns(df_realization_report_renamed):
 
     # Перевод в datetime некоторых колонок с датой
     for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Дата заказа', 'Дата продажи', 'Дата операции']:
+        # Преобразуем всё в строку для корректной конвертации (это уберет смешение типов)
+        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].astype(str)
         # Переводим в datetime
-        df_realization_report_new_columns[col] = pd.to_datetime(df_realization_report_new_columns[col], format='mixed')
+        df_realization_report_new_columns[col] = pd.to_datetime(
+            df_realization_report_new_columns[col],
+            format='mixed',
+            utc=True
+        )
         # Убираем миллисекунды
         df_realization_report_new_columns[col] = df_realization_report_new_columns[col].dt.floor('s')
         # Убираем тайм зоны
@@ -216,17 +244,19 @@ def add_new_columns(df_realization_report_renamed):
     # Переносим строки с датами в начало df
     df_realization_report_new_columns = move_columns(
         df_realization_report_new_columns,
-        ['Дата начала отчётного периода', 'Дата конца отчётного периода',
-        'Дата заказа', 'Дата продажи','Дата операции',
-        'Дата формирования отчёта',
-        'Дата начала действия фиксации', 'Дата окончания действия фиксации',
-        'Артикул WB',
-        'Предмет',
-        'Бренд',
-        'Обоснование для оплаты',
-        'Обоснование штрафов и доплат',
+        [
+            'Номер отчёта', 'Номер строки',
+            'Дата начала отчётного периода', 'Дата конца отчётного периода',
+            'Дата заказа', 'Дата продажи','Дата операции',
+            'Дата формирования отчёта',
+            'Дата начала действия фиксации', 'Дата окончания действия фиксации',
+            'Артикул WB',
+            'Предмет',
+            'Бренд',
+            'Обоснование для оплаты',
+            'Обоснование штрафов и доплат',
         ],
-        position='id',
+        position=0,
         insert_type='after'
     )
     # Заменяем некоторые название групп расходов
@@ -499,8 +529,6 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
 
     # Переводим артикул продавца с верхний регистр
     df_sku_sizes_costs_stats['Артикул продавца'] = df_sku_sizes_costs_stats['Артикул продавца'].str.upper()
-
-
 
 
     # Формируем list с id строк расходов по артикулам
@@ -1136,6 +1164,45 @@ def union_sku_paid_storage_acceptance_costs(df_sku_and_paid_storage_stats, resul
     return df_sku_paid_storage_acceptance_stats
 
 
+# Функция получения дат расходов по ВБ Продвижению
+def get_promotion_dates(df_realization_report_date_filtered):
+    # Ищем даты расходов по ВБ Продвижению
+    promotion_dates = df_realization_report_date_filtered.loc[
+        df_realization_report_date_filtered['Обоснование штрафов и доплат'] == 'Оказание услуг «ВБ.Продвижение»',
+        ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Итого руб']
+    ]
+    if not promotion_dates.empty:
+        # Переводим дату в нужный формат для выгрузки по апи рекламы
+        date_start_promotion = (
+            pd
+            .to_datetime(min(promotion_dates['Дата начала отчётного периода']))
+            .strftime('%Y-%m-%d')
+        )
+        date_end_promotion = (
+            pd
+            .to_datetime(max(promotion_dates['Дата конца отчётного периода']))
+            .strftime('%Y-%m-%d')
+        )
+        # Переводим дату в нужный формат для выгрузки заказов
+        date_start_orders = date_start_promotion + 'T00:00:00.000Z'
+        date_end_orders = date_end_promotion + 'T23:59:59.000Z'
+    else:
+        date_start_promotion = None
+        date_end_promotion = None
+        date_start_orders = None
+        date_end_orders = None
+
+    # Формируем словарь с резульататми
+    promotion_dates = {
+        'date_start_promotion': date_start_promotion,
+        'date_end_promotion': date_end_promotion,
+        'date_start_orders': date_start_orders,
+        'date_end_orders': date_end_orders,
+    }
+
+    return promotion_dates
+
+
 # Функция обработки файлов по рекламным кампаниям
 def parse_companies_files(date_report):
 
@@ -1326,45 +1393,6 @@ def calc_companies_by_sku_and_size(df_companies_stats_processed, df_costs_histor
     return df_companies_stats_by_size
 
 
-# Функция получения дат расходов по ВБ Продвижению
-def get_promotion_dates(df_realization_report_date_filtered):
-    # Ищем даты расходов по ВБ Продвижению
-    promotion_dates = df_realization_report_date_filtered.loc[
-        df_realization_report_date_filtered['Обоснование штрафов и доплат'] == 'Оказание услуг «ВБ.Продвижение»',
-        ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Итого руб']
-    ]
-    if not promotion_dates.empty:
-        # Переводим дату в нужный формат для выгрузки по апи рекламы
-        date_start_promotion = (
-            pd
-            .to_datetime(min(promotion_dates['Дата начала отчётного периода']))
-            .strftime('%Y-%m-%d')
-        )
-        date_end_promotion = (
-            pd
-            .to_datetime(max(promotion_dates['Дата конца отчётного периода']))
-            .strftime('%Y-%m-%d')
-        )
-        # Переводим дату в нужный формат для выгрузки заказов
-        date_start_orders = date_start_promotion + 'T00:00:00.000Z'
-        date_end_orders = date_end_promotion + 'T23:59:59.000Z'
-    else:
-        date_start_promotion = None
-        date_end_promotion = None
-        date_start_orders = None
-        date_end_orders = None
-
-    # Формируем словарь с резульататми
-    promotion_dates = {
-        'date_start_promotion': date_start_promotion,
-        'date_end_promotion': date_end_promotion,
-        'date_start_orders': date_start_orders,
-        'date_end_orders': date_end_orders,
-    }
-
-    return promotion_dates
-
-
 # Функция расчета расходов по рекламным кампаниям
 def calc_companies_costs(df_realization_report_date_filtered, df_sku_sizes_costs_merged, date_report):
     # Ищем даты, в которых были расходы на ВБ Продвижение
@@ -1451,6 +1479,7 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             df_input_companies,
             # groupby_cols=[]
         )
+
         # Обрабатываем df со статистикой кампаний
         df_companies_stats_processed = process_company_stats_df(df_companies_stats)
         # Распределяем расходы из истории затрат по артикулам в кампании
@@ -1459,6 +1488,8 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             df_costs_history,
             df_sku_sizes_costs_merged
         )
+
+
 
     return df_companies_stats_by_sku
 
@@ -1795,6 +1826,9 @@ def add_data_from_catalog(result_other_costs):
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = 0
 
+    # Переводим артикул продавца в верхний регистр
+    catalog['Артикул продавца'] = catalog['Артикул продавца'].str.upper()
+
     # Получаем таблицу с расходами из результатов по всем расходам
     df_sku_and_other_costs = result_other_costs['df_sku_and_other_costs'].copy()
 
@@ -1807,9 +1841,11 @@ def add_data_from_catalog(result_other_costs):
     df_sku_and_other_costs = df_sku_and_other_costs.loc[:, ~df_sku_and_other_costs.columns.isin(['Артикул продавца', 'Размер'])]
 
     # Мерджим расходы и справочную таблицу
-    df_sku_and_other_costs_with_catalog = df_sku_and_other_costs.merge(catalog[['Артикул_Размер', 'Себестоимость']],
-                                                                       how='left',
-                                                                       on='Артикул_Размер')
+    df_sku_and_other_costs_with_catalog = df_sku_and_other_costs.merge(
+        catalog[['Артикул_Размер', 'Себестоимость']],
+        how='left',
+        on='Артикул_Размер'
+    )
 
 
     # Достаем колонки с Артикулом и Размером из общей колонки
@@ -1825,7 +1861,9 @@ def add_data_from_catalog(result_other_costs):
         insert_type='after'
     )
     # Считаем себестоимость
-    df_sku_and_other_costs_with_catalog['Себестоимость * Факт продаж'] = abs(df_sku_and_other_costs_with_catalog['Себестоимость'] * df_sku_and_other_costs_with_catalog['Продажи минус возвраты шт'])
+    df_sku_and_other_costs_with_catalog['Себестоимость * Факт продаж'] = abs(
+        df_sku_and_other_costs_with_catalog['Себестоимость'] * df_sku_and_other_costs_with_catalog['Продажи минус возвраты шт']
+    )
 
     return df_sku_and_other_costs_with_catalog
 
@@ -2076,6 +2114,7 @@ def format_excel(
         # Включаем автoфильтр на всех данных листа
         ws.auto_filter.ref = ws.dimensions
 
+    # --- Форматирование листа с итоговой таблицей ---
     # Получаем лист, где будем работать с итоговой таблицей
     final_ws = wb['Итоговая таблица']
 
@@ -2121,7 +2160,6 @@ def format_excel(
     for row in range(start_row, end_row + 1):
         # --- Формула: "Затраты на рекламу руб"
         if existing_promotion_columns:
-            # Складываем по всем реально существующим колонкам
             promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
             final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = f'={promo_sum}'
         else:
@@ -2130,27 +2168,78 @@ def format_excel(
         # --- Формула: "% Затрат на рекламные кампании"
         cell_promo = f"{col_map['Затраты на рекламу руб']}{row}"
         cell_sales_minus_returns = f"{col_map[sales_minus_returns_col]}{row}"
-        cell_sales_minus_returns_amount = f"{col_map[sales_minus_returns_amount_col]}{row}"
         formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
         final_ws[f"{col_map['% Затрат на рекламные кампании']}{row}"].value = formula_percent
 
         # --- Формула: "Маржинальность руб"
-        base = f"{col_map[sales_minus_returns_col]}{row}"
-        formula = base
-        for col in cost_columns:
-            formula += f"+{col_map[col]}{row}"
-        final_ws[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+        cell_sebestoimost = final_ws[f"{col_map['Себестоимость']}{row}"]
+        if cell_sebestoimost.value in (None, "", 0):
+            final_ws[f"{col_map['Маржинальность руб']}{row}"].value = ""
+            final_ws[f"{col_map['Маржинальность %']}{row}"].value = ""
+            final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = ""
+        else:
+            # --- "Маржинальность руб"
+            base = f"{col_map[sales_minus_returns_col]}{row}"
+            formula = base
+            for col in cost_columns:
+                formula += f"-{col_map[col]}{row}"
+            final_ws[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
 
-        # --- Формула: "Маржинальность %"
-        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-        cell_sales = f"{col_map[sales_minus_returns_col]}{row}"
-        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales}*100)'
-        final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+            # --- "Маржинальность %"
+            cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+            cell_sales = f"{col_map[sales_minus_returns_col]}{row}"
+            formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
+            final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
-        # --- Формула: "Маржинальность на ед. товара руб"
-        # (используем те же переменные, что и выше, чтобы не было ошибок подстановки)
-        formula_na_ed = f'=IF({cell_sales_minus_returns_amount}=0,"",ABS({cell_marg_rub}/{cell_sales_minus_returns_amount})*SIGN({cell_marg_rub}))'
-        final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+            # --- "Маржинальность на ед. товара руб"
+            cell_qty = f"{col_map[sales_minus_returns_amount_col]}{row}"
+            formula_na_ed = (
+                f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
+            )
+            final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+
+    # --- Форматирование всех листов (без формул) ---
+    # Задаем стиль границы
+    thin_border = Side(border_style="thin", color="000000")
+    # Исключаем колонки из числового форматирования
+    exclude_columns = ["Артикул WB", "chrtId", "incomeId", 'officeId', 'Номер отчёта', 'Номер строки']
+
+    for worksheet_name in wb.sheetnames:
+        ws = wb[worksheet_name]
+
+        # Подбор ширины столбцов
+        for column in ws.columns:
+            column_letter = column[0].column_letter
+            max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column)
+            ws.column_dimensions[column_letter].width = (max_length + 2) * 1.2
+
+        # Включаем фильтр Excel
+        ws.auto_filter.ref = ws.dimensions
+
+        # Получаем заголовки и их индексы
+        headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        exclude_idx = {idx for idx, header in enumerate(headers) if header in exclude_columns}
+
+        # Границы диапазона
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
+
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                # Граница для каждой ячейки
+                cell.border = Border(top=thin_border, bottom=thin_border, left=thin_border, right=thin_border)
+                # Шапка: жирный текст
+                if cell.row == 1:
+                    cell.font = Font(name="Calibri", size=11, bold=True)
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                # Формат "число" только если не исключён, не шапка и это действительно число
+                elif idx not in exclude_idx and isinstance(cell.value, (int, float)):
+                    if float(cell.value).is_integer():
+                        cell.number_format = '#,##0'
+                    else:
+                        cell.number_format = '#,##0.00'
 
     # Сохраняем итоговый файл с формулами и форматированием
     wb.save(filename)
@@ -2161,8 +2250,8 @@ if __name__ == '__main__':
     # Имя папки, в которую будет сохранен отчет
     date_report = '2025_08'
     # Даты, за которые нужно сформировать отчет
-    date_start = '2025-08-01T00:00:00'
-    date_end = '2025-08-31T23:59:59'
+    date_start = '2025-08-01'
+    date_end = '2025-08-31'
     # Директория для сохранения результатов
     finance_reports_dir = (
         marketplace_dir_name
@@ -2174,10 +2263,11 @@ if __name__ == '__main__':
     finance_reports_dir.mkdir(parents=True, exist_ok=True)
 
     # Получение отчета о реализации по АПИ
-    df_realization_report = upload_realization_report_v2(
+    df_realization_report = upload_realization_report_new(
         headers,
         date_start,
-        date_end
+        date_end,
+        verbose=True
     )
     # Переименование колонок отчета о реализации в русские названия
     df_realization_report_renamed = rename_report_columns(
@@ -2280,7 +2370,8 @@ if __name__ == '__main__':
     save_excel(
         finance_reports_dir,
         date_report,
-        df_realization_report_new_columns,
+        # df_realization_report_new_columns,
+        df_realization_report_date_filtered,
         report_dates,
         df_final_costs,
         df_final_costs_by_operation,
