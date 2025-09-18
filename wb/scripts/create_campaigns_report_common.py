@@ -401,7 +401,11 @@ def get_company_stats(
         params_companies_stats = tmp_df_companies_list.to_dict(orient='records')
         logger.info(f"Uploading {chunk} of {max_chunks} chunks")
         # Делаем запрос
-        resp_data_companies_stats = requests.post("https://advert-api.wildberries.ru/adv/v2/fullstats", headers=headers, json=params_companies_stats)
+        resp_data_companies_stats = requests.get(
+            "https://advert-api.wildberries.ru/adv/v3/fullstats",
+            headers=headers,
+            json=params_companies_stats
+        )
         # Если пришли данные по кампаниям
         if resp_data_companies_stats.status_code == 200:
             # Переводим в словарь
@@ -667,20 +671,22 @@ def get_company_stats_v2(
             i = chunk_idx * step
             # Формируем параметры запроса
             chunk = company_ids[i:i+step]
-            params_companies_stats = [
-                {'id': int(company_id), 'interval': {'begin': begin, 'end': end}}
-                for company_id in chunk
-            ]
+            params_companies_stats = {
+                'ids': ','.join(str(i) for i in company_ids),
+                'beginDate': begin,
+                'endDate': end
+            }
+
             logger.info(
                 f"\nUploading companies {list(map(int, chunk))}\n"
                 f"Interval: {begin} - {end} "
                 # f"(кампаний в чанке: {len(chunk)})"
             )
             # Отправляем запрос
-            resp_data_companies_stats = requests.post(
-                "https://advert-api.wildberries.ru/adv/v2/fullstats",
+            resp_data_companies_stats = requests.get(
+                "https://advert-api.wildberries.ru/adv/v3/fullstats",
                 headers=headers,
-                json=params_companies_stats
+                params=params_companies_stats
             )
             # Если запрос прошел успешно, добавляем данные в общий df
             if resp_data_companies_stats.status_code == 200:
@@ -740,20 +746,20 @@ def get_company_stats_v2(
     )
 
     # Достаем interval ответа статистики РК из словаря
-    df_companies_stats_with_response_interval = (
-        pd.concat([
-            df_companies_stats_with_request_interval,
-            pd.json_normalize(df_companies_stats_with_request_interval['interval'])
-        ], axis=1)
-        .rename(columns={
-            'begin': 'response_start_date',
-            'end': 'response_end_date',
-        })
-    )
+    # df_companies_stats_with_response_interval = (
+    #     pd.concat([
+    #         df_companies_stats_with_request_interval,
+    #         pd.json_normalize(df_companies_stats_with_request_interval['interval'])
+    #     ], axis=1)
+    #     .rename(columns={
+    #         'begin': 'response_start_date',
+    #         'end': 'response_end_date',
+    #     })
+    # )
     # Переводим даты в timestamp
     # Создаем колонки с датой
-    df_companies_stats_with_response_interval['Начальная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_start_date']).dt.date
-    df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_end_date']).dt.date
+    # df_companies_stats_with_response_interval['Начальная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_start_date']).dt.date
+    # df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_end_date']).dt.date
     # У конечной даты добавляем 23:59:59
     # time_to_add = timedelta(hours=23, minutes=29, seconds=59)
     # df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = (
@@ -765,16 +771,16 @@ def get_company_stats_v2(
         'advertId',
         'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
         'request_start_date_chunk', 'request_end_date_chunk',
-        'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК'
+        # 'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК'
     ]
-    df_companies_stats_with_response_interval = move_columns(
-        df_companies_stats_with_response_interval,
+    df_companies_stats_with_request_interval = move_columns(
+        df_companies_stats_with_request_interval,
         companies_columns,
         position=0
     )
 
     # Распаковываем статистику по дням
-    df_companies_stats_unpacked = df_companies_stats_with_response_interval.explode(column='days', ignore_index=True)
+    df_companies_stats_unpacked = df_companies_stats_with_request_interval.explode(column='days', ignore_index=True)
     df_companies_stats_by_days = pd.concat([
         df_companies_stats_unpacked[companies_columns],
         pd.json_normalize(df_companies_stats_unpacked['days']),
@@ -788,10 +794,10 @@ def get_company_stats_v2(
         ], axis=1)
 
     # Распаковываем статистику по артикулам
-    df_by_apps_unpacked = df_by_apps.explode(column='nm', ignore_index=True)
+    df_by_apps_unpacked = df_by_apps.explode(column='nms', ignore_index=True)
     df_by_nms = pd.concat([
         df_by_apps_unpacked[companies_columns],
-        pd.json_normalize(df_by_apps_unpacked['nm']),
+        pd.json_normalize(df_by_apps_unpacked['nms']),
         ], axis=1)
 
     # Колонки, по которым производится группировка
@@ -1653,8 +1659,8 @@ def save_and_format_excel(
 if __name__ == '__main__':
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        start_date='2025-09-01',
-        end_date='2025-09-09'
+        # start_date='2025-09-01',
+        # end_date='2025-09-16'
     )
     # Список кампаний и даты для каждой кампании,
     # за которые нужно сформировать отчет
