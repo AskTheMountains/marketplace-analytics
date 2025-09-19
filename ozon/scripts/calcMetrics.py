@@ -9,15 +9,23 @@ import numpy as np
 from openpyxl import Workbook
 from loguru import logger
 import warnings
+import argparse
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 # Файл с константами
 from ozon.scripts.constants import marketplace_dir_name, client_name
+from ozon.scripts.command_args_parser import cli_reference_date
 
-
+# Создаем директорию, куда будут сохраняться метрики
 metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
-if not metricsdir.exists():
-    metricsdir.mkdir(parents=True, exist_ok=True)
+metricsdir.mkdir(parents=True, exist_ok=True)
+
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate metrics for Ozon marketplace",
+    usage='python.exe -m ozon.scripts.calcMetrics [ДАТА] [--ref_dt ДАТА]'
+)
+
 
 # date_upload_files = '2024-11-13'
 
@@ -171,10 +179,12 @@ def calcMetrics(date_upload_files = str(date.today())):
 
     # Закрытие записи в файл Excel
     writer.close()
+
+    logger.info(f"Metrics saved in: {metrics_file_name}")
     # os.remove('orderware.xlsx')
     logger.info('Done')
 
 
 if __name__ == '__main__':
-    # calcMetrics(date_upload_files)
-    calcMetrics()
+    date_upload_files = cli_reference_date(parser)
+    calcMetrics(date_upload_files)
