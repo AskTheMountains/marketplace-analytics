@@ -1295,6 +1295,8 @@ def format_excel(
 
     wb.save(filepath_finance_svod)
 
+    return filepath_finance_svod
+
 
 # %% Вызов всех функций
 if __name__ == "__main__":
@@ -1366,7 +1368,7 @@ if __name__ == "__main__":
     # Расчет сводной по всем операциям
     df_final_costs_by_operation = create_svod_by_operations(df_final_costs)
     # Сохранение в excel
-    save_finance_svod_to_excel(
+    filepath_finance_svod = save_finance_svod_to_excel(
         date_report,
         df_finance_report,
         df_final_costs_by_operation,
@@ -1378,8 +1380,10 @@ if __name__ == "__main__":
         date_start,
         date_end
     )
-    # Функция форматирования Excel (на данный момент только ширина столбцов)
+    # Функция форматирования Excel (жестко)
     format_excel(date_report, df_final_costs, promotion_columns, columns_to_exclude_from_final_costs)
+    # Логируем информацию о завершении расчета
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
+    logger.info(f"Finance Report saved in: {filepath_finance_svod}")
 
 # %%

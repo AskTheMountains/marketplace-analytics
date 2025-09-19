@@ -2114,6 +2114,8 @@ def save_and_format_excel(
     # Сохранение обновленного файла
     wb.save(file_name_report)
 
+    return file_name_report
+
 
 # Вызов всех функций
 def create_campaigns_report(
@@ -2217,25 +2219,14 @@ def create_campaigns_report(
     # Если стоит флаг сохранения, то сохраняем отчет
     if to_save:
         # Сохраняем и форматируем отчет в excel
-        save_and_format_excel(
+        file_name_report = save_and_format_excel(
             df_excel_companies_report,
             date_campaign_report
         )
-    # Если стоит флаг удаления файлов после выполнения скрипта
-    if delete_files:
-        # Нормализуем путь (прямые\обратные слеши)
-        # upload_path_norm = os.path.normpath(upload_path)
-        # Проверка, что директория существует
-        if upload_path.exists():
-            try:
-                send2trash.send2trash(upload_path)
-                print(f"Directory '{upload_path}' and its contents deleted successfully.")
-            except OSError as e:
-                print(f"Error: {upload_path} : \n{e.strerror}")
-        else:
-            print(f"Directory '{upload_path}' does not exist.")
 
-    logger.info(f"Done creating campaigns report for client {client_name}")
+        logger.info(f"Done creating campaigns report for client {client_name}")
+        logger.info(f"Campaigns report saved in: {file_name_report}")
+
 
     return df_excel_companies_report
 
@@ -2348,11 +2339,12 @@ if __name__ == '__main__':
     # Создаем df для записи в excel
     df_excel_companies_report = create_excel_report(df_final_orders)
     # Сохраняем и форматируем отчет в excel
-    save_and_format_excel(
+    file_name_report = save_and_format_excel(
         df_excel_companies_report,
         date_campaign_report
     )
 
     logger.info(f"Done creating campaigns report for client {client_name}")
+    logger.info(f"Campaigns report saved in: {file_name_report}")
 
 # %%

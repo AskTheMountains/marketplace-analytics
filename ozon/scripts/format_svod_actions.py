@@ -415,3 +415,4 @@ def format_excel_actions(
     # Сохранение
     wb.save(f"{file_name_actions}_Formatted.xlsx")
     logger.info("Finished formatting actions file")
+    logger.info(f"Actions report saved in: {file_name_actions}_Formatted.xlsx")

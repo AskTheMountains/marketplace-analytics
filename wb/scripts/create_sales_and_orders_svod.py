@@ -540,6 +540,8 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
     # Сохранение обновленного файла
     wb.save(report_file_name)
+
+    return report_file_name
     # GPT END ----
 
 
@@ -591,9 +593,10 @@ if __name__ == '__main__':
     # Создаем нужную директорию
     create_dirs()
     # Сохраняем Excel
-    save_excel(df_plan, date_start, date_end)
+    report_file_name = save_excel(df_plan, date_start, date_end)
     # Форматируем Excel
     # format_excel()
     logger.info(f"Finished calculating Sales svod for client {client_name}")
+    logger.info(f"Sales svod report saved in: {report_file_name}")
 
 # %%

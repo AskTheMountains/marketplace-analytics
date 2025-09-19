@@ -644,8 +644,8 @@ def save_and_format_excel(
     # Формируем директорию для сохранения
     path_report = client_cabinet_svod_dir
     # Создаем директорию, если она не существует
-    if not path_report.exists():
-        path_report.mkdir(parents=True, exist_ok=True)
+    path_report.mkdir(parents=True, exist_ok=True)
+
     # Формируем имя отчета
     name_report = f"{date_report}_Сводная_по_кабинету_{client_name}_Ozon.xlsx"
     file_name_report = path_report / name_report
@@ -809,6 +809,8 @@ def save_and_format_excel(
     # Сохранение обновленного файла
     wb.save(file_name_report)
 
+    return file_name_report
+
 
 # %% Вызов всех функций
 if __name__ == '__main__':
@@ -820,8 +822,8 @@ if __name__ == '__main__':
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем даты начала и окончания периода выгрузки
     df_dates = generate_dates(
-        start_date='2025-09-08',
-        end_date='2025-09-14'
+        # start_date='2025-09-08',
+        # end_date='2025-09-14'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]
@@ -883,12 +885,13 @@ if __name__ == '__main__':
         df_current_report,
     )
     # Сохраняем отчет в excel
-    save_and_format_excel(
+    file_name_report = save_and_format_excel(
         df_current_and_previous_report,
         client_cabinet_svod_dir,
         date_report,
         df_dates
     )
     logger.info(f"Done creating cabinet svod for client {client_name}")
+    logger.info(f"Client Cabinet svod saved in: {file_name_report}")
 
 # %%

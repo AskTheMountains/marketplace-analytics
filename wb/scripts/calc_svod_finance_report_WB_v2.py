@@ -1025,11 +1025,11 @@ def calc_paid_acceptance_costs(
             # df_products_ = df_products_.rename(columns={'nmID': 'Артикул WB'})
             # df_products_ = df_products_.loc[:, ['Артикул WB', 'Артикул продавца', 'Размер']]
 
-            # Получаем df с расходами по SKU
-            df_sku_and_paid_storage_costs = df_sku_sizes_costs_merged.copy()
+            # Получаем df с расходами по SKU, где уже есть все размеры
+            df_sku_sizes_costs_merged_ = df_sku_sizes_costs_merged.copy()
             # Мерджим с расходами на приемку, чтобы получить количество размеров в одном артикуле
             df_paid_acceptance_sku_sizes = df_paid_acceptance_stats.merge(
-                df_sku_and_paid_storage_costs[[
+                df_sku_sizes_costs_merged_[[
                     'Артикул WB',
                     'Артикул продавца',
                     'Размер', 'Продажи шт',
@@ -1055,7 +1055,7 @@ def calc_paid_acceptance_costs(
             # Заполняем пропуски в артикуле и размере
             fill_values = {
                 'Артикул продавца': 'Неизвестный артикул',
-                'Количество размеров в артикуле': 0,
+                'Количество размеров в артикуле': 1,
                 'Продажи в артикуле': 0,
                 'Доля продаж в артикуле': 0,
                 'Размер': 0
@@ -1065,8 +1065,9 @@ def calc_paid_acceptance_costs(
 
             # Разбиваем расходы по платной приемке на долю продаж в артикуле
             df_paid_acceptance_sku_sizes['Платная приемка (отдельный отчет)'] =(
-                df_paid_acceptance_sku_sizes['Платная приемка (отдельный отчет)'] /
-                df_paid_acceptance_sku_sizes['Количество размеров в артикуле']
+                df_paid_acceptance_sku_sizes['Платная приемка (отдельный отчет)'] *
+                # df_paid_acceptance_sku_sizes['Количество размеров в артикуле']
+                df_paid_acceptance_sku_sizes['Доля продаж в артикуле']
             )
 
             # Выбираем нужные колонки
@@ -1289,62 +1290,72 @@ def process_company_stats_df(df_companies_stats):
         'Заказы по рекламе шт (из отчета РК)': 'Заказы из кампаний шт',
         'Затраты руб': 'Затраты (Статистика РК)'
     })
-    # Добавляем столбец с количеством артикулов в кампании
-    df_companies_stats_processed['Количество артикулов в кампании'] = (
-        df_companies_stats_processed
-        .groupby(['ID Кампании'])['Артикул WB']
-        .transform('nunique')
-    )
-    # Переводим колонку с ID кампании в int64
-    df_companies_stats_processed['ID Кампании'] = df_companies_stats_processed['ID Кампании'].astype(np.int64)
+    # # Добавляем столбец с количеством артикулов в кампании
+    # df_companies_stats_processed['Количество артикулов в кампании'] = (
+    #     df_companies_stats_processed
+    #     .groupby(['ID Кампании'])['Артикул WB']
+    #     .transform('nunique')
+    # )
+    # # Переводим колонку с ID кампании в int64
+    # df_companies_stats_processed['ID Кампании'] = df_companies_stats_processed['ID Кампании'].astype(np.int64)
 
+    # Считаем суммы затрат по артикулу
+    df_companies_stats_processed = (
+        df_companies_stats_processed
+        .groupby(['Артикул WB'], as_index=False)
+        .agg(**{
+            'Заказы из кампаний шт': ('Заказы из кампаний шт', 'sum'),
+            'Затраты (Статистика РК)': ('Затраты (Статистика РК)', 'sum')
+        })
+    )
     return df_companies_stats_processed
 
 
 # Функция распределения расходов рекламных кампаний по артикулам WB
 def calc_companies_by_sku_and_size(df_companies_stats_processed, df_costs_history, df_sku_sizes_costs_merged):
     # Создаем копию для избежания изменений в оригинальном df
-    df_costs_history_ = df_costs_history.copy()
+    # df_costs_history_ = df_costs_history.copy()
+    df_companies_stats_by_sku = df_companies_stats_processed.copy()
     df_sku_sizes_costs_merged_ = df_sku_sizes_costs_merged.copy()
     # Переименовываем колонки для соответствия
-    df_costs_history_ = df_costs_history_.rename(columns={
-        'advertId': 'ID Кампании',
-        'Расходы': 'Затраты (История затрат)'
-    })
+    # df_costs_history_ = df_costs_history_.rename(columns={
+    #     'advertId': 'ID Кампании',
+    #     'Расходы': 'Затраты (История затрат)'
+    # })
     # Мерджим историю затрат (там, где "правильные расходы")
     # со статистикой кампаний (где содержатся артикулы кампаний)
-    df_companies_stats_by_sku = df_companies_stats_processed.merge(
-        df_costs_history_,
-        on='ID Кампании',
-        how='left',
-        indicator='Наличие кампаний'
-    )
-    # Выводим предупреждение, если расходы по каким-то кампаниям не найдены
-    missing_companies = df_companies_stats_by_sku.loc[
-        df_companies_stats_by_sku['Наличие кампаний'] == 'left_only',
-        ['ID Кампании', 'Заказы из кампаний шт']
-    ]
-    if not missing_companies.empty:
-        logger.warning(f"No companies costs for companies\n"
-                       f"{missing_companies}")
-    # Сортировка
-    df_companies_stats_by_sku = df_companies_stats_by_sku.sort_values(by=['ID Кампании', 'Артикул WB'], ignore_index=True)
-    # Заполняем пропуски в расходах
-    # (если кампании не было в Истории затрат, то считаем, что расходы по ней равны 0)
-    df_companies_stats_by_sku['Затраты (История затрат)'] = df_companies_stats_by_sku['Затраты (История затрат)'].fillna(0)
-    # Убираем кампании, которых не было в Истории затрат
-    df_companies_stats_by_sku = df_companies_stats_by_sku.loc[df_companies_stats_by_sku['Наличие кампаний'] == 'both', :]
-    # Распределяем расходы из Истории затрат на один артикул
-    df_companies_stats_by_sku['Расходы по артикулу'] = (
-        # df_companies_stats_by_sku['Заказы из кампаний шт']
-        # / df_companies_stats_by_sku['Заказы внутри кампании шт']
-        # * df_companies_stats_by_sku['Расходы (из Истории затрат)']
-        # df_companies_stats_by_sku['Расходы (из Истории затрат)'] /
-        # df_companies_stats_by_sku['Количество артикулов в кампании']
-        df_companies_stats_by_sku['Затраты (Статистика РК)']
-    )
-    # Заполняем пропуски
-    df_companies_stats_by_sku['Расходы по артикулу'] = df_companies_stats_by_sku['Расходы по артикулу'].fillna(0)
+    # df_companies_stats_by_sku = df_companies_stats_processed.merge(
+    #     df_costs_history_,
+    #     on='ID Кампании',
+    #     how='left',
+    #     indicator='Наличие кампаний'
+    # )
+    # # Выводим предупреждение, если расходы по каким-то кампаниям не найдены
+    # missing_companies = df_companies_stats_by_sku.loc[
+    #     df_companies_stats_by_sku['Наличие кампаний'] == 'left_only',
+    #     ['ID Кампании', 'Заказы из кампаний шт']
+    # ]
+    # if not missing_companies.empty:
+    #     logger.warning(f"No companies costs for companies\n"
+    #                    f"{missing_companies}")
+    # # Сортировка
+    # df_companies_stats_by_sku = df_companies_stats_by_sku.sort_values(by=['ID Кампании', 'Артикул WB'], ignore_index=True)
+    # # Заполняем пропуски в расходах
+    # # (если кампании не было в Истории затрат, то считаем, что расходы по ней равны 0)
+    # df_companies_stats_by_sku['Затраты (История затрат)'] = df_companies_stats_by_sku['Затраты (История затрат)'].fillna(0)
+    # # Убираем кампании, которых не было в Истории затрат
+    # df_companies_stats_by_sku = df_companies_stats_by_sku.loc[df_companies_stats_by_sku['Наличие кампаний'] == 'both', :]
+    # # Распределяем расходы из Истории затрат на один артикул
+    # df_companies_stats_by_sku['Расходы по артикулу'] = (
+    #     # df_companies_stats_by_sku['Заказы из кампаний шт']
+    #     # / df_companies_stats_by_sku['Заказы внутри кампании шт']
+    #     # * df_companies_stats_by_sku['Расходы (из Истории затрат)']
+    #     # df_companies_stats_by_sku['Расходы (из Истории затрат)'] /
+    #     # df_companies_stats_by_sku['Количество артикулов в кампании']
+    #     df_companies_stats_by_sku['Затраты (Статистика РК)']
+    # )
+    # # Заполняем пропуски
+    # df_companies_stats_by_sku['Расходы по артикулу'] = df_companies_stats_by_sku['Расходы по артикулу'].fillna(0)
     # Распределяем расходы на один размер
     df_companies_stats_by_size = df_companies_stats_by_sku.merge(
         df_sku_sizes_costs_merged_[[
@@ -1378,12 +1389,14 @@ def calc_companies_by_sku_and_size(df_companies_stats_processed, df_costs_histor
     df_companies_stats_by_size = df_companies_stats_by_size.fillna(fill_values)
 
     # Сортировка
-    df_companies_stats_by_size = df_companies_stats_by_size.sort_values(by=['ID Кампании', 'Артикул WB', 'Артикул продавца', 'Размер'], ignore_index=True)
-    # Считаем общее количество заказов
-    # total_orders = df_companies_stats_by_size['Заказы шт'].sum()
+    df_companies_stats_by_size = df_companies_stats_by_size.sort_values(by=['Артикул WB', 'Артикул продавца', 'Размер'], ignore_index=True)
+    # Считаем общее количество продаж
+    # total_sales = df_sku_sizes_costs_merged_['Продажи шт'].sum()
     # Распределяем расходы на один размер
     df_companies_stats_by_size['Расходы по размеру'] = (
-        df_companies_stats_by_size['Расходы по артикулу'] / df_companies_stats_by_size['Количество размеров в артикуле']
+        df_companies_stats_by_size['Затраты (Статистика РК)'] *
+        # df_companies_stats_by_size['Количество размеров в артикуле']
+        (df_companies_stats_by_size['Доля продаж в артикуле'] )
     )
     # Выбираем колонку, которая будет считаться итоговыми расходами
     df_companies_stats_by_size['Расходы по рекламным кампаниям'] = df_companies_stats_by_size['Расходы по размеру']
@@ -1440,6 +1453,7 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
     if any(date_promotion is None for date_promotion in promotion_dates.values()):
         logger.info("No promotion costs have been found")
         df_companies_stats_by_sku = pd.DataFrame()
+        df_companies_stats = pd.DataFrame()
     # Если расходы были, то начинаем расчет расходов по рекламным кампаниям
     else:
         # # Обработка данных рекламных кампаний
@@ -1489,9 +1503,14 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             df_sku_sizes_costs_merged
         )
 
+        # Формируем словарь с результатами
+        result_companies_costs = {
+            'df_companies_stats': df_companies_stats,
+            'df_companies_stats_by_sku': df_companies_stats_by_sku
+        }
 
 
-    return df_companies_stats_by_sku
+    return result_companies_costs
 
 
 # Функция расчета расходов списаний за отзывы
@@ -1603,11 +1622,13 @@ def calc_reviews_costs(df_realization_report_date_filtered, df_sku_sizes_costs_m
 def merge_all_costs(
         df_sku_sizes_costs_merged,
         result_paid_acceptance,
-        df_companies_costs,
+        result_companies_costs,
         result_reviews_costs,
 ):
     # Получаем df с расходами по платной приемке
     df_paid_acceptance_costs = result_paid_acceptance['df_paid_acceptance_sku_sizes']
+    # Получаем df с расходами по рекламным кампаниям
+    df_companies_costs = result_companies_costs['df_companies_stats_by_sku']
     # Получаем df с расходами по списаниям за отзывы
     df_reviews_sku_sizes_costs = result_reviews_costs['df_reviews_sku_sizes_costs']
     # Объединяем полученные расходы в один df
@@ -2068,6 +2089,7 @@ def save_excel(
         df_final_costs_by_operation,
         result_sku_costs,
         result_other_costs,
+        result_companies_costs,
         result_paid_storage,
         result_paid_acceptance
         ):
@@ -2079,15 +2101,24 @@ def save_excel(
     df_paid_acceptance = result_paid_acceptance['df_paid_acceptance']
     # Получаем результаты по прочим расходам
     df_other_costs_by_operation = result_other_costs['df_other_costs_by_operation']
-    with pd.ExcelWriter(finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx") as w:
-        report_dates.to_excel(w, sheet_name='Список отчетных недель', index=False)
-        df_realization_report_new_columns.to_excel(w, sheet_name='Исходный отчет АПИ', index=False)
+    # Получаем результаты по расходам компаний
+    df_companies_costs = result_companies_costs['df_companies_stats']
+
+    # Сохраняем результаты в excel
+    filepath_finance_report = finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
+    with pd.ExcelWriter(filepath_finance_report) as w:
         df_final_costs.to_excel(w, sheet_name='Итоговая таблица', index=False)
         df_final_costs_by_operation.to_excel(w, sheet_name='Сводная', index=False)
+        df_realization_report_new_columns.to_excel(w, sheet_name='Исходный отчет АПИ', index=False)
+        report_dates.to_excel(w, sheet_name='Список отчетных недель', index=False)
         df_sku_costs_by_operation.to_excel(w, sheet_name='Расходы по SKU', index=False)
         df_other_costs_by_operation.to_excel(w, sheet_name='Прочие расходы', index=False)
+        df_companies_costs.to_excel(w, sheet_name='Расходы по РК', index=False)
         df_paid_acceptance.to_excel(w, sheet_name='Отчет пл. приемка', index=False)
         df_paid_storage.to_excel(w, sheet_name='Отчет пл. хранение', index=False)
+
+    return filepath_finance_report
+
 
 # Функция форматирования excel
 def format_excel(
@@ -2202,7 +2233,15 @@ def format_excel(
     # Задаем стиль границы
     thin_border = Side(border_style="thin", color="000000")
     # Исключаем колонки из числового форматирования
-    exclude_columns = ["Артикул WB", "chrtId", "incomeId", 'officeId', 'Номер отчёта', 'Номер строки']
+    exclude_columns = [
+        "Артикул WB",
+        "chrtId",
+        "incomeId",
+        'officeId',
+        'Номер кампании',
+        'Номер отчёта',
+        'Номер строки'
+    ]
 
     for worksheet_name in wb.sheetnames:
         ws = wb[worksheet_name]
@@ -2323,7 +2362,7 @@ if __name__ == '__main__':
         date_end
     )
     # Считаем расходы на рекламные кампании
-    df_companies_costs = calc_companies_costs_v2(
+    result_companies_costs = calc_companies_costs_v2(
         df_realization_report_date_filtered,
         df_sku_sizes_costs_merged,
         date_report
@@ -2339,7 +2378,7 @@ if __name__ == '__main__':
     df_sku_sizes_costs_all = merge_all_costs(
         df_sku_sizes_costs_merged,
         result_paid_acceptance,
-        df_companies_costs,
+        result_companies_costs,
         result_reviews_costs,
     )
     # Расчет затрат, которые не привязаны к артикулам
@@ -2367,7 +2406,7 @@ if __name__ == '__main__':
     # Считаем сводную по затратам
     df_final_costs_by_operation = create_svod_by_operations(df_final_costs)
     # Сохранение результатов в excel
-    save_excel(
+    filepath_finance_report = save_excel(
         finance_reports_dir,
         date_report,
         # df_realization_report_new_columns,
@@ -2377,6 +2416,7 @@ if __name__ == '__main__':
         df_final_costs_by_operation,
         result_sku_costs,
         result_other_costs,
+        result_companies_costs,
         result_paid_storage,
         result_paid_acceptance
     )
@@ -2390,6 +2430,7 @@ if __name__ == '__main__':
         columns_to_exclude_from_final_costs,
     )
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
+    logger.info(f"Finance Report saved in {filepath_finance_report}")
 
 
 # %%

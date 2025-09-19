@@ -1518,6 +1518,8 @@ def save_and_format_excel(
 
     wb.save(file_name)
 
+    return file_name
+
     # GPT END----
 
 
@@ -1710,11 +1712,13 @@ if __name__ == '__main__':
     # Создаем директорию, куда будет сохранен отчет
     report_path = create_report_path(date_campaign_report, client_name)
     # Сохраняем и форматируем файл с отчетом
-    save_and_format_excel(
+    filepath_report = save_and_format_excel(
         report_path,
         date_campaign_report,
         client_name,
         result_companies_report
     )
     logger.info(f"Done creating campaigns report for client {client_name}")
+    logger.info(f"Campaigns report saved in {filepath_report}")
+
 # %%

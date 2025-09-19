@@ -14,6 +14,7 @@ import re
 from loguru import logger
 import getopt
 import sys
+from dateutil.relativedelta import relativedelta
 
 # Файл с настройками и номером клиента
 from ozon.scripts.constants import (
@@ -23,13 +24,15 @@ from ozon.scripts.constants import (
 )
 
 # создаем отдельную папку для текущей выгрузки
-uploaddir_finance_report = f"{marketplace_dir_name}/Clients/{client_name}/Finance_Reports"
-if not os.path.exists(uploaddir_finance_report):
-    os.makedirs(uploaddir_finance_report)
-uploaddir_finance_report_today = f"{uploaddir_finance_report}/FinanceReport_{str(date.today())}"
-if os.path.exists(uploaddir_finance_report_today):
-    shutil.rmtree(uploaddir_finance_report_today)
-new_dir = os.mkdir(f"{uploaddir_finance_report}/FinanceReport_"+str(date.today()))
+uploaddir_finance_report = (
+    marketplace_dir_name
+    / "Clients"
+    / client_name
+    / "Finance_Reports"
+    / f"FinanceReport_{str(date.today())}"
+)
+uploaddir_finance_report.mkdir(parents=True, exist_ok=True)
+
 
 # Функция выгрузки отчета по реализации товаров
 def get_products_realization_report(headers, year, month, to_save=True):
@@ -161,7 +164,7 @@ def get_products_realization_report(headers, year, month, to_save=True):
     # )
 
     if to_save:
-        with pd.ExcelWriter(f"{uploaddir_finance_report_today}/finance_report_{client_name}_Ozon.xlsx") as w:
+        with pd.ExcelWriter(uploaddir_finance_report / f"finance_report_{client_name}_Ozon.xlsx") as w:
             # result_finance_report_title.to_excel(w, sheet_name='Титульный лист отчета')
             df_realization_report.to_excel(w, sheet_name='Таблица отчета')
 
@@ -284,24 +287,30 @@ def getTransactionReport(headers, date_start, date_end):
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+    # Задаем даты начала и окончания выгрузки
     date_start = '2024-05-01'
     date_end = '2025-09-01'
+    # Переводим даты в нужный формат для сохранения в файл
     date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d.%m.%Y')
     date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d.%m.%Y')
-    date_range = pd.DataFrame({"date": pd.date_range(start=date_start, end=date_end, freq='ME')})
+    # Генерируем диапазондат
+    date_range = pd.DataFrame({
+        'date': pd.date_range(start=date_start, end=date_end, freq='MS')
+    })
+    # Получаем год и месяц
     date_range = date_range.assign(
         year=date_range['date'].dt.year,
         month=date_range['date'].dt.month
     )
+    # df, куда будем помещать результат
     df_finance_report = pd.DataFrame()
+    # Цикл по каждому году и месяцу
     for i in range(date_range.shape[0]):
-        # params_finance_report = json.dumps({
-        #     "month": int(date_range['month'][i]),
-        #     "year": int(date_range['year'][i])
-        # })
         year = int(date_range['year'][i])
         month = int(date_range['month'][i])
+        # Выгружаем отчет реализации
         df_realization_report = get_products_realization_report(headers, year=year, month=month, to_save=False)
+        # Объединяем с предыдущим проходом цикла
         df_finance_report = pd.concat(
             [df_finance_report, df_realization_report],
             ignore_index=True

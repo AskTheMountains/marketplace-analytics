@@ -90,6 +90,10 @@ def calcMetrics(date_upload_files=str(date.today())):
     reminders['Остатки'] = reminders['quantityFull']
     reminders_fbs['Остатки_fbs'] = reminders_fbs['amount']
     # reminders_fbs['Остатки_fbs'] = reminders_fbs['amount']
+    supply_orders = supply_orders.rename(columns={
+        'quantity': 'Ожидается_поступление',
+        'Склад': 'warehouseName'
+    })
 
     # Выборка нужных колонок
     #order = order.loc[:, ['barcode', 'Заказы' 'warehouseName', 'isCancel', 'totalPrice', 'discountPercent', 'spp', 'finishedPrice', 'priceWithDisc']]
@@ -98,15 +102,9 @@ def calcMetrics(date_upload_files=str(date.today())):
     sales = sales.loc[:, ['Артикул_Размер', 'warehouseName', 'Продажи', 'Продажи_руб']]
     reminders = reminders.loc[:, ['Артикул_Размер', 'warehouseName', 'Остатки']]
     reminders_fbs = reminders_fbs.loc[:, ['Артикул_Размер', 'Остатки_fbs']]
-    orderware = pd.concat([order, sales, reminders, reminders_fbs])
-    # Если были поставки, включаем их в расчет
-    if supply_orders.shape[0]> 0:
-        supply_orders['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = supply_orders['quantity']
-        supply_orders = supply_orders.loc[:, ['Артикул_Размер', 'warehouseName', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ']]
-        orderware = pd.concat([orderware, supply_orders])
-    # Если нет, то товары, которые должны поступить на склад = 0
-    else:
-        orderware['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = 0
+    supply_orders = supply_orders.loc[:, ['Артикул_Размер', 'warehouseName', 'Ожидается_поступление']]
+    orderware = pd.concat([order, sales, reminders, reminders_fbs, supply_orders])
+
 
     # TODO: Убираем виртуальные склады из списка складов
     if ignore_virtual_warehouses:
@@ -241,11 +239,15 @@ def calcMetrics(date_upload_files=str(date.today())):
         'Заказы', 'Заказы_руб', 'Продажи', 'Продажи_руб', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки', 'Остатки_fbs']
         ]
 
-    with pd.ExcelWriter(metricsdir / f"{date_upload_files}_МетрикиИтоги.xlsx") as w:
+    # Сохраняем результаты в Excel
+    metrics_file_name = metricsdir / f"{date_upload_files}_МетрикиИтоги.xlsx"
+    with pd.ExcelWriter(metrics_file_name) as w:
         summary.to_excel(w, sheet_name='summary', index=False)
         claster_report.to_excel(w, sheet_name='claster_report', index=False)
 
     logger.info("Done")
+    logger.info(f"Metrics saved in: {metrics_file_name}")
+
 
 
 if __name__ == '__main__':

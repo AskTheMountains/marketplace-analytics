@@ -267,6 +267,8 @@ def getCompanyStatistics(
                 file_path = companies_stats_dir / file_name
                 with open(file_path, 'wb') as w:
                     w.write(resp_data_report.content)
+
+                logger.info(f"Companies stats report saved in: {file_path}")
             # Если zip, сохраняем архив, затем распаковываем его
             else:
                 file_type = 'zip'
@@ -275,6 +277,8 @@ def getCompanyStatistics(
                     w.write(resp_data_report.content)
                 with ZipFile(zip_file_path, 'r') as zip_ref:
                     zip_ref.extractall(companies_stats_dir)
+                    logger.info(f"Companies stats archive saved in: {zip_file_path} (archive extracted)")
+
 
             # Увеличиваем число выгруженных кампаний
             uploaded_companies_amount += current_companies_amount

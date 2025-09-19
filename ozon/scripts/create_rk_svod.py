@@ -559,6 +559,8 @@ def save_and_format_excel(
     # Сохранение обновленного файла
     wb.save(file_name_report)
 
+    return file_name_report
+
 
 
 # %% Вызов всех функций
@@ -571,8 +573,8 @@ if __name__ == '__main__':
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем диапазон дат
     df_dates= generate_dates(
-        start_date='2025-09-08',
-        end_date='2025-09-14'
+        # start_date='2025-09-08',
+        # end_date='2025-09-14'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]
@@ -622,7 +624,7 @@ if __name__ == '__main__':
         date_report
     )
     # Сохраняем excel
-    save_and_format_excel(
+    file_name_report = save_and_format_excel(
         df_client_excel_svod,
         df_campaigns_report,
         client_rk_svod_dir,
@@ -630,5 +632,6 @@ if __name__ == '__main__':
         df_dates
     )
     logger.info(f"Done creating rk client svod for client {client_name}")
+    logger.info(f"RK client svod saved in: {file_name_report}")
 
 # %%

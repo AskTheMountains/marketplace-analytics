@@ -1619,4 +1619,6 @@ if __name__ == '__main__':
     # Поставки FBO
     get_supply_orders(headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
+
+    logger.info(f"Uploaded files saved in: {uploaddir_today}")
     print(f"\033[44m\033[37mDONE UPLOADING FILES FOR CLIENT {client_name}")

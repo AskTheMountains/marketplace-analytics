@@ -489,6 +489,8 @@ def save_sheets_to_excel(
             svod_excel_for_sku_jewelry.to_excel(w, sheet_name='Всего по ювелирным кластерам', index=False)
         # w.close()
 
+    return file_name_supply_svod
+
 
 # Функция форматирования Excel по отдельным листам (формулы, цвета и т.д.)
 def format_excel(
@@ -538,13 +540,14 @@ def format_excel(
         svod_excel_for_clusters
     )
 
-    # Сохранение файла Excel
-    # wb.save("Svod" + "\\" + date_metrics + "_Расчет Поставок_formatted.xlsx")
+    # Выводим инфу о том, что файл сохранен
+    filename_supply_svod = path_supply_svod / f'{date_metrics}_Расчет_поставок_{client_name}_Ozon_Formatted.xlsx'
+    logger.info(f"Supply svod report saved in: {filename_supply_svod}")
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
-    # Дата формирования отчета
+    # Дата расчета метрик и выгрузки файлов
     # date_metrics = '2024-12-17'
     date_metrics = str(date.today())
     logger.info(f"Creating supply svod for client {client_name} for date {date_metrics}")
@@ -605,7 +608,7 @@ if __name__ == '__main__':
         svod_type='По кластерам'
     )
     # Сохранение в Excel
-    save_sheets_to_excel(
+    filename_supply_svod = save_sheets_to_excel(
         svod_excel_for_sku,
         svod_excel_for_clusters,
         df_pivot_by_clusters,

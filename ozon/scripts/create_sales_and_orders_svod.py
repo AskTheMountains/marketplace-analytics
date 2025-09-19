@@ -12,7 +12,7 @@ from datetime import date,datetime,timedelta
 from itertools import product
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side
+from openpyxl.styles import Border, Side, Alignment
 from openpyxl.styles.numbers import FORMAT_NUMBER_00
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -399,9 +399,12 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
     date_end_file = pd.to_datetime(date_end).strftime('%d-%m-%Y')
 
     # Имя файла для сохранения отчета
-    report_file_name = (f"{marketplace_dir_name}/Clients/{client_name}/SalesOrdersSvod/"
-                        f"{date_start_file}_{date_end_file}"
-                        f"_Свод_заказы_продажи_Ozon_{client_name}.xlsx"
+    report_file_name = (
+        marketplace_dir_name
+        / "Clients"
+        / client_name
+        / "SalesOrdersSvod"
+        / f"{date_start_file}_{date_end_file}_Свод_заказы_продажи_Ozon_{client_name}.xlsx"
     )
 
     # GPT START ----
@@ -449,12 +452,15 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
         ):
             for cell in row:
                 cell.border = thin_border
+                # Выравнивание текста по центру
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
     # Применение числового форматирования с разделением разрядов (через пробелы)
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
         for cell in row:
             if isinstance(cell.value, (int, float)):  # Проверяем, является ли значение числом
                 cell.number_format = '#,##0'  # Формат с пробелами и двумя знаками после запятой
+
 
     # Автоподбор ширины столбцов
     for col in ws.columns:
@@ -471,6 +477,8 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
     # Сохранение обновленного файла
     wb.save(report_file_name)
+
+    return report_file_name
 
 
 # %% Вызов всех функций
@@ -516,7 +524,8 @@ if __name__ == '__main__':
     # Создаем нужную директорию
     create_dirs()
     # Сохраняем Excel
-    save_excel(df_plan, date_start, date_end)
+    report_file_name = save_excel(df_plan, date_start, date_end)
     # Форматируем Excel
     # format_excel()
     logger.info(f"Finished calculating Sales svod for client {client_name}")
+    logger.info(f"Report saved in: {report_file_name}")

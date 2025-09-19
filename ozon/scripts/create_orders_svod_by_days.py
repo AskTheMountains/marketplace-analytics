@@ -860,6 +860,8 @@ def save_and_format_excel(
     # Сохранение обновленного файла
     wb.save(file_name_report)
 
+    return file_name_report
+
 
 # %% Вызов всех функций
 if __name__ == '__main__':
@@ -916,9 +918,10 @@ if __name__ == '__main__':
         calc_month_result=True
     )
     # Сохраняем и форматируем excel
-    save_and_format_excel(
+    file_name_report = save_and_format_excel(
         df_excel_orders_svod,
         orders_svod_dir,
         date_report,
     )
+    logger.info(f"Orders svod saved in: {file_name_report}")
 # %%
