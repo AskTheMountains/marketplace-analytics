@@ -1,27 +1,16 @@
 # %% Определение функций
-import requests
-import json
 import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import csv
+from datetime import date, timedelta
+
 import numpy as np
-from openpyxl import Workbook
-import re
+import pandas as pd
+import requests
 from loguru import logger
-import getopt
-import sys
+
 pd.options.mode.chained_assignment = None  # default='warn'
 
-# Файл с настройками и номером клиента
-# from options import settings, headers, client_number
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name
-)
+
+from wb.scripts.constants import headers
 
 
 # Функция получения списка кампаний

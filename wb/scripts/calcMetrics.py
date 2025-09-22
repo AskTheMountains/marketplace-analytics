@@ -1,26 +1,19 @@
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import csv
-import json
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-from openpyxl import Workbook
-from loguru import logger
 import warnings
-from pathlib import Path
-warnings.simplefilter(action='ignore', category=FutureWarning)
-# Файл с константами
-from wb.scripts.constants import (
-    marketplace_dir_name,
-    client_name,
-    cargo_type,
-    ignore_virtual_warehouses,
-)
+from datetime import date
 
+import numpy as np
+import pandas as pd
+from loguru import logger
+from rich_argparse import RichHelpFormatter
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
 from wb.scripts.command_args_parser import cli_reference_date
+# Файл с константами
+from wb.scripts.constants import (cargo_type, client_name,
+                                  ignore_virtual_warehouses,
+                                  marketplace_dir_name)
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate metrics for WB marketplace",

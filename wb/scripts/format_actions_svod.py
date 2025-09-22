@@ -1,18 +1,16 @@
-import pandas as pd
+from datetime import datetime, timedelta
+
 import numpy as np
-import os
 import openpyxl
+import pandas as pd
 from loguru import logger
-from datetime import date,datetime,timedelta
-from itertools import product
-from openpyxl import Workbook, formatting
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
+from openpyxl import formatting
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
-from openpyxl.formatting.rule import ColorScale, ColorScaleRule, FormatObject
 from openpyxl.utils import get_column_letter
 
 from wb.scripts.constants import marketplace_dir_name, net_cost_koef
+
 
 def format_excel_actions(
         client_name,

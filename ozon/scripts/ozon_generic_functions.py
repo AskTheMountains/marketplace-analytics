@@ -1,58 +1,19 @@
 
 # %% Определение функций
-import requests
 import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import glob
-import csv
-import zipfile
-from zipfile import ZipFile
-import numpy as np
-from openpyxl import Workbook
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side
-from openpyxl.styles.numbers import FORMAT_NUMBER_00
-import re
-from loguru import logger
-import getopt
-import sys
 from pathlib import Path
+
+import pandas as pd
+import requests
 
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 
 
-# Файл с настройками и номером клиента
-# from options import settings, client_number, headers
-# Некоторые константы
-from ozon.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    client_id_performance,
-    client_secret_performance,
-    ozon_performance_api_url
-)
 # Функции выгрузки данных по API Seller
-from ozon.scripts.uploadDataFromOzon import(
-    get_ozon_product,
-    getOrders,
-    getStockReminders_fbo_v2,
-    getStockReminders_fbs
-)
-# Функции выгрузки данных по API Performane
-from ozon.scripts.uploadDataFromOzonPerformance import (
-    getAuthorizationToken,
-    getCompanyList,
-    getCompanyStatistics,
-)
-# Некоторые вспомогательные функции
-from generic_functions import move_columns
+from ozon.scripts.uploadDataFromOzon import (getOrders,
+                                             getStockReminders_fbo_v2,
+                                             getStockReminders_fbs)
 
 
 # Функция выгрузки отчета о заказах

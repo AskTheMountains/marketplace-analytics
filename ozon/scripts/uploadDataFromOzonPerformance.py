@@ -1,34 +1,22 @@
 
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
 import shutil
-import os
-import csv
-import zipfile
+import time
+from datetime import date, datetime, timedelta
 from zipfile import ZipFile
-import numpy as np
-from openpyxl import Workbook
-import re
-from loguru import logger
-import getopt
-import sys
-from pathlib import Path
 
+import pandas as pd
+import requests
+from loguru import logger
+
+from ozon.scripts.constants import (client_id_performance, client_name,
+                                    client_secret_performance,
+                                    marketplace_dir_name,
+                                    ozon_performance_api_url)
 
 # Файл с настройками и номером клиента
 # from options import settings, client_number
 
-from ozon.scripts.constants import (
-    client_name,
-    marketplace_dir_name,
-    ozon_performance_api_url,
-    client_id_performance,
-    client_secret_performance
-)
 
 # Функция создания нужных директорий
 def create_dirs_performance():

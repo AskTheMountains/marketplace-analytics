@@ -1,27 +1,16 @@
 
 # %% Определение всех функций
-import requests
 import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import csv
-import numpy as np
-from openpyxl import Workbook
 import re
+import time
+from datetime import date, datetime
+
+import pandas as pd
+import requests
 from loguru import logger
-import getopt
-import sys
-from dateutil.relativedelta import relativedelta
 
 # Файл с настройками и номером клиента
-from ozon.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name
-)
+from ozon.scripts.constants import client_name, headers, marketplace_dir_name
 
 # создаем отдельную папку для текущей выгрузки
 uploaddir_finance_report = (

@@ -1,39 +1,32 @@
 
 # %% Определение всех функций
-import pandas as pd
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-import requests
-import time
-import os
-import openpyxl
 import json
-from loguru import logger
-from datetime import date,datetime,timedelta
-from itertools import product
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side, Alignment
-from openpyxl.styles.numbers import FORMAT_NUMBER_00
+import os
 import warnings
+from datetime import date, datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import requests
+from loguru import logger
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from rich_argparse import RichHelpFormatter
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 # pd.set_option('future.no_silent_downcasting', True)
 
-# Файл с некоторыми константами
-from ozon.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    ozon_seller_api_url,
-)
-
-# Функции выгрузки данных по АПИ, которые уже готовы
-from ozon.scripts.uploadDataFromOzon import getOrders
 # Доп. функции
 from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_dates
+# Файл с некоторыми константами
+from ozon.scripts.constants import (client_name, headers, marketplace_dir_name,
+                                    ozon_seller_api_url)
+# Функции выгрузки данных по АПИ, которые уже готовы
+from ozon.scripts.uploadDataFromOzon import getOrders
 
 parser = argparse.ArgumentParser(
     description="Create sales and orders report (Ozon)",

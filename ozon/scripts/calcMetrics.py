@@ -1,27 +1,23 @@
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-from pathlib import Path
-import csv
-import json
-import numpy as np
-from openpyxl import Workbook
-from loguru import logger
-import warnings
 import argparse
+import warnings
+from datetime import date
+
+import numpy as np
+import pandas as pd
+from loguru import logger
 from rich_argparse import RichHelpFormatter
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 # Файл с константами
-from ozon.scripts.constants import marketplace_dir_name, client_name
-
+from ozon.scripts.constants import client_name, marketplace_dir_name
 
 # Создаем директорию, куда будут сохраняться метрики
 metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
 metricsdir.mkdir(parents=True, exist_ok=True)
 
 from ozon.scripts.command_args_parser import cli_reference_date
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate metrics for Ozon marketplace",

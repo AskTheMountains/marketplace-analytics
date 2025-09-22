@@ -1,15 +1,11 @@
-import pandas as pd
-import numpy as np
-import os
 import shutil
-from loguru import logger
+
+import numpy as np
 import openpyxl
-from datetime import date,datetime,timedelta
-from itertools import product
-from openpyxl import Workbook, formatting
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
-from openpyxl.formatting.rule import ColorScale, ColorScaleRule, FormatObject
+import pandas as pd
+from loguru import logger
+from openpyxl import formatting
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 # Некоторые константы

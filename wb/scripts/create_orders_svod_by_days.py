@@ -1,32 +1,17 @@
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import glob
-from pathlib import Path
-import csv
-import zipfile
-from zipfile import ZipFile
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
 import re
-from collections import defaultdict
-from openpyxl import Workbook
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side, Alignment
-from openpyxl.styles.numbers import FORMAT_NUMBER_00
-from openpyxl.formatting.rule import ColorScaleRule
-import re
-from loguru import logger
-import getopt
-import sys
 import warnings
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+from loguru import logger
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from rich_argparse import RichHelpFormatter
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -39,23 +24,15 @@ months_ru = {
 
 
 
-# Некоторые константы
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name
-)
-# Функции выгрузки данных по API WB
-from wb.scripts.uploadDataFromWB import (
-    getWBProduct,
-    getOrdersWB as get_orders
-)
-
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
-
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_date_range
+# Некоторые константы
+from wb.scripts.constants import client_name, headers, marketplace_dir_name
+# Функции выгрузки данных по API WB
+from wb.scripts.uploadDataFromWB import getOrdersWB as get_orders
+from wb.scripts.uploadDataFromWB import getWBProduct
 
 parser = argparse.ArgumentParser(
     description="Create orders report by days (WB)",

@@ -1,24 +1,23 @@
 
 # %% определение всех функций
-import pandas as pd
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-import os
-from loguru import logger
-from datetime import date,datetime,timedelta
+from datetime import date, datetime
 from itertools import product
 
+import numpy as np
+import pandas as pd
+from loguru import logger
+from rich_argparse import RichHelpFormatter
 
 # Функция форматирования файла excel
 import wb.scripts.format_supply_svod as format_supply_svod
-
-# Некоторые константы
-from wb.scripts.constants import (
-    client_name, marketplace_dir_name, shop_type, cargo_type, is_heavy_cargo,
-    catalog_supply_columns, svod_total_columns, svod_clusters_columns
-)
 from wb.scripts.command_args_parser import cli_reference_date
+# Некоторые константы
+from wb.scripts.constants import (cargo_type, catalog_supply_columns,
+                                  client_name, is_heavy_cargo,
+                                  marketplace_dir_name, shop_type,
+                                  svod_clusters_columns, svod_total_columns)
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate supply report (WB)",

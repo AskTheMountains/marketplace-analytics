@@ -1,21 +1,17 @@
-import pandas as pd
-import numpy as np
-import os
 import shutil
-from pathlib import Path
+from datetime import datetime
+
+import numpy as np
 import openpyxl
+import pandas as pd
 from loguru import logger
-from datetime import date,datetime,timedelta
-from itertools import product
-from openpyxl import Workbook, formatting
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
+from openpyxl import formatting
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
-from openpyxl.formatting.rule import ColorScale, ColorScaleRule, FormatObject
 from openpyxl.utils import get_column_letter
 
 from ozon.scripts.constants import marketplace_dir_name, net_cost_koef
-from pathlib import Path
+
 # from options import settings, client_number
 # date_report_created = '2024-10-22'
 # svod_excel_actions = pd.read_excel(f"Clients/{client_name}/Actions/{date_report_created}_Таблица_по_акциям_{client_name}.xlsx")

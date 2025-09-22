@@ -1,37 +1,20 @@
 # %% Определение функций
-import requests
-import json
 import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
+from datetime import datetime, timedelta
 from pathlib import Path
-import csv
+
 import numpy as np
-import openpyxl
-from openpyxl.styles import Border, Side, Alignment, numbers
-from openpyxl.utils import get_column_letter
-import re
+import pandas as pd
+import requests
 from loguru import logger
-import getopt
-import sys
+
 pd.options.mode.chained_assignment = None  # default='warn'
 
 # Файл с настройками и номером клиента
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    promotion_companies,
-    marketplace_dir_name
-)
 # Функции выгрузки данных
-from wb.scripts.uploadDataFromWB import(
-    getWBProduct,
-    getOrdersWB
-)
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
+
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 

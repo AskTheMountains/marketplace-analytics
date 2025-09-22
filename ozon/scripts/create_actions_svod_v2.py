@@ -1,44 +1,33 @@
 
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-from pathlib import Path
-import csv
-import numpy as np
-from openpyxl import Workbook
-import re
-from loguru import logger
-import getopt
-import sys
 import argparse
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import requests
+from loguru import logger
 from rich_argparse import RichHelpFormatter
+
 pd.options.mode.chained_assignment = None
 
 
+# Некоторые дополнительные функции
+from generic_functions import add_element_to_list, move_columns
+from ozon.scripts.command_args_parser import cli_reference_date
+# Файл с некоторыми константами
+from ozon.scripts.constants import (catalog_action_columns, client_name,
+                                    headers, headers_wb, marketplace_dir_name,
+                                    net_cost_koef, svod_actions_cols)
+# Функция форматирования excel с планом акций, отдельный скрипт
+from ozon.scripts.format_svod_actions import format_excel_actions
 # Функция выгрузки каталога
 from ozon.scripts.uploadDataFromOzon import get_ozon_product
 # Функция выгрузки каталога WB
-from wb.scripts.uploadDataFromWB import get_wb_product, get_prices_WB
-# Функция форматирования excel с планом акций, отдельный скрипт
-from ozon.scripts.format_svod_actions import format_excel_actions
-# Файл с некоторыми константами
-from ozon.scripts.constants import (
-    headers,
-    headers_wb,
-    client_name,
-    marketplace_dir_name,
-    catalog_action_columns,
-    svod_actions_cols,
-    net_cost_koef
-)
-# Некоторые дополнительные функции
-from generic_functions import move_columns, add_element_to_list
-from ozon.scripts.command_args_parser import cli_reference_date
+from wb.scripts.uploadDataFromWB import get_wb_product
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate actions report (Ozon)",

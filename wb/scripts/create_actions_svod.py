@@ -1,40 +1,27 @@
 
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-from pathlib import Path
-import glob
-import csv
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-from openpyxl import Workbook
+import os
 import re
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 from loguru import logger
-import getopt
-import sys
+from rich_argparse import RichHelpFormatter
+
 pd.options.mode.chained_assignment = None
 
+from wb.scripts.command_args_parser import cli_reference_date
+# Некоторые константы
+from wb.scripts.constants import (catalog_action_columns, client_name, headers,
+                                  marketplace_dir_name, net_cost_koef,
+                                  svod_actions_cols)
 # Функция форматирования excel с планом акций, отдельный скрипт
 from wb.scripts.format_actions_svod import format_excel_actions
 # Функция выгрузки списка товаров
-from wb.scripts.uploadDataFromWB import getWBProduct, get_prices_WB
-# Некоторые константы
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    catalog_action_columns,
-    svod_actions_cols,
-    net_cost_koef
-)
+from wb.scripts.uploadDataFromWB import get_prices_WB, getWBProduct
 
-from wb.scripts.command_args_parser import cli_reference_date
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate actions report (WB)",

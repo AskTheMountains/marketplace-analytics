@@ -1,41 +1,26 @@
 
 # %% Определение всех функций
-import pandas as pd
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-import requests
-import time
-import os
-import openpyxl
-import json
+from datetime import date, datetime, timedelta
+
+import numpy as np
+import pandas as pd
 from loguru import logger
-from datetime import date,datetime,timedelta
-from itertools import product
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
 from openpyxl.styles import Border, Side
-from openpyxl.styles.numbers import FORMAT_NUMBER_00
+from openpyxl.utils import get_column_letter
+from rich_argparse import RichHelpFormatter
 
-# Файл с некоторыми константами
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name
-)
-
-# Функции выгрузки данных по АПИ, которые уже готовы
-from wb.scripts.uploadDataFromWB import getOrdersWB, getSalesWB
-from wb.scripts.calc_svod_finance_report_WB_v2 import (
-    upload_realization_report,
-    rename_report_columns,
-    add_new_columns,
-    # filter_report_dates
-)
 # Доп. функции
 from generic_functions import move_columns
+from wb.scripts.calc_svod_finance_report_WB_v2 import (  # filter_report_dates
+    add_new_columns, rename_report_columns, upload_realization_report)
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_dates
+# Файл с некоторыми константами
+from wb.scripts.constants import client_name, headers, marketplace_dir_name
+# Функции выгрузки данных по АПИ, которые уже готовы
+from wb.scripts.uploadDataFromWB import getOrdersWB, getSalesWB
 
 parser = argparse.ArgumentParser(
     description="Create sales and orders report (WB)",

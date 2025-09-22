@@ -1,58 +1,45 @@
 
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-from pathlib import Path
-import glob
-import csv
-import zipfile
-import openpyxl
-from zipfile import ZipFile
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
+import os
 import re
-from loguru import logger
-import getopt
-import sys
-pd.options.mode.chained_assignment = None  # default='warn'
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
+from datetime import datetime, timedelta
+from pathlib import Path
 
+import numpy as np
+import openpyxl
+import pandas as pd
+from loguru import logger
+from rich_argparse import RichHelpFormatter
+
+pd.options.mode.chained_assignment = None  # default='warn'
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
+
+# Некоторые доп. функции
+from generic_functions import move_columns
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_date_range
+# Некоторые константы
+from ozon.scripts.constants import (catalog_finace_svod_columns,
+                                    client_id_performance, client_name,
+                                    client_secret_performance, headers,
+                                    marketplace_dir_name)
+# Функция выгрузки товаров в поставках
+from ozon.scripts.uploadDataFromOzon import get_supply_orders
+# Функция выгрузки данных о рекламных кампаниях
+from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
+# Функция выгрузки отчета о релизации товаров
+from ozon.scripts.uploadFinanceReports import get_products_realization_report
 
 # Файл с настройками и номером клиента
 # from options import headers, settings, client_number
 
-# Некоторые константы
-from ozon.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    client_id_performance,
-    client_secret_performance,
-    catalog_finace_svod_columns
-)
 
-# Некоторые доп. функции
-from generic_functions import move_columns
 
-# Функция выгрузки товаров в поставках
-from ozon.scripts.uploadDataFromOzon import get_supply_orders
 
-# Функция выгрузки отчета о релизации товаров
-from ozon.scripts.uploadFinanceReports import get_products_realization_report
 
-# Функция выгрузки данных о рекламных кампаниях
-from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
 
-# Парсинг аргументов командной строки
-from ozon.scripts.command_args_parser import cli_date_range
 
 parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",

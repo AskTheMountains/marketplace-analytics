@@ -1,31 +1,19 @@
 
 # %% Определение функций
-import requests
+import argparse
 import json
 import time
-from datetime import date,datetime,timedelta
+from datetime import date, datetime, timedelta
+
 import pandas as pd
-import shutil
-import os
-import csv
-import numpy as np
-from openpyxl import Workbook
-import re
+import requests
 from loguru import logger
-import getopt
-import argparse
 from rich_argparse import RichHelpFormatter
-import sys
-from pathlib import Path
+
 pd.set_option('chained_assignment',None)
 
 # Файл с некоторыми константами
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-)
-
+from wb.scripts.constants import client_name, headers, marketplace_dir_name
 
 # Имя директории для текущей выгрузки
 uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"

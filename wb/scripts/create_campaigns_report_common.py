@@ -1,43 +1,29 @@
 # %% Определение функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import copy
-from pathlib import Path
-import csv
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
+import copy
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import numpy as np
 import openpyxl
-from openpyxl.styles import Border, Side, Alignment, numbers
-from openpyxl.utils import get_column_letter
-import re
+import pandas as pd
+import requests
 from loguru import logger
-import getopt
-import sys
+from openpyxl.styles import Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+from rich_argparse import RichHelpFormatter
+
 pd.options.mode.chained_assignment = None  # default='warn'
 
-# Файл с настройками и номером клиента
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    promotion_companies,
-    marketplace_dir_name
-)
-# Функции выгрузки данных
-from wb.scripts.uploadDataFromWB import(
-    getWBProduct,
-    getOrdersWB
-)
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
-
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_dates
+# Файл с настройками и номером клиента
+from wb.scripts.constants import client_name, headers, promotion_companies
+# Функции выгрузки данных
+from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
 
 parser = argparse.ArgumentParser(
     description="Create promotion report (WB)",

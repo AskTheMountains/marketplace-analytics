@@ -1,11 +1,8 @@
-import shutil
-import os
-from pathlib import Path
-
 from loguru import logger
 
 # Файл с некоторыми константами
-from ozon.scripts.constants import marketplace_dir_name, client_name
+from ozon.scripts.constants import client_name, marketplace_dir_name
+
 
 # Функция создания директорий (для новых клиентов)
 def create_dirs():
@@ -13,18 +10,18 @@ def create_dirs():
     client_dir = marketplace_dir_name / "Clients" / client_name
     # Список директорий для создания
     dir_names = [
-        'UploadFiles',
-        'Metrics',
-        'catalog',
-        'SupplySvod',
-        'Actions',
-        'UploadFilesPerformance',
-        'FinanceReports',
-        'SalesOrdersSvod',
-        'CampaignsReport',
-        'ClientCabinetSvod',
-        'ClientRKSvod',
-        'OrdersSvod',
+        "UploadFiles",
+        "Metrics",
+        "catalog",
+        "SupplySvod",
+        "Actions",
+        "UploadFilesPerformance",
+        "FinanceReports",
+        "SalesOrdersSvod",
+        "CampaignsReport",
+        "ClientCabinetSvod",
+        "ClientRKSvod",
+        "OrdersSvod",
     ]
     for dir_name in dir_names:
         dir_path = client_dir / dir_name
@@ -34,5 +31,5 @@ def create_dirs():
     logger.info(f"Done creating folders for client {client_name}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     create_dirs()

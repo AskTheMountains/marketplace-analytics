@@ -1,31 +1,18 @@
 
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import glob
-from pathlib import Path
-import csv
-import zipfile
-from zipfile import ZipFile
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-from openpyxl import Workbook
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Border, Side, Font, Alignment
-from openpyxl.styles.numbers import FORMAT_NUMBER_00
-from openpyxl.formatting.rule import ColorScaleRule
-import re
-from loguru import logger
-import getopt
-import sys
 import warnings
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from loguru import logger
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
+from rich_argparse import RichHelpFormatter
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -34,45 +21,23 @@ pd.set_option('future.no_silent_downcasting', True)
 BASE_DIR = Path(__file__).parent.parent
 
 
-# Файл с настройками и номером клиента
-# from options import settings, client_number, headers
-# Некоторые константы
-from ozon.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    client_id_performance,
-    client_secret_performance,
-    ozon_performance_api_url,
-    promotion_companies
-)
-# Функции выгрузки данных по API Seller
-from ozon.scripts.uploadDataFromOzon import(
-    get_ozon_product,
-    getOrders,
-    getStockReminders_fbo_v2,
-    getStockReminders_fbs
-)
-# Функции выгрузки данных по API Seller (доп.)
-from ozon.scripts.ozon_generic_functions import (
-    get_orders,
-    get_reminders_by_product
-)
-# Функции выгрузки данных по API Performane
-from ozon.scripts.uploadDataFromOzonPerformance import (
-    getAuthorizationToken,
-    getCompanyList,
-    getCompanyStatistics,
-)
-# Функция формирования статистики РК
-from ozon.scripts.create_campaigns_report import(
-    create_campaigns_report as upload_campaigns_report,
-)
-# Некоторые вспомогательные функции
-from generic_functions import move_columns
-
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_dates
+# Некоторые константы
+from ozon.scripts.constants import (client_id_performance, client_name,
+                                    client_secret_performance, headers,
+                                    promotion_companies)
+# Функция формирования статистики РК
+from ozon.scripts.create_campaigns_report import \
+    create_campaigns_report as upload_campaigns_report
+# Функции выгрузки данных по API Seller (доп.)
+from ozon.scripts.ozon_generic_functions import (get_orders,
+                                                 get_reminders_by_product)
+# Функции выгрузки данных по API Seller
+from ozon.scripts.uploadDataFromOzon import get_ozon_product
+
+# Некоторые вспомогательные функции
+
 
 parser = argparse.ArgumentParser(
     description="Create cabinet svod report (Ozon)",

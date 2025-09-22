@@ -1,56 +1,35 @@
 
 # %% Определение функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-import glob
-import csv
-import numpy as np
 import argparse
-from rich_argparse import RichHelpFormatter
-import re
-from loguru import logger
-import getopt
-import sys
+import glob
+import os
+import time
+from datetime import datetime, timedelta
+
+import numpy as np
 import openpyxl
-from openpyxl import Workbook
+import pandas as pd
+import requests
+from loguru import logger
+from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
+from rich_argparse import RichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
-# Некоторые константы
-from wb.scripts.constants import (
-    headers,
-    client_name,
-    marketplace_dir_name,
-    finance_report_price_column,
-    catalog_finace_svod_columns
-)
-
-# Уже написанные ранее функции выгрузки данных из АПИ
-from wb.scripts.uploadDataFromWB import (
-    getWBProduct,
-    get_prices_WB,
-    getOrdersWB
-)
-
-# Функция выгрузки для АПИ Продвижение
-from wb.scripts.uploadDataPerformanceWB import get_costs_history
-
 # Вспомогательные функции
 from generic_functions import move_columns
-from wb.scripts.wb_generic_functions import(
-    get_company_stats_v2,
-    load_full_report as upload_realization_report_new
-)
-
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_date_range
+# Некоторые константы
+from wb.scripts.constants import client_name, headers, marketplace_dir_name
+# Уже написанные ранее функции выгрузки данных из АПИ
+from wb.scripts.uploadDataFromWB import getOrdersWB
+# Функция выгрузки для АПИ Продвижение
+from wb.scripts.uploadDataPerformanceWB import get_costs_history
+from wb.scripts.wb_generic_functions import get_company_stats_v2
+from wb.scripts.wb_generic_functions import \
+    load_full_report as upload_realization_report_new
 
 parser = argparse.ArgumentParser(
     description="Create finance report (WB)",

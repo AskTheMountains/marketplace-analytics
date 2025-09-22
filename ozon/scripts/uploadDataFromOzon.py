@@ -1,35 +1,28 @@
 # %% Определение всех функций
-import requests
-import json
-import time
-from datetime import date,datetime,timedelta
-import pandas as pd
-import shutil
-import os
-from pathlib import Path
-import csv
-import numpy as np
-import re
-from loguru import logger
 import argparse
-from rich_argparse import RichHelpFormatter
-import sys
+import csv
+import json
+import os
+import re
+import time
 from ast import literal_eval
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+import requests
+from loguru import logger
+from rich_argparse import RichHelpFormatter
+
 pd.set_option('future.no_silent_downcasting', True)
-
-# Файл с некоторыми константами
-from ozon.scripts.constants import (
-    headers,
-    ozon_seller_api_url,
-    client_name,
-    marketplace_dir_name,
-)
-
-# Функция обновления кластеров Озон
-from ozon.scripts.update_clusters import update_cluster_list
 
 # Функция парсинга аргумента количества дней выгрузки
 from ozon.scripts.command_args_parser import cli_days_ago
+# Файл с некоторыми константами
+from ozon.scripts.constants import (client_name, headers, marketplace_dir_name,
+                                    ozon_seller_api_url)
+# Функция обновления кластеров Озон
+from ozon.scripts.update_clusters import update_cluster_list
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -729,7 +722,7 @@ def getFinalOrders_fbo(headers):
                 df.to_csv(file_name_final_orders, sep=";", index = False)
             except Exception as e:
                 print(f"{e}")
-                logger.info("Connection is lost. Waiting  2 minites and continue connection")
+                logger.info("Connection is lost. Waiting  2 minutes and continue connection")
                 time.sleep(120)
                 result = requests.post(f"{ozon_seller_api_url}/v2/posting/fbo/get",headers=headers, data=params).json()
                 cluster_from = result['result']['financial_data']['cluster_from']

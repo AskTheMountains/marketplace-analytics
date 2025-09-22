@@ -1,31 +1,23 @@
 # %% Определение всех функций
-import pandas as pd
-import numpy as np
-import os
-from pathlib import Path
-import openpyxl
-import json
-from loguru import logger
-from datetime import date,datetime,timedelta
-from itertools import product
 import argparse
+from datetime import datetime
+from itertools import product
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from loguru import logger
 from rich_argparse import RichHelpFormatter
 
-# Файл с некоторыми константами
-from ozon.scripts.constants import(
-    client_name,
-    marketplace_dir_name,
-    shop_type,
-    clusters_mapping,
-    clusters_mapping_jewelry,
-    catalog_supply_columns,
-    svod_total_columns,
-    svod_clusters_columns
-)
 # Файл с функциями форматирования листов excel
 import ozon.scripts.format_supply_svod as format_supply_svod
-
 from ozon.scripts.command_args_parser import cli_reference_date
+# Файл с некоторыми константами
+from ozon.scripts.constants import (catalog_supply_columns, client_name,
+                                    clusters_mapping, clusters_mapping_jewelry,
+                                    marketplace_dir_name, shop_type,
+                                    svod_clusters_columns, svod_total_columns)
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate supply report (Ozon)",
@@ -160,7 +152,7 @@ def add_clusters(date_metrics):
     # Чтение файла с метриками
     metrics_clusters = read_metrics_file(date_metrics, sheet_name='claster_report')
 
-    # Чтение файла с метрками (лист со всеми товарами)
+    # Чтение файла с метриками (лист со всеми товарами)
     metrics_summary = read_metrics_file(date_metrics, sheet_name='summary')
 
     # Чтение файла с кластерами
