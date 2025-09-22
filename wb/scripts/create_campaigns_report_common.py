@@ -10,6 +10,8 @@ import copy
 from pathlib import Path
 import csv
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import openpyxl
 from openpyxl.styles import Border, Side, Alignment, numbers
 from openpyxl.utils import get_column_letter
@@ -33,6 +35,17 @@ from wb.scripts.uploadDataFromWB import(
 )
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
+
+# Парсинг аргументов командной строки
+from wb.scripts.command_args_parser import cli_dates
+
+parser = argparse.ArgumentParser(
+    description="Create promotion report (WB)",
+    usage="python.exe -m wb.scripts.create_rk_svod [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m wb.scripts.create_rk_svod 2025-08-27 2025-09-02",
+    formatter_class=RichHelpFormatter
+)
+
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 
@@ -1659,8 +1672,13 @@ def save_and_format_excel(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+    # Парсим аргументы командной строки
+    dates_cli = cli_dates(parser)
+
     # Генерируем диапазон дат
     df_date_range = generate_dates(
+        start_date=dates_cli['start_date'],
+        end_date=dates_cli['end_date'],
         # start_date='2025-09-01',
         # end_date='2025-09-16'
     )

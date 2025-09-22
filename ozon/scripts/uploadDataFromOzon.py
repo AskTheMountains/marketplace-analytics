@@ -11,7 +11,8 @@ import csv
 import numpy as np
 import re
 from loguru import logger
-import getopt
+import argparse
+from rich_argparse import RichHelpFormatter
 import sys
 from ast import literal_eval
 pd.set_option('future.no_silent_downcasting', True)
@@ -27,6 +28,17 @@ from ozon.scripts.constants import (
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
 
+# Функция парсинга аргумента количества дней выгрузки
+from ozon.scripts.command_args_parser import cli_days_ago
+
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Upload data for Ozon marketplace",
+    usage='python.exe -m ozon.scripts.uploadDataFromOzon [days_ago] [--days_ago <days_ago>]\n',
+    epilog='Example: python.exe -m ozon.scripts.uploadDataFromOzon 30',
+    formatter_class=RichHelpFormatter
+)
+
 
 # Определяем имя директории для загрузки файлов
 uploaddir = (
@@ -36,41 +48,6 @@ uploaddir = (
     / "UploadFiles"
 )
 uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
-
-
-# Пример использования
-def usage():
-   print("Usage: script.py -days=31")
-   return
-
-
-def read_params():
-    # Обработка опций и аргументов
-    days_to_process = 2
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], "hd:", ["help", "days="])
-    except getopt.GetoptError as err:
-        logger.error("Option not recognized")
-        usage()
-        sys.exit(2)
-
-    if len(opts) == 0:
-        logger.error("No option was specified")
-        usage()
-        sys.exit()
-
-    for o, a in opts:
-        if o in ("-h", "--help"):
-            usage()
-            sys.exit()
-        elif o in ("-d", "--days"):
-            days_to_process = int(a)
-        else:
-            assert False, "unhandled option"
-
-    logger.info(f'Days to process: {days_to_process}')
-
-    return days_to_process
 
 
 # Функция создания директорий для текущей выгрузки
@@ -1585,9 +1562,12 @@ if __name__ == '__main__':
     # Создаем директорию для текущей выгрузки
     uploaddir_today = create_upload_dir()
 
+    # Парсим аргументы командной строки
+    days_ago = cli_days_ago(parser)
+
     # days_to_process = read_params()
     # date_start, date_end = generateDates()
-    date_start, date_end = generate_dates_new()
+    date_start, date_end = generate_dates_new(days_ago)
     # date_end = '2025-07-12T23:59:59.000Z'
     # date_start = '2025-06-13T00:00:00.000Z'
     logger.info(f"Upload Files from Ozon for client {client_name} for dates {date_start} - {date_end}")

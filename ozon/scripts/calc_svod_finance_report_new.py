@@ -14,6 +14,8 @@ import zipfile
 import openpyxl
 from zipfile import ZipFile
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import re
 from loguru import logger
 import getopt
@@ -49,19 +51,117 @@ from ozon.scripts.uploadFinanceReports import get_products_realization_report
 # Функция выгрузки данных о рекламных кампаниях
 from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
 
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_date_range
+
+parser = argparse.ArgumentParser(
+    description="Create finance report (Ozon)",
+    usage="python.exe -m ozon.scripts.calc_svod_finance_report_new [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20",
+    formatter_class=RichHelpFormatter
+)
+
+# Функция генерации диапазона дат
+def generate_date_range(date_start, date_end):
+    # Если не заданы аргументы командной строки, то генерируем диапазон за предыдущий месяц
+    if date_start is None and date_end is None:
+        today = datetime.today()
+        # Первый день текущего месяца
+        first_day_this_month = today.replace(day=1)
+        # Последний день предыдущего месяца
+        last_day_prev_month = first_day_this_month - timedelta(days=1)
+        # Первый день предыдущего месяца
+        first_day_prev_month = last_day_prev_month.replace(day=1)
+        # Форматируем даты в строку YYYY-MM-DD
+        date_start = first_day_prev_month.strftime("%Y-%m-%d")
+        date_end = last_day_prev_month.strftime("%Y-%m-%d")
+        return date_start, date_end
+    else:
+        return date_start, date_end
+
+# Функция создания директории с текущим отчетом
+def create_current_report_dir(client_name, date_start, date_end):
+    # Переводим дату в нужный формат
+    date_folder = (
+        pd.to_datetime(date_start)
+        .strftime('%Y_%m')
+    )
+    # Формируем путь к директории
+    finance_reports_dir = (
+        marketplace_dir_name
+        / 'Clients'
+        / client_name
+        / 'FinanceReports'
+        / date_folder
+    )
+    # Создаем папку, если её нет
+    finance_reports_dir.mkdir(parents=True, exist_ok=True)
+
+    return finance_reports_dir, date_folder
 
 
+# Функция поиска отчета с файлом в директории
+def rename_finance_report_file(current_report_dir, client_name, date_start, date_end):
+    # Преобразуем даты из формата YYYY-MM-DD в DD.MM.YYYY для поиска существующего файла
+    try:
+        start = datetime.strptime(date_start, "%Y-%m-%d").strftime("%d.%m.%Y")
+        end = datetime.strptime(date_end, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except Exception as e:
+        return f"Ошибка формата даты: {e}"
+
+    reports_dir = Path(current_report_dir)
+
+    # Маска финального (нужного) имени файла
+    final_name = f"{client_name}_Отчет_по_начислениям_{date_start}_{date_end}.xlsx"
+    final_path = reports_dir / final_name
+
+    # Если файл уже есть — вернуть его путь сразу
+    if final_path.exists():
+        return final_path
+
+    # Шаблон поиска исходного файла
+    pattern = re.compile(
+        rf"отчет[ _]по[ _]начислениям[ _]{start}-{end}.*\.(xlsx|xls)$",
+        re.I
+    )
+
+    matched_files = []
+
+    # Поиск файлов по маске
+    for f in reports_dir.iterdir():
+        if f.is_file() and pattern.match(f.name):
+            matched_files.append((f, f.stat().st_mtime))
+
+    if not matched_files:
+        return "Файл отчета по заданным датам не найден."
+
+    # Сортировка по дате изменения (от нового к старому)
+    matched_files.sort(key=lambda x: x[1], reverse=True)
+    chosen_file = matched_files[0][0]
+
+    # Переименование
+    chosen_file.rename(final_path)
+
+    # Возврат нового пути
+    return final_path
 
 # Функция чтения файла с отчетом
-def read_finance_report_file(finance_reports_dir, date_start, date_end):
+def read_finance_report_file(finance_report_filepath):
     # Получения формата дат, которые содержатся в имени файла.
-    date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d_%m_%Y')
-    date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d_%m_%Y')
+    # date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d_%m_%Y')
+    # date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d_%m_%Y')
+    # date_start_file = date_start
+    # date_end_file = date_end
     # Определение пути к файлу с отчетом
-    report_file = finance_reports_dir / f"{client_name}_Отчет_по_начислениям_{date_start_file}_{date_end_file}.xlsx"
-    df_finance_report = pd.read_excel(report_file,
-                                      sheet_name='Начисления',
-                                      skiprows=1)
+    # report_file = (
+    #     finance_reports_dir
+    #     / f"{client_name}_Отчет_по_начислениям_{date_start_file}_{date_end_file}.xlsx"
+    # )
+    df_finance_report = pd.read_excel(
+        finance_report_filepath,
+        sheet_name='Начисления',
+        skiprows=1
+    )
 
     df_finance_report = df_finance_report.rename(columns={
         'Ozon SKU': 'SKU',
@@ -359,11 +459,11 @@ def get_companies_ids(df_finance_report):
 
 
 # Функция парсинга файлов со статистикой по кампаниям
-def parse_companies_files(finance_reports_dir, date_report):
+def parse_companies_files(current_report_dir, date_report):
     # Директория, где лежат данные по рекламным кампаниям
-    companies_stats_dir = finance_reports_dir / f"{date_report}_Кампании"
+    companies_stats_dir = current_report_dir / f"{date_report}_Кампании"
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir = finance_reports_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
 
     # Получаем список csv файлов по кампаниям
     filenames_companies = {"path": []}
@@ -482,7 +582,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
         for i in range(len(df_companies_costs_total)):
             # Файл с данными по кампании
             company_file_path = (
-                finance_reports_dir
+                current_report_dir
                 / f"{date_report}_Кампании_parsed"
                 / f"{df_companies_costs_total['Номер кампании'][i]}.csv"
             )
@@ -613,10 +713,10 @@ def calc_companies_costs(
         task_id=None
     ):
     # Директория, где будут лежать данные по рекламным кампаниям
-    companies_stats_dir = finance_reports_dir / f"{date_report}_Кампании"
+    companies_stats_dir = current_report_dir / f"{date_report}_Кампании"
     companies_stats_dir.mkdir(parents=True, exist_ok=True)  # Создаем, если директория не существует
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir = finance_reports_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
     companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Проверяем, что в отчете были расходы по рекламе
@@ -648,7 +748,7 @@ def calc_companies_costs(
             logger.info('Companies stats already downloaded')
 
         # Обрабатываем выгруженные данные
-        parse_companies_files(finance_reports_dir, date_report)
+        parse_companies_files(current_report_dir, date_report)
 
     # Считаем расходы по рекламным кампаниям
     result_companies_costs_no_article = calc_companies_cost_by_sku(date_report, df_finance_report)
@@ -1135,7 +1235,7 @@ def save_finance_svod_to_excel(
 
     # Путь для сохранения файла (с именем)
     filepath_finance_svod = (
-        finance_reports_dir
+        current_report_dir
         / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
     )
     # Сохраняем отчет
@@ -1170,7 +1270,7 @@ def format_excel(
 
     # Формируем путь к итоговому файлу Excel
     filepath_finance_svod = (
-        finance_reports_dir
+        current_report_dir
         / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
     )
     # Открываем итоговый Excel-файл
@@ -1293,33 +1393,32 @@ def format_excel(
                     else:
                         cell.number_format = '#,##0.00'
 
+    # Сохраняем файл
     wb.save(filepath_finance_svod)
+    # Выводим сообщение об успешном сохранении
+    logger.info(f"Finance report saved in: {filepath_finance_svod}")
 
     return filepath_finance_svod
 
 
 # %% Вызов всех функций
 if __name__ == "__main__":
-    # Дата, с которой начинается имя папки с исходными данными
-    date_report = '2025_08'
-    # Даты, за которые был сформирован отчет (содержатся в имени файла с отчетом)
-    date_start = '2025-08-01'
-    date_end = '2025-08-31'
-    # Дата, когда были выгружены данные по рекламе
-    date_upload_performance = str(date.today())
-    # Директория для сохранения результатов
-    finance_reports_dir = (
-        marketplace_dir_name
-        / "Clients"
-        / client_name
-        / "FinanceReports"
-        / date_report
-    )
-    if not finance_reports_dir.exists():
-        finance_reports_dir.mkdir(parents=True, exist_ok=True)
 
+    # Парсим аргументы командной строки
+    dates_cli = cli_date_range(parser)
+
+    # Получаем даты из командной строки
+    date_start = dates_cli['start_date']
+    date_end = dates_cli['end_date']
+
+    # Генерируем диапазон дат для текущего отчета
+    date_start, date_end = generate_date_range(date_start, date_end)
+    # Создаем директорию для текущего отчета
+    current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
+    # Ищем файл с отчетом
+    finance_report_filepath = rename_finance_report_file(current_report_dir, client_name, date_start, date_end)
     # Считывание файла с фин. отчетом
-    df_finance_report = read_finance_report_file(finance_reports_dir, date_start, date_end)
+    df_finance_report = read_finance_report_file(finance_report_filepath)
     # Выгрузка отчета о реализации продаж, возвратов и баллов Озон
     # df_realization_report = calc_sales_returns(date_start, date_end)
     # Расчет расходов с привязкой к SKU

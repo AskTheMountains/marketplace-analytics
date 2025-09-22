@@ -13,6 +13,8 @@ from openpyxl import Workbook
 import re
 from loguru import logger
 import getopt
+import argparse
+from rich_argparse import RichHelpFormatter
 import sys
 from pathlib import Path
 pd.set_option('chained_assignment',None)
@@ -29,6 +31,16 @@ from wb.scripts.constants import (
 uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
 uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 
+# Функция парсинга аргумента количества дней выгрузки
+from wb.scripts.command_args_parser import cli_days_ago
+
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Upload data for WB marketplace",
+    usage='python.exe -m wb.scripts.uploadDataFromWB [days_ago] [--days_ago <days_ago>]',
+    epilog='Example: python.exe -m wb.scripts.uploadDataFromWB 30',
+    formatter_class=RichHelpFormatter
+)
 
 # Функция генерации дат периода выгрузки данных
 def generateDates(days_ago = 30):
@@ -693,10 +705,15 @@ def get_supply_orders_WB_fbs(headers):
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+
+    # Парсим аргументы командной строки
+    days_ago = cli_days_ago(parser)
+
     # Создаем директории выгрузки, если их нет
     uploaddir_today.mkdir(parents=True, exist_ok=True)
+
     # Генерируем даты (по умолчанию - 30 дней от текущей даты)
-    date_start, date_end = generate_dates_new()
+    date_start, date_end = generate_dates_new(days_ago)
     # date_end = '2025-07-09T23:59:59'
     # date_start = '2025-06-10T00:00:00'
     logger.info(f"Uploading files for client {client_name} for dates {date_start} - {date_end}")

@@ -13,6 +13,8 @@ import csv
 import zipfile
 from zipfile import ZipFile
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 from openpyxl import Workbook
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -57,6 +59,15 @@ from ozon.scripts.uploadDataFromOzonPerformance import (
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
 
+
+from ozon.scripts.command_args_parser import cli_dates
+
+parser = argparse.ArgumentParser(
+    description="Create promotion report (Ozon)",
+    usage="python.exe -m ozon.scripts.create_campaigns_report [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m ozon.scripts.create_campaigns_report 2024-11-13 2024-11-20",
+    formatter_class=RichHelpFormatter
+)
 
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
@@ -241,6 +252,7 @@ def create_companies_upload_df(
 def get_company_list(
         all_companies_stats_check,
         df_input_companies,
+        upload_path,
         auth_token
 ):
     # Если нужна статистика по всем кампаниям, выгружаем список всех кампаний
@@ -2151,6 +2163,7 @@ def create_campaigns_report(
     df_input_companies_parsed = get_company_list(
         all_companies_stats_check,
         df_input_companies,
+        upload_path,
         auth_token
     )
     # Получаем статистику кампаний
@@ -2236,10 +2249,16 @@ def create_campaigns_report(
 # %% Вызов функций
 if __name__ == '__main__':
 
+   # Парсим аргументы командной строки
+    dates_cli = cli_dates(parser)
+
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        # start_date='2025-08-18',
-        # end_date='2025-08-27'
+        reference_date=dates_cli["reference_date"],
+        start_date=dates_cli["start_date"],
+        end_date=dates_cli["end_date"],
+        # start_date='2025-09-01',
+        # end_date='2025-09-30'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(promotion_companies, df_date_range)
@@ -2274,6 +2293,7 @@ if __name__ == '__main__':
     df_input_companies_parsed = get_company_list(
         all_companies_stats_check,
         df_input_companies,
+        upload_path,
         auth_token
     )
     # Получаем статистику кампаний

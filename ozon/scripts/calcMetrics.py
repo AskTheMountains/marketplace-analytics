@@ -10,20 +10,24 @@ from openpyxl import Workbook
 from loguru import logger
 import warnings
 import argparse
+from rich_argparse import RichHelpFormatter
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 # Файл с константами
 from ozon.scripts.constants import marketplace_dir_name, client_name
-from ozon.scripts.command_args_parser import cli_reference_date
+
 
 # Создаем директорию, куда будут сохраняться метрики
 metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
 metricsdir.mkdir(parents=True, exist_ok=True)
 
+from ozon.scripts.command_args_parser import cli_reference_date
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate metrics for Ozon marketplace",
-    usage='python.exe -m ozon.scripts.calcMetrics [ДАТА] [--ref_dt ДАТА]'
+    usage='python.exe -m ozon.scripts.calcMetrics [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog='Example: python.exe -m ozon.scripts.calcMetrics 2024-11-13',
+    formatter_class=RichHelpFormatter
 )
 
 

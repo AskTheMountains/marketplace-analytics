@@ -15,6 +15,8 @@ import re
 from loguru import logger
 import getopt
 import sys
+import argparse
+from rich_argparse import RichHelpFormatter
 pd.options.mode.chained_assignment = None
 
 
@@ -36,6 +38,14 @@ from ozon.scripts.constants import (
 )
 # Некоторые дополнительные функции
 from generic_functions import move_columns, add_element_to_list
+from ozon.scripts.command_args_parser import cli_reference_date
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate actions report (Ozon)",
+    usage='python.exe -m ozon.scripts.create_actions_svod_v2 [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog='Example: python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01',
+    formatter_class=RichHelpFormatter
+)
 
 # Директория файлов с данными по акциям
 path_download_actions = (
@@ -1246,7 +1256,7 @@ def save_excel(
 if __name__ == '__main__':
     # Дата, за которую были выгружены данные
     # date_report_created = '2025-09-02'
-    date_report_created = str(date.today())
+    date_report_created = cli_reference_date(parser)
 
     logger.info(f"Calculating svod actions for client {client_name} for date {date_report_created}")
     # Получение каталога

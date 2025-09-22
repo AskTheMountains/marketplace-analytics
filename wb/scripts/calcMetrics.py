@@ -5,6 +5,8 @@ import os
 import csv
 import json
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 from openpyxl import Workbook
 from loguru import logger
 import warnings
@@ -16,6 +18,15 @@ from wb.scripts.constants import (
     client_name,
     cargo_type,
     ignore_virtual_warehouses,
+)
+
+from wb.scripts.command_args_parser import cli_reference_date
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate metrics for WB marketplace",
+    usage='python.exe -m wb.scripts.calcMetrics [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog='Example: python.exe -m wb.scripts.calcMetrics 2025-05-28',
+    formatter_class=RichHelpFormatter
 )
 
 
@@ -91,7 +102,7 @@ def calcMetrics(date_upload_files=str(date.today())):
     reminders_fbs['Остатки_fbs'] = reminders_fbs['amount']
     # reminders_fbs['Остатки_fbs'] = reminders_fbs['amount']
     supply_orders = supply_orders.rename(columns={
-        'quantity': 'Ожидается_поступление',
+        'Количество товара': 'Ожидается_поступление',
         'Склад': 'warehouseName'
     })
 
@@ -122,7 +133,7 @@ def calcMetrics(date_upload_files=str(date.today())):
             Заказы_руб=('Заказы_руб', 'sum'),
             Продажи=('Продажи', 'sum'),
             Продажи_руб=('Продажи_руб', 'sum'),
-            ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
+            ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('Ожидается_поступление', 'sum'),
             Остатки=('Остатки', 'sum'),
             Остатки_fbs=('Остатки_fbs', 'sum')
             )
@@ -142,7 +153,7 @@ def calcMetrics(date_upload_files=str(date.today())):
             Заказы_руб=('Заказы_руб', 'sum'),
             Продажи=('Продажи', 'sum'),
             Продажи_руб=('Продажи_руб', 'sum'),
-            ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
+            ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('Ожидается_поступление', 'sum'),
             Остатки=('Остатки', 'sum'),
             Остатки_fbs=('Остатки_fbs', 'sum')
             )
@@ -254,5 +265,5 @@ if __name__ == '__main__':
     metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
     if not metricsdir.exists():
         metricsdir.mkdir(parents=True, exist_ok=True)
-    # calcMetrics(date_upload_files)
-    calcMetrics()
+    date_upload_files = cli_reference_date(parser)
+    calcMetrics(date_upload_files)

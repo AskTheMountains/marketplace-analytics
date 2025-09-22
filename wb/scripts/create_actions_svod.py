@@ -11,6 +11,8 @@ from pathlib import Path
 import glob
 import csv
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 from openpyxl import Workbook
 import re
 from loguru import logger
@@ -30,6 +32,15 @@ from wb.scripts.constants import (
     catalog_action_columns,
     svod_actions_cols,
     net_cost_koef
+)
+
+from wb.scripts.command_args_parser import cli_reference_date
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate actions report (WB)",
+    usage='python.exe -m wb.scripts.create_actions_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog="Example: python.exe -m wb.scripts.create_actions_svod 2025-01-01",
+    formatter_class=RichHelpFormatter
 )
 
 # Функция чтения дат формирования отчета
@@ -330,7 +341,7 @@ def save_excel(catalog_excel, action_list_df, date_report_created):
 # %% Вызов всех функций
 # Дата, в которую были посчитаны метрики
 # date_report_created = '2025-08-18'
-date_report_created = str(date.today())
+date_report_created = cli_reference_date(parser)
 logger.info(f"Creating actions svod for client {client_name} for date {date_report_created}")
 # Получаем даты выгрузки файлов за указанную дату
 report_dates = read_dates_file(date_report_created)

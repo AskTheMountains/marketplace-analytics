@@ -2,6 +2,8 @@
 # %% определение всех функций
 import pandas as pd
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import os
 from loguru import logger
 from datetime import date,datetime,timedelta
@@ -16,7 +18,14 @@ from wb.scripts.constants import (
     client_name, marketplace_dir_name, shop_type, cargo_type, is_heavy_cargo,
     catalog_supply_columns, svod_total_columns, svod_clusters_columns
 )
-
+from wb.scripts.command_args_parser import cli_reference_date
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate supply report (WB)",
+    usage='python.exe -m wb.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog="Example: python.exe -m wb.scripts.create_supply_svod 2025-01-01",
+    formatter_class=RichHelpFormatter
+)
 
 # Директории с загруженными файлами из апи
 uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
@@ -514,8 +523,9 @@ def format_excel(
 # %% Вызов всех функций
 # Дата расчета метрик и выгрузки файлов
 # date_metrics = '2025-05-28'
-date_metrics = str(date.today())
-logger.info(f"Creating supply svod for {client_name}")
+date_metrics = cli_reference_date(parser)
+logger.info(f"Creating supply svod for client {client_name} for date {date_metrics}")
+
 # Добавляем недостающие кластеры
 # metrics_df_all_clusters = add_clusters(date_metrics)
 metrics_df_all_clusters = read_metrics_file(date_metrics, sheet_name='claster_report')

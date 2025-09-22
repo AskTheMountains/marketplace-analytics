@@ -13,6 +13,8 @@ import csv
 import zipfile
 from zipfile import ZipFile
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 from openpyxl import Workbook
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -68,6 +70,17 @@ from ozon.scripts.create_campaigns_report import(
 )
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
+
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_dates
+
+parser = argparse.ArgumentParser(
+    description="Create cabinet svod report (Ozon)",
+    usage="python.exe -m ozon.scripts.create_client_cabinet_svod [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m ozon.scripts.create_client_cabinet_svod 2024-11-13 2024-11-20",
+    formatter_class=RichHelpFormatter
+)
+
 
 # Функция создания директории, куда будет помещен итоговый отчет
 def create_client_cabinet_svod_dir(client_name, date_report=str(date.today())):
@@ -814,6 +827,9 @@ def save_and_format_excel(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+    # Парсим аргументы командной строки
+    dates_cli = cli_dates(parser)
+
     # Дата, за который считался (или считается) отчет
     date_report=str(date.today())
     # Директория, куда будет сохраняться итоговый отчет
@@ -821,9 +837,12 @@ if __name__ == '__main__':
     # Директория, куда будет загружена статистика кампаний
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем даты начала и окончания периода выгрузки
-    df_dates = generate_dates(
-        # start_date='2025-09-08',
-        # end_date='2025-09-14'
+    df_dates= generate_dates(
+        reference_date=dates_cli["reference_date"],
+        start_date=dates_cli["start_date"],
+        end_date=dates_cli["end_date"],
+        # start_date='2025-09-01',
+        # end_date='2025-09-30'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]

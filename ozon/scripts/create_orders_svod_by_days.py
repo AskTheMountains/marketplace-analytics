@@ -12,6 +12,8 @@ import csv
 import zipfile
 from zipfile import ZipFile
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import re
 from collections import defaultdict
 from openpyxl import Workbook
@@ -76,6 +78,16 @@ from ozon.scripts.create_campaigns_report import(
 )
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
+
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_date_range
+
+parser = argparse.ArgumentParser(
+    description="Create orders report by days (Ozon)",
+    usage="python.exe -m ozon.scripts.orders_svod_by_days [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m ozon.scripts.orders_svod_by_days 2024-11-13 2024-11-20",
+    formatter_class=RichHelpFormatter
+)
 
 # Функция создания началной и конечной даты
 # GPT START ----
@@ -865,6 +877,8 @@ def save_and_format_excel(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+    # Парсим аргументы командной строки
+    dates_cli = cli_date_range(parser)
 
     logger.info(f"Creating orders svod for client {client_name}")
     # Дата, за которую формируется (или формировался) отчет
@@ -874,7 +888,9 @@ if __name__ == '__main__':
     # Формируем диапазон дат для текущего отчета
     df_dates = generate_date_range_for_current_report(
         client_name,
-        orders_svod_dir
+        orders_svod_dir,
+        start_date_new_report=dates_cli['start_date'],
+        end_date_new_report=dates_cli['end_date'],
     )
     date_start_current_report = df_dates['date_start'].iloc[0]
     date_end_current_report = df_dates['date_end'].iloc[0]

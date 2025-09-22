@@ -8,8 +8,8 @@ import json
 from loguru import logger
 from datetime import date,datetime,timedelta
 from itertools import product
-
-
+import argparse
+from rich_argparse import RichHelpFormatter
 
 # Файл с некоторыми константами
 from ozon.scripts.constants import(
@@ -25,6 +25,15 @@ from ozon.scripts.constants import(
 # Файл с функциями форматирования листов excel
 import ozon.scripts.format_supply_svod as format_supply_svod
 
+from ozon.scripts.command_args_parser import cli_reference_date
+# Добавляем описание скрипта в парсер аргументов
+parser = argparse.ArgumentParser(
+    description="Calculate supply report (Ozon)",
+    usage='python.exe -m ozon.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
+    epilog='Example: python.exe -m ozon.scripts.create_supply_svod 2024-11-13',
+    formatter_class=RichHelpFormatter
+)
+
 
 # Директории с загруженными файлами из апи
 uploaddir = (
@@ -33,7 +42,7 @@ uploaddir = (
     / client_name
     / "UploadFiles"
 )
-# uploaddir_today = f"{uploaddir}/UploadFiles_{str(date.today())}"
+
 
 # Директория с метриками
 metricsdir = (
@@ -132,8 +141,11 @@ def read_dates_file(date_metrics):
 
 # Функция чтения файла с метриками
 def read_metrics_file(date_metrics, sheet_name='summary'):
+    filepath_metrics = metricsdir / f"{date_metrics}_МетрикиИтоги.xlsx"
+    if not filepath_metrics.exists():
+        logger.error(f"Metrics file not found: {filepath_metrics}")
     metrics = pd.read_excel(
-        metricsdir / f"{date_metrics}_МетрикиИтоги.xlsx",
+        filepath_metrics,
         sheet_name=sheet_name
     )
     # Удаляем ненужные колонки
@@ -549,7 +561,7 @@ def format_excel(
 if __name__ == '__main__':
     # Дата расчета метрик и выгрузки файлов
     # date_metrics = '2024-12-17'
-    date_metrics = str(date.today())
+    date_metrics = cli_reference_date(parser)
     logger.info(f"Creating supply svod for client {client_name} for date {date_metrics}")
     # Добавляем недостающие кластеры
     metrics_df_all_clusters = add_clusters(date_metrics)

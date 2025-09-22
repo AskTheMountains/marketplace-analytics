@@ -2,6 +2,8 @@
 # %% Определение всех функций
 import pandas as pd
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import requests
 import time
 import os
@@ -30,6 +32,15 @@ from ozon.scripts.constants import (
 from ozon.scripts.uploadDataFromOzon import getOrders
 # Доп. функции
 from generic_functions import move_columns
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_dates
+
+parser = argparse.ArgumentParser(
+    description="Create sales and orders report (Ozon)",
+    usage="python.exe -m ozon.scripts.create_sales_and_orders_svod [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m ozon.scripts.create_sales_and_orders_svod 2025-08-27 2025-09-02",
+    formatter_class=RichHelpFormatter
+)
 
 # Создание нужных директорий
 def create_dirs():
@@ -483,8 +494,13 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+    # Парсим аргументы командной строки
+    dates_cli = cli_dates(parser)
+
     # Формируем диапазон дат
     date_start, date_end = generate_date_range(
+        start_date=dates_cli['start_date'],
+        end_date=dates_cli['end_date'],
         # start_date='2025-08-27',
         # end_date='2025-09-02'
     )

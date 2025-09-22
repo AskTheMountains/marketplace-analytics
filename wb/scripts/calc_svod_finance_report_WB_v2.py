@@ -10,6 +10,8 @@ import os
 import glob
 import csv
 import numpy as np
+import argparse
+from rich_argparse import RichHelpFormatter
 import re
 from loguru import logger
 import getopt
@@ -46,6 +48,55 @@ from wb.scripts.wb_generic_functions import(
     get_company_stats_v2,
     load_full_report as upload_realization_report_new
 )
+
+# Парсинг аргументов командной строки
+from ozon.scripts.command_args_parser import cli_date_range
+
+parser = argparse.ArgumentParser(
+    description="Create finance report (WB)",
+    usage="python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
+    epilog="Example: python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 2024-11-13 2024-11-20",
+    formatter_class=RichHelpFormatter
+)
+
+# Функция генерации диапазона дат
+def generate_date_range(date_start, date_end):
+    # Если не заданы аргументы командной строки, то генерируем диапазон за предыдущий месяц
+    if date_start is None and date_end is None:
+        today = datetime.today()
+        # Первый день текущего месяца
+        first_day_this_month = today.replace(day=1)
+        # Последний день предыдущего месяца
+        last_day_prev_month = first_day_this_month - timedelta(days=1)
+        # Первый день предыдущего месяца
+        first_day_prev_month = last_day_prev_month.replace(day=1)
+        # Форматируем даты в строку YYYY-MM-DD
+        date_start = first_day_prev_month.strftime("%Y-%m-%d")
+        date_end = last_day_prev_month.strftime("%Y-%m-%d")
+        return date_start, date_end
+    else:
+        return date_start, date_end
+
+# Функция создания директории с текущим отчетом
+def create_finance_report_dir(client_name, date_start, date_end):
+    # Переводим дату в нужный формат
+    date_folder = (
+        pd.to_datetime(date_start)
+        .strftime('%Y_%m')
+    )
+    # Формируем путь к директории
+    current_report_dir = (
+        marketplace_dir_name
+        / 'Clients'
+        / client_name
+        / 'FinanceReports'
+        / date_folder
+    )
+    # Создаем папку, если её нет
+    current_report_dir.mkdir(parents=True, exist_ok=True)
+
+    return current_report_dir, date_folder
+
 
 # Функция выгрузки отчета о реализации по апи
 def upload_realization_report(headers, date_start, date_end):
@@ -1211,7 +1262,7 @@ def parse_companies_files(date_report):
     df_companies_stats = pd.DataFrame()
 
     # Директория, в которой лежат данные по рекламным кампаниям
-    companies_stats_dir = f"{finance_reports_dir}/{date_report}_Кампании/"
+    companies_stats_dir = f"{current_report_dir}/{date_report}_Кампании/"
     if not os.path.exists(companies_stats_dir):
         os.mkdir(companies_stats_dir)  # Создаем, если директория не существует
     # Получаем список файлов в директории
@@ -2082,7 +2133,7 @@ def create_svod_by_operations(df_final_costs):
 
 # Функция сохранения результатов в excel
 def save_excel(
-        finance_reports_dir, date_report,
+        current_report_dir, date_report,
         df_realization_report_new_columns,
         report_dates,
         df_final_costs,
@@ -2105,7 +2156,7 @@ def save_excel(
     df_companies_costs = result_companies_costs['df_companies_stats']
 
     # Сохраняем результаты в excel
-    filepath_finance_report = finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
+    filepath_finance_report = current_report_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
     with pd.ExcelWriter(filepath_finance_report) as w:
         df_final_costs.to_excel(w, sheet_name='Итоговая таблица', index=False)
         df_final_costs_by_operation.to_excel(w, sheet_name='Сводная', index=False)
@@ -2122,7 +2173,7 @@ def save_excel(
 
 # Функция форматирования excel
 def format_excel(
-    finance_reports_dir,
+    current_report_dir,
     date_report,
     client_name,
     df_final_costs,
@@ -2130,7 +2181,7 @@ def format_excel(
     columns_to_exclude_from_final_costs,
 ):
     # Формируем путь к итоговому файлу Excel
-    filename = finance_reports_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
+    filename = current_report_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
     # Загружаем рабочую книгу Excel
     wb = openpyxl.load_workbook(filename)
 
@@ -2282,24 +2333,24 @@ def format_excel(
 
     # Сохраняем итоговый файл с формулами и форматированием
     wb.save(filename)
+    # Выводим сообщение
+    logger.info(f"Finance report saved in: {filename}")
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
-    # Имя папки, в которую будет сохранен отчет
-    date_report = '2025_08'
-    # Даты, за которые нужно сформировать отчет
-    date_start = '2025-08-01'
-    date_end = '2025-08-31'
-    # Директория для сохранения результатов
-    finance_reports_dir = (
-        marketplace_dir_name
-        / "Clients"
-        / client_name
-        / "FinanceReports"
-        / date_report
-    )
-    finance_reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Парсим аргументы командной строки
+    dates_cli = cli_date_range(parser)
+
+    # Получаем даты из командной строки
+    date_start = dates_cli['start_date']
+    date_end = dates_cli['end_date']
+
+    # Генерируем диапазон дат для текущего отчета
+    date_start, date_end = generate_date_range(date_start, date_end)
+    # Создаем директорию для текущего отчета
+    current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
 
     # Получение отчета о реализации по АПИ
     df_realization_report = upload_realization_report_new(
@@ -2407,7 +2458,7 @@ if __name__ == '__main__':
     df_final_costs_by_operation = create_svod_by_operations(df_final_costs)
     # Сохранение результатов в excel
     filepath_finance_report = save_excel(
-        finance_reports_dir,
+        current_report_dir,
         date_report,
         # df_realization_report_new_columns,
         df_realization_report_date_filtered,
@@ -2422,7 +2473,7 @@ if __name__ == '__main__':
     )
     # Форматирование файла excel
     format_excel(
-        finance_reports_dir,
+        current_report_dir,
         date_report,
         client_name,
         df_final_costs,
