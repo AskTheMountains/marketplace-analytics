@@ -126,7 +126,7 @@ dmypy.json
 cython_debug/
 
 # VS Code settings
-.vscode/
+# .vscode/
 
 # PyCharm settings
 .idea/
