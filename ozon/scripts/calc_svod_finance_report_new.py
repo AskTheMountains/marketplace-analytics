@@ -32,15 +32,6 @@ from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
 # Функция выгрузки отчета о релизации товаров
 from ozon.scripts.uploadFinanceReports import get_products_realization_report
 
-# Файл с настройками и номером клиента
-# from options import headers, settings, client_number
-
-
-
-
-
-
-
 parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",
     usage="python.exe -m ozon.scripts.calc_svod_finance_report_new [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
@@ -1399,7 +1390,12 @@ if __name__ == "__main__":
     date_end = dates_cli['end_date']
 
     # Генерируем диапазон дат для текущего отчета
-    date_start, date_end = generate_date_range(date_start, date_end)
+    date_start, date_end = generate_date_range(
+        date_start,
+        date_end,
+        # date_start = '2025-08-01',
+        # date_end='2025-08-31'
+    )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
     # Ищем файл с отчетом

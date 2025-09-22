@@ -512,7 +512,7 @@ def get_supply_orders_WB(headers, date_start, date_end):
     else:
         logger.error(f"Ошибка получения поставок")
 
-def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[3, 4,]):
+def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[2, 3, 4,]):
 
     base_url = "https://supplies-api.wildberries.ru/api/v1/supplies"
     limit = 1000
@@ -653,7 +653,7 @@ def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[3, 4,]):
         sep=";", index=False, encoding="utf-8-sig"
     )
 
-    return df_items
+    # return df_items
 
 
 # Поставки fbs
@@ -722,7 +722,7 @@ if __name__ == '__main__':
     # Остатки fbs
     getStockReminders_fbs(headers)
     # Поставки
-    get_supply_orders_WB(headers, date_start, date_end)
+    get_supply_orders_WB_v2(headers, date_start, date_end)
     # Поставки fbs
     get_supply_orders_WB_fbs(headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")

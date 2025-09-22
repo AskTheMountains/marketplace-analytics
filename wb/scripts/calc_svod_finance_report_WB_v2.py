@@ -2327,7 +2327,12 @@ if __name__ == '__main__':
     date_end = dates_cli['end_date']
 
     # Генерируем диапазон дат для текущего отчета
-    date_start, date_end = generate_date_range(date_start, date_end)
+    date_start, date_end = generate_date_range(
+        date_start,
+        date_end,
+        # date_start = '2025-08-01',
+        # date_end='2025-08-31'
+    )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
 

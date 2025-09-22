@@ -18,9 +18,11 @@ pd.options.mode.chained_assignment = None
 from generic_functions import add_element_to_list, move_columns
 from ozon.scripts.command_args_parser import cli_reference_date
 # Файл с некоторыми константами
-from ozon.scripts.constants import (catalog_action_columns, client_name,
-                                    headers, headers_wb, marketplace_dir_name,
-                                    net_cost_koef, svod_actions_cols)
+from ozon.scripts.constants import (
+    catalog_action_columns, client_name,
+    headers, headers_wb, marketplace_dir_name,
+    net_cost_koef, svod_actions_cols
+)
 # Функция форматирования excel с планом акций, отдельный скрипт
 from ozon.scripts.format_svod_actions import format_excel_actions
 # Функция выгрузки каталога
