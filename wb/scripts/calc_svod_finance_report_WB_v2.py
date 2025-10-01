@@ -415,6 +415,8 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
     # Выбираем расходы, где есть артикул
     df_sku_costs = df_realization_report_date_filtered.loc[df_realization_report_date_filtered['Артикул продавца'] != '', :]
 
+    # Заменяем пропуски в размере на 0
+    df_sku_costs['Размер'] = df_sku_costs['Размер'].replace("", "0")
     # Колонки, по которым будет производиться группировка
     # groupby_cols = ['Артикул WB', 'Артикул продавца', 'Размер']
 
@@ -2328,10 +2330,10 @@ if __name__ == '__main__':
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        date_start,
-        date_end,
-        # date_start = '2025-08-01',
-        # date_end='2025-08-31'
+        # date_start,
+        # date_end,
+        date_start = '2025-09-01',
+        date_end='2025-09-28'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
