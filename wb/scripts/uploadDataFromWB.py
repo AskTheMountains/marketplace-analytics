@@ -512,27 +512,64 @@ def get_supply_orders_WB(headers, date_start, date_end):
     else:
         logger.error(f"Ошибка получения поставок")
 
-def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[2, 3, 4,]):
+def get_supply_orders_WB_v2(
+    headers,
+    status_ids=[2, 3, 4],
+    filter_by='date',  # 'date' (по умолчанию) или 'status'
+):
+    """
+    Получить поставки Wildberries с фильтрацией по дате или статусу.
 
+    :param headers: dict — заголовки для API Wildberries
+    :param date_start: str|None — дата начала фильтра (ГГГГ-ММ-ДД)
+    :param date_end: str|None — дата конца фильтра (ГГГГ-ММ-ДД)
+    :param status_ids: list — список ID статусов для фильтрации
+    :param filter_by: str — 'date' или 'status', определяет тип фильтра
+    :param uploaddir_today: str — каталог для сохранения файла
+    :return: pd.DataFrame — данные по товарам в поставках
+    """
     base_url = "https://supplies-api.wildberries.ru/api/v1/supplies"
     limit = 1000
     offset = 0
     all_supplies = []
 
-    payload_template = {
-        # "dates": [
-        #     {
-        #         "from": from_date,
-        #         "till": till_date,
-        #         "type": "factDate"
-        #     }
-        # ],
-        "statusIDs": status_ids,
-        "limit": limit,
-        "offset": offset
-    }
+    # df для сохранения, если не было заявок на поставку
+    df_supplies_template = pd.DataFrame(columns=[
+        "Артикул WB", "Артикул продавца", "Размер", "Склад",
+        "Количество товара", "Номер поставки", "Статус"
+    ])
+    output_path = uploaddir_today / f"{str(date.today())}_Поставки.csv"
 
-    logger.info(f"Загружаем заявки поставок по статусам {status_ids} и датам {date_start} - {date_end}")
+
+    # --- Установка дат по умолчанию ---
+    from_date = str(date.today())
+    logger.info(f"Фильтрация заявок по: {filter_by}")
+
+    # --- Формирование payload в зависимости от фильтрации ---
+    if filter_by == 'date':
+        payload_template = {
+            "dates": [{
+                "from": from_date,
+                # "till": till_date,
+                "type": "supplyDate"
+            }],
+            "limit": limit,
+            "offset": offset
+        }
+    elif filter_by == 'status':
+        payload_template = {
+            "statusIDs": status_ids,
+            "limit": limit,
+            "offset": offset
+        }
+    else:
+        logger.error("Некорректное значение filter_by! Используйте 'date' или 'status'")
+        return pd.DataFrame()
+
+    logger.info(
+        f"Начинаем загрузку заявок: фильтр по {filter_by}."
+        # f"Статусы: {status_ids}"
+    )
 
     while True:
         payload = payload_template.copy()
@@ -552,7 +589,7 @@ def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[2, 3, 4,]
             if len(supplies) < limit:
                 break
             offset += limit
-            time.sleep(1)  # Лимит: 1000 запросов в минуту — 1 запрос в секунду (на практике обычно достаточно)
+            time.sleep(1)
         elif response.status_code == 429:
             logger.warning("429 Too Many Requests на /supplies. Ждём 65 секунд...")
             time.sleep(65)
@@ -561,99 +598,83 @@ def get_supply_orders_WB_v2(headers, date_start, date_end, status_ids=[2, 3, 4,]
             break
 
     df_supplies = pd.DataFrame(all_supplies)
-    if df_supplies.empty:
-        logger.info("Нет заявок с такими статусами и датами.")
-        # return pd.DataFrame()
 
-    # --- Получаем склад и товары в поставках ---
-    all_items = []
-    for idx, row in df_supplies.iterrows():
-        supply_id = row["supplyID"]
-        status_name = row.get("statusName", "")  # или другое поле со статусом
-        logger.info(f"Получаем склад и товары для заявки {supply_id}, статус заявки: {status_name}")
-        # --- Получаем склад ---
-        supply_url = f"{base_url}/{supply_id}"
-        attempts = 0
-        sc_name = ""
-        while attempts < 3:
-            r = requests.get(supply_url, headers=headers)
-            if r.status_code == 200:
-                sc_name = r.json().get('warehouseName', "")
-                break
-            elif r.status_code == 429:
-                logger.warning(f"429 на склад {supply_id}, ждем 61 сек")
-                time.sleep(61)
-                attempts += 1
+    # Если нашлись заявки на поставку, начинаем выгрузку инфы по ним
+    if not df_supplies.empty:
+        # --- Получаем сведения о складах и товарах в заявках ---
+        all_items = []
+        for idx, row in df_supplies.iterrows():
+            supply_id = row["supplyID"]
+            status_name = row.get("statusName", "")
+            logger.info(f"Выгрузка данных по заявке {supply_id}, статус заявки: {status_name}")
+
+            # --- Получаем название склада по supplyID ---
+            supply_url = f"{base_url}/{supply_id}"
+            attempts = 0
+            sc_name = ""
+            while attempts < 3:
+                r = requests.get(supply_url, headers=headers)
+                if r.status_code == 200:
+                    sc_name = r.json().get('warehouseName', "")
+                    break
+                elif r.status_code == 429:
+                    logger.warning(f"429 на склад поставки {supply_id}, ждем 61 сек")
+                    time.sleep(61)
+                    attempts += 1
+                else:
+                    logger.error(f"Ошибка {r.status_code} на склад поставки {supply_id}: {r.text}")
+                    break
             else:
-                logger.error(f"Ошибка {r.status_code} на склад {supply_id}: {r.text}")
-                break
+                logger.error(f"Не получилось получить склад для {supply_id}")
+                continue
+            time.sleep(2.1)
+
+            # --- Получаем товары по заявке ---
+            goods_url = f"{base_url}/{supply_id}/goods"
+            attempts = 0
+            while attempts < 3:
+                r = requests.get(goods_url, headers=headers)
+                if r.status_code == 200:
+                    try:
+                        goods = r.json()
+                        if isinstance(goods, list) and goods:
+                            temp_df = pd.DataFrame(goods)
+                            temp_df["Склад"] = sc_name
+                            temp_df["Номер поставки"] = supply_id
+                            temp_df["Статус"] = status_name
+                            all_items.append(temp_df[[
+                                "nmID", "vendorCode", "techSize", "Склад",
+                                "quantity", "Номер поставки", "Статус"
+                            ]])
+                    except Exception as e:
+                        logger.error(f"Ошибка парсинга JSON на товарах {supply_id}: {e}")
+                    break
+                elif r.status_code == 429:
+                    logger.warning(f"429 на товары {supply_id}, ждем 61 сек")
+                    time.sleep(61)
+                    attempts += 1
+                else:
+                    logger.error(f"Ошибка {r.status_code} на товары {supply_id}: {r.text}")
+                    break
+            time.sleep(2.1)
+
+        # --- Объединение результатов в единый датафрейм ---
+        if all_items:
+            df_items = pd.concat(all_items, ignore_index=True)
+            df_items = df_items.rename(columns={
+                "nmID": "Артикул WB",
+                "vendorCode": "Артикул продавца",
+                "techSize": "Размер",
+                "quantity": "Количество товара"
+            })
         else:
-            logger.error(f"Не получилось получить склад для {supply_id}")
-            continue
-        time.sleep(2.1)
+            df_items = df_supplies_template.copy()
 
-        # --- Получаем товары ---
-        goods_url = f"{base_url}/{supply_id}/goods"
-        attempts = 0
-        while attempts < 3:
-            r = requests.get(goods_url, headers=headers)
-            if r.status_code == 200:
-                try:
-                    goods = r.json()
-                    if isinstance(goods, list) and goods:
-                        temp_df = pd.DataFrame(goods)
-                        temp_df["Склад"] = sc_name
-                        temp_df["Номер поставки"] = supply_id
-                        temp_df["Статус"] = status_name
-                        all_items.append(temp_df[[
-                            "nmID",
-                            "vendorCode",
-                            "techSize",
-                            "Склад",
-                            "quantity",
-                            "Номер поставки",
-                            "Статус"
-                            ]]
-                        )
-                except Exception as e:
-                    logger.error(f"Ошибка парсинга JSON на товарах {supply_id}: {e}")
-                break
-            elif r.status_code == 429:
-                logger.warning(f"429 на товары {supply_id}, ждем 61 сек")
-                time.sleep(61)
-                attempts += 1
-            else:
-                logger.error(f"Ошибка {r.status_code} на товары {supply_id}: {r.text}")
-                break
-        time.sleep(2.1)
-
-    # Конкатенация всех датафреймов по товарам в один
-    if all_items:
-        df_items = pd.concat(all_items, ignore_index=True)
-        df_items = df_items.rename(columns={
-            "nmId": "Артикул WB",
-            "vendorCode": "Артикул продавца",
-            "techSize": "Размер",
-            "quantity": "Количество товара"
-        })
+        df_items.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
+    # Если заявки на поставку не нашлись, сохраняем пустой df
     else:
-        df_items = pd.DataFrame(columns=[
-            "Артикул WB",
-            "Артикул продавца",
-            "Размер",
-            "Склад",
-            "Количество товара",
-            "Номер поставки",
-            "Статус"
-        ])
-
-    # Сохраняем df с поставками в csv
-    df_items.to_csv(
-        uploaddir_today / f"{str(date.today())}_Поставки.csv",
-        sep=";", index=False, encoding="utf-8-sig"
-    )
-
-    # return df_items
+        logger.info("Нет заявок по заданным параметрам.")
+        df_supplies_template.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
 
 
 # Поставки fbs
@@ -722,7 +743,7 @@ if __name__ == '__main__':
     # Остатки fbs
     getStockReminders_fbs(headers)
     # Поставки
-    get_supply_orders_WB_v2(headers, date_start, date_end)
+    get_supply_orders_WB_v2(headers)
     # Поставки fbs
     get_supply_orders_WB_fbs(headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
