@@ -85,7 +85,7 @@ def rename_finance_report_file(current_report_dir, client_name, date_start, date
         start = datetime.strptime(date_start, "%Y-%m-%d").strftime("%d.%m.%Y")
         end = datetime.strptime(date_end, "%Y-%m-%d").strftime("%d.%m.%Y")
     except Exception as e:
-        return f"Ошибка формата даты: {e}"
+        f"Ошибка формата даты: {e}"
 
     reports_dir = Path(current_report_dir)
 
@@ -653,26 +653,31 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
 def add_articles_to_companies_costs(result_companies_costs, df_sku_list_all):
     # Получаем df с результатами расходов SKU по рекламным кампаниям
     df_result_companies_stats = result_companies_costs['df_companies_api_stats'].copy()
-    # Мерджим со списком артикулов
-    df_companies_stats_with_articles = (
-        df_result_companies_stats
-        .merge(
-            df_sku_list_all[['SKU', 'Артикул продавца']],
-            on='SKU',
-            how='left'
+    # Если были расходы по РК, то добавляем к SKU названия артикулов
+    if df_result_companies_stats.shape[0] > 0:
+        # Мерджим со списком артикулов
+        df_companies_stats_with_articles = (
+            df_result_companies_stats
+            .merge(
+                df_sku_list_all[['SKU', 'Артикул продавца']],
+                on='SKU',
+                how='left'
+            )
         )
-    )
-    # Перемещаем колонку с артикулом в начало df
-    df_companies_stats_with_articles = move_columns(
-        df=df_companies_stats_with_articles,
-        columns_to_move=['Артикул продавца'],
-        position='SKU',
-        insert_type='after'
-    )
-    # Заполняем пропуски
-    df_companies_stats_with_articles = df_companies_stats_with_articles.fillna({
-        'Артикул продавца': 'Неизвестный артикул'
-    })
+        # Перемещаем колонку с артикулом в начало df
+        df_companies_stats_with_articles = move_columns(
+            df=df_companies_stats_with_articles,
+            columns_to_move=['Артикул продавца'],
+            position='SKU',
+            insert_type='after'
+        )
+        # Заполняем пропуски
+        df_companies_stats_with_articles = df_companies_stats_with_articles.fillna({
+            'Артикул продавца': 'Неизвестный артикул'
+        })
+    # Если расходов по РК не было, возвращаем исходный пустой df из словаря
+    else:
+        df_companies_stats_with_articles = df_result_companies_stats.copy()
     # Изменяем df в словаре рекламных расходов на тот, что с артикулами
     result_companies_costs['df_companies_api_stats'] = df_companies_stats_with_articles.copy()
 
@@ -1045,12 +1050,14 @@ def calc_final_costs(df_all_costs_with_catalog):
         'Вывод в топ',
         'Трафареты',
         'Продвижение с оплатой за заказ',
+        'Оплата за клик',
         'Подписка Premium',
         'Подписка Premium Plus',
         'Бонусы продавца',
         'Бейдж Оригинал',
         'Баллы за отзывы',
         'Продвижение бренда',
+        'Закрепление отзыва',
     ]
     # Находим колонки по рекламе, которые реально есть в отчете реализации
     existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
@@ -1124,6 +1131,9 @@ def calc_final_costs(df_all_costs_with_catalog):
 
 # Функция расчета сводной таблицы по всем расходам
 def create_svod_by_operations(df_final_costs):
+
+    # Создаем копию для избежания изменений в оригинальном df
+    df_final_costs_ = df_final_costs.copy()
     # Список колонок, по котором мы не считаем суммы
     columns_to_exclude = [
         'SKU',
@@ -1145,14 +1155,32 @@ def create_svod_by_operations(df_final_costs):
         'Маржинальность %',
 
     ]
-
+    # Считаем сумму, от которой будем считать процент
+    sum_columns = [
+        'Продажи - Возвраты (руб)',
+        'Баллы за скидки',
+        'Программы партнеров'
+    ]
+    # Считается сумма по тем колонкам, которые есть в df_final_costs
+    df_final_costs_['Продажа (Выручка) руб'] = (
+        df_final_costs_
+        .loc[:, df_final_costs_.columns.isin(sum_columns)]
+        .sum(axis=1)
+    )
+    # Перемещаем колонку в начало df
+    df_final_costs_ = move_columns(
+        df_final_costs_,
+        'Продажа (Выручка) руб',
+        position=0,
+        insert_type='before'
+    )
     # Считаем суммы по остальным столбцам
     df_final_costs_by_operation = (
-        df_final_costs
+        df_final_costs_
         # Убираем колонки, которые не должны быть включены в сумму
         .loc[
             :,
-            ~df_final_costs.columns.isin(columns_to_exclude)
+            ~df_final_costs_.columns.isin(columns_to_exclude)
         ]
         # Считаем суммы по остальным
         .sum(skipna=True)
@@ -1164,14 +1192,9 @@ def create_svod_by_operations(df_final_costs):
             0: 'Итого руб'
         })
     )
-    # Считаем сумму, от которой будем считать процент
-    sum_columns = ['Продажи - Возвраты (руб)', 'Баллы за скидки',]
-    # Считается сумма по тем колонкам, которые есть в df_final_costs
-    sum_for_percent = (
-        df_final_costs
-        .loc[:, df_final_costs.columns.isin(sum_columns)]
-        .sum().sum()
-    )
+    # Сумма, от которой считаем процент
+    sum_for_percent = df_final_costs_['Продажа (Выручка) руб'].sum()
+
     # Считаем процент
     df_final_costs_by_operation['Итого, %'] = (
         df_final_costs_by_operation['Итого руб'] / sum_for_percent * 100
@@ -1296,27 +1319,34 @@ def format_excel(
         formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
         final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
 
-        # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
-        base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
-        formula = base
-        for col in cost_columns:
-            formula += f"+{col_map[col]}{row}"
-        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+        # Получаем значение себестоимости
+        cell_sebestoimost = final_costs_worksheet[f"{col_map['Себестоимость']}{row}"]
+        if cell_sebestoimost.value in (None, "", 0):
+            final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = ""
+            final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = ""
+            final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = ""
+        else:
+            # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
+            base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+            formula = base
+            for col in cost_columns:
+                formula += f"+{col_map[col]}{row}"
+            final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
 
-        # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
-        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-        cell_sales = f"{col_map['Продажи руб']}{row}"
-        formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
-        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+            # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
+            cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+            cell_sales = f"{col_map['Продажи руб']}{row}"
+            formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
+            final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
-        # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
-        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
-        formula_na_ed = (
-            f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
-        )
-        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+            # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
+            cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+            formula_na_ed = (
+                f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
+            )
+            final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed        # --- ШАГ 3. Сделать формат процентов только для столбца "Маржинальность %"
 
-        # --- ШАГ 3. Сделать формат процентов только для столбца "Маржинальность %"
+        # Форматирование столбца Маржинальность % в формат процентного числа
         try:
             # Получаем букву столбца для "Маржинальность %"
             percent_col_letter = col_map['Маржинальность %']
@@ -1391,10 +1421,10 @@ if __name__ == "__main__":
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        date_start,
-        date_end,
-        # date_start = '2025-08-01',
-        # date_end='2025-08-31'
+        # date_start,
+        # date_end,
+        date_start = '2025-09-01',
+        date_end='2025-09-30'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
