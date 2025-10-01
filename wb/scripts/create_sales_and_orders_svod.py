@@ -218,9 +218,8 @@ def calc_orders(df_orders, date_range_df, price_column='priceWithDisc'):
     # Колонка, по котрой берем дату для расчета продаж
     date_column = 'date'
     # Колонка, по которой считаем итоговую сумму в рублях
-    if client_name in ['SENS', 'SENS_IP', 'KU_And_KU', 'Soyuz', 'TRIBE', 'Orsk_Combinat']:
-        price_column_ = 'priceWithDisc'
-    elif client_name in ['new_client']:
+    price_column_ = 'priceWithDisc'
+    if client_name in ['new_client']:
         price_column_ = 'finishedPrice'
     # Колонка, по которой считаем количество в штуках
     amount_column = 'Заказы шт'
