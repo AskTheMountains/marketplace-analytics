@@ -877,6 +877,13 @@ def get_company_stats_v2(
     #     position=0
     # )
 
+    # Фильтруем статистику только по тем артикулам, по которым были расходы
+    df_companies_stats_nms = (
+        df_companies_stats_nms
+        .loc[df_companies_stats_nms['Затраты руб'] > 0, :]
+        .reset_index(drop=True)
+    )
+
     return df_companies_stats_nms
 
 
@@ -1666,7 +1673,7 @@ if __name__ == '__main__':
         start_date=dates_cli['start_date'],
         end_date=dates_cli['end_date'],
         # start_date='2025-09-01',
-        # end_date='2025-09-16'
+        # end_date='2025-09-23'
     )
     # Список кампаний и даты для каждой кампании,
     # за которые нужно сформировать отчет
