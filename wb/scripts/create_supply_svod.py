@@ -79,7 +79,7 @@ def add_clusters(date_metrics):
     # Таким образом, получим все товары во всех кластерах
     metrics_merged = sku_clusters.merge(
         metrics_clusters[['Артикул_Размер', 'Склад',
-                          'Продажи', 'Заказы', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки']],
+                          'Продажи', 'Заказы', 'Ожидаемое поступление', 'Остатки']],
         on=['Артикул_Размер', 'Склад'],
         how='left'
     )
@@ -91,11 +91,11 @@ def add_clusters(date_metrics):
 
     # В пропусках считаем, что в данном кластере по данному товару
     # не было товаров, заказов и продаж
-    for col in ['Продажи', 'Заказы', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки']:
+    for col in ['Продажи', 'Заказы', 'Ожидаемое поступление', 'Остатки']:
         metrics_merged[col] = metrics_merged[col].fillna(0)
 
     # Мердж для получения остальных колонок
-    metrics_merged = metrics_merged.merge(metrics_summary.drop(columns=['Продажи', 'Заказы', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки', 'Остатки_fbs']),
+    metrics_merged = metrics_merged.merge(metrics_summary.drop(columns=['Продажи', 'Заказы', 'Ожидаемое поступление', 'Остатки', 'Остатки_fbs']),
                                        on='Артикул_Размер',
                                        how='left')
     return metrics_merged
@@ -163,7 +163,7 @@ def replace_clusters(clusters_mapping_df, cluster_col, df_with_clusters):
     # Считаем суммы после замены кластеров
     df_with_clusters_stats = (
         df_with_clusters_
-        .loc[:, ['Артикул_Размер', '№ товара', 'Предмет', 'Наименование товара', 'Цвет', 'Штрихкод', 'Склад', 'Продажи', 'Заказы', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'Остатки']]
+        .loc[:, ['Артикул_Размер', '№ товара', 'Предмет', 'Наименование товара', 'Цвет', 'Штрихкод', 'Склад', 'Продажи', 'Заказы', 'Ожидаемое поступление', 'Остатки']]
         .groupby(['Артикул_Размер', '№ товара', 'Склад', 'Предмет', 'Наименование товара', 'Цвет', 'Штрихкод'])
         .agg('sum')
         .reset_index()
@@ -174,31 +174,22 @@ def replace_clusters(clusters_mapping_df, cluster_col, df_with_clusters):
 # Расчет потребности и оборачиваемости для товаров по кластерам
 # лист 'По Кластерам'
 def calc_svod_for_clusters(metrics_df_with_clusters):
-    # Считаем сумму снова (по аналогии с calcMetrics.py),
-    # поскольку мы добавили каждый товар на каждый кластер
-    # metrics_df_with_clusters = metrics_df.groupby(['Артикул', 'Наименование товара', 'Штрихкод', 'Категория', 'Ozon Product ID', 'FBO OZON SKU ID', 'Размер']).agg(
-    #     Продажи=('Продажи', 'sum'),
-    #     Заказы=('Заказы', 'sum'),
-    #     Товары_в_пути=('Товары_в_пути', 'sum'),
-    #     Остатки=('Остатки', 'sum')
-    # ).reset_index()
     metrics_df_with_clusters_ = metrics_df_with_clusters.copy()
     # Расчет доп. колонок (лист 'По кластерам')
-    # metrics_df_with_clusters_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = 0
+    # metrics_df_with_clusters_['Ожидаемое поступление'] = 0
     metrics_df_with_clusters_['Оборачиваемость'] = (metrics_df_with_clusters_['Заказы'] + metrics_df_with_clusters_['Продажи']) / 2 / 31
     metrics_df_with_clusters_['Потребность на 40 дней'] = metrics_df_with_clusters_['Оборачиваемость'] * 40
-    # metrics_df_with_clusters_['Дефицит/Избыток 40 дней'] = metrics_df_with_clusters_['Остатки'] + metrics_df_with_clusters_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] + metrics_df_with_clusters_['Товары_в_пути'] - metrics_df_with_clusters_['Потребность на 40 дней']
-    metrics_df_with_clusters_['Дефицит/Избыток 40 дней'] = metrics_df_with_clusters_['Остатки'] - metrics_df_with_clusters_['Потребность на 40 дней']
+    metrics_df_with_clusters_['Дефицит/Избыток 40 дней'] = metrics_df_with_clusters_['Остатки'] + metrics_df_with_clusters_['Ожидаемое поступление'] - metrics_df_with_clusters_['Потребность на 40 дней']
     metrics_df_with_clusters_['Потребность на 40 дней (округл.)'] = np.where(metrics_df_with_clusters_['Дефицит/Избыток 40 дней'] > 0,
                                                                   0,
                                                                   np.ceil(abs(metrics_df_with_clusters_['Дефицит/Избыток 40 дней']))
 )
     metrics_df_with_clusters_['Потребность на 60 дней'] = metrics_df_with_clusters_['Оборачиваемость'] * 60
-    # metrics_df_with_clusters_['Дефицит/Избыток 60 дней'] = metrics_df_with_clusters_['Остатки'] + metrics_df_with_clusters_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] + metrics_df_with_clusters_['Товары_в_пути'] - metrics_df_with_clusters_['Потребность на 60 дней']
-    metrics_df_with_clusters_['Дефицит/Избыток 60 дней'] = metrics_df_with_clusters_['Остатки'] - metrics_df_with_clusters_['Потребность на 60 дней']
-    metrics_df_with_clusters_['Потребность на 60 дней (округл.)'] = np.where(metrics_df_with_clusters_['Дефицит/Избыток 60 дней'] > 0,
-                                                                  0,
-                                                                  np.ceil(abs(metrics_df_with_clusters_['Дефицит/Избыток 60 дней']))
+    metrics_df_with_clusters_['Дефицит/Избыток 60 дней'] = metrics_df_with_clusters_['Остатки'] + metrics_df_with_clusters_['Ожидаемое поступление'] - metrics_df_with_clusters_['Потребность на 60 дней']
+    metrics_df_with_clusters_['Потребность на 60 дней (округл.)'] = np.where(
+        metrics_df_with_clusters_['Дефицит/Избыток 60 дней'] > 0,
+        0,
+        np.ceil(abs(metrics_df_with_clusters_['Дефицит/Избыток 60 дней']))
     )
     metrics_df_with_clusters_['Корректировка с учетом нулевых остатков'] = metrics_df_with_clusters_['Потребность на 60 дней (округл.)']
     # Добавляем колонку с номером
@@ -232,13 +223,17 @@ def calc_svod_by_clusters(metrics_df_with_stats):
 def calc_svod_by_sku(metrics_df_with_clusters):
     # Считаем сумму снова (по аналогии с calcMetrics.py),
     # поскольку мы добавили каждый товар на каждый кластер
-    metrics_df_by_sku = metrics_df_with_clusters.groupby(['Артикул продавца', 'Размер', 'Наименование товара', 'Предмет', 'РРЦ']).agg(
-            Продажи=('Продажи', 'sum'),
-            Заказы=('Заказы', 'sum'),
-            ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
-            Остатки=('Остатки', 'sum'),
-            # ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum')
-        ).reset_index()
+    metrics_df_by_sku = (
+        metrics_df_with_clusters
+        .groupby(['Артикул продавца', 'Размер', 'Наименование товара', 'Предмет', 'РРЦ'])
+        .agg(**{
+            'Продажи': ('Продажи', 'sum'),
+            'Заказы': ('Заказы', 'sum'),
+            'Остатки': ('Остатки', 'sum'),
+            'Ожидаемое поступление': ('Ожидаемое поступление', 'sum')
+        })
+        .reset_index()
+    )
     return metrics_df_by_sku
 
 
@@ -248,11 +243,9 @@ def calc_svod_for_sku(metrics_df_by_sku):
     # Расчет доп. колонок (лист 'Всего')
     metrics_df_by_sku_ = metrics_df_by_sku.copy()
     metrics_df_by_sku_['Оборачиваемость'] = (metrics_df_by_sku_['Заказы'] + metrics_df_by_sku_['Продажи']) / 2 / 31
-    # metrics_df_by_sku_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] = 0
     metrics_df_by_sku_['Потребность на 40 дней'] = metrics_df_by_sku_['Оборачиваемость'] * 40
-    # metrics_df_by_sku_['Дефицит/Избыток 40 дней'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] + metrics_df_by_sku_['Товары_в_пути'] - metrics_df_by_sku_['Потребность на 40 дней']
-    metrics_df_by_sku_['Дефицит/Избыток 40 дней'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['Остатки_fbs'] - metrics_df_by_sku_['Потребность на 40 дней']
-    metrics_df_by_sku_['Дефицит/Избыток 40 дней с учетом FBS'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['Остатки_fbs'] + metrics_df_by_sku_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] - metrics_df_by_sku_['Потребность на 40 дней']
+    metrics_df_by_sku_['Дефицит/Избыток 40 дней'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['Остатки_fbs'] + metrics_df_by_sku_['Ожидаемое поступление']  - metrics_df_by_sku_['Потребность на 40 дней']
+    metrics_df_by_sku_['Дефицит/Избыток 40 дней с учетом FBS'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['Остатки_fbs'] + metrics_df_by_sku_['Ожидаемое поступление'] - metrics_df_by_sku_['Потребность на 40 дней']
     metrics_df_by_sku_['Потребность на 40 дней (округл.)'] = np.where(metrics_df_by_sku_['Дефицит/Избыток 40 дней'] > 0,
                                                                   0,
                                                                   np.ceil(abs(metrics_df_by_sku_['Дефицит/Избыток 40 дней']))
@@ -262,11 +255,11 @@ def calc_svod_for_sku(metrics_df_by_sku):
                                                                   np.ceil(abs(metrics_df_by_sku_['Дефицит/Избыток 40 дней с учетом FBS']))
     )
     metrics_df_by_sku_['Потребность на 60 дней'] = metrics_df_by_sku_['Оборачиваемость'] * 60
-    # metrics_df_by_sku_['Дефицит/Избыток 60 дней'] = metrics_df_by_sku_['Остатки'] + metrics_df_by_sku_['ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'] + metrics_df_by_sku_['Товары_в_пути'] - metrics_df_by_sku_['Потребность на 60 дней']
-    metrics_df_by_sku_['Дефицит/Избыток 60 дней'] = metrics_df_by_sku_['Остатки'] - metrics_df_by_sku_['Потребность на 60 дней']
-    metrics_df_by_sku_['Потребность на 60 дней (округл.)'] = np.where(metrics_df_by_sku_['Дефицит/Избыток 60 дней'] > 0,
-                                                                  0,
-                                                                  np.ceil(abs(metrics_df_by_sku_['Дефицит/Избыток 60 дней']))
+    metrics_df_by_sku_['Дефицит/Избыток 60 дней'] = metrics_df_by_sku_['Остатки']  + metrics_df_by_sku_['Остатки_fbs'] + metrics_df_by_sku_['Ожидаемое поступление'] - metrics_df_by_sku_['Потребность на 60 дней']
+    metrics_df_by_sku_['Потребность на 60 дней (округл.)'] = np.where(
+        metrics_df_by_sku_['Дефицит/Избыток 60 дней'] > 0,
+        0,
+        np.ceil(abs(metrics_df_by_sku_['Дефицит/Избыток 60 дней']))
     )
     # Добавляем колонку с номером
     metrics_df_by_sku_['№'] = metrics_df_by_sku_.index + 1

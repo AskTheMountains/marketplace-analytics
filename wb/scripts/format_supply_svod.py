@@ -78,6 +78,8 @@ def format_sheet_total(
     reminders = excel_columns.loc[excel_columns['column'].str.contains('ОСТАТОК') & ~(excel_columns['column'].str.contains('FBS')), 'excel_column'].values[0]
     # Остатки FBS
     reminders_fbs = excel_columns.loc[excel_columns['column'].str.contains('ОСТАТОК') & excel_columns['column'].str.contains('FBS'), 'excel_column'].values[0]
+    # Ожидаемое поступление
+    supplies = excel_columns.loc[excel_columns['column'] == 'Ожидаемое поступление', 'excel_column'].values[0]
     # Потребность на 40 дней
     demand_40_days = excel_columns.loc[excel_columns['column'] == 'Потребность на 40 дней', 'excel_column'].values[0]
     # Потребность на 60 дней
@@ -214,11 +216,11 @@ def format_sheet_total(
         # Потребность на 60 дней
         ws[f'{demand_60_days}{i}'] = f'= {turnover}{i} * 60'
         # Дефицит/избыток 40 дней
-        ws[f'{deficit_40_days}{i}'] = f'= {reminders}{i} - {demand_40_days}{i}'
+        ws[f'{deficit_40_days}{i}'] = f'= {reminders}{i} + {supplies}{i} - {demand_40_days}{i}'
         # Дефицит/избыток 40 дней с учетом FBS
-        ws[f'{deficit_40_days_fbs}{i}'] = f'= {reminders}{i} + {reminders_fbs}{i} - {demand_40_days}{i}'
+        ws[f'{deficit_40_days_fbs}{i}'] = f'= {reminders}{i} + {reminders_fbs}{i} + {supplies}{i} - {demand_40_days}{i}'
         # Дефицит/избыток 60 дней
-        ws[f'{deficit_60_days}{i}'] = f'= {reminders}{i} - {demand_60_days}{i}'
+        ws[f'{deficit_60_days}{i}'] = f'= {reminders}{i} + {supplies}{i} - {demand_60_days}{i}'
         # Потребность на 40 дней (округл.)
         ws[f'{demand_40_days_rounded}{i}'] = f'= ROUNDUP(IF({deficit_40_days}{i} > 0, 0, -{deficit_40_days}{i}),0)'
         # Потребность на 40 дней с учетом FBS (округл.)
@@ -357,6 +359,8 @@ def format_sheet_clusters(
     sales = excel_columns.loc[excel_columns['column'].str.contains('ПРОДАЖИ'), 'excel_column'].values[0]
     # Остатки
     reminders = excel_columns.loc[excel_columns['column'].str.contains('ОСТАТОК'), 'excel_column'].values[0]
+    # Ожидаемое поступление
+    supplies = excel_columns.loc[excel_columns['column'] == 'Ожидаемое поступление', 'excel_column'].values[0]
     # Потребность на 40 дней
     demand_40_days = excel_columns.loc[excel_columns['column'] == 'Потребность на 40 дней', 'excel_column'].values[0]
     # Потребность на 60 дней
@@ -421,9 +425,9 @@ def format_sheet_clusters(
         # Потребность на 60 дней
         ws[f'{demand_60_days}{i}'] = f'= {turnover}{i} * 60'
         # Дефицит/избыток 40 дней
-        ws[f'{deficit_40_days}{i}'] = f'= {reminders}{i} - {demand_40_days}{i}'
+        ws[f'{deficit_40_days}{i}'] = f'= {reminders}{i} + {supplies}{i} - {demand_40_days}{i}'
         # Дефицит/избыток 60 дней
-        ws[f'{deficit_60_days}{i}'] = f'= {reminders}{i} - {demand_60_days}{i}'
+        ws[f'{deficit_60_days}{i}'] = f'= {reminders}{i} + {supplies}{i} - {demand_60_days}{i}'
         # Потребность на 40 дней (округл.)
         ws[f'{demand_40_days_rounded}{i}'] = f'= ROUNDUP(IF({deficit_40_days}{i} > 0, 0, -{deficit_40_days}{i}),0)'
         # Потребность на 60 дней (округл.)
