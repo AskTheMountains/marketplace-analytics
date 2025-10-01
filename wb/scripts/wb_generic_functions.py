@@ -541,6 +541,12 @@ def get_company_stats_v2(
         #     columns_to_move=['unique_company_id'],
         #     position=0
         # )
+        # Фильтруем статистику только по тем артикулам, по которым были расходы
+        df_companies_stats_nms = (
+            df_companies_stats_nms
+            .loc[df_companies_stats_nms['Затраты руб'] > 0, :]
+            .reset_index(drop=True)
+        )
     # Если статистика пришла пустая, то возвращаем пустой df
     else:
         logger.warning("Empty promotion statistics")
