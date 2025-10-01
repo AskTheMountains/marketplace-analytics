@@ -269,7 +269,7 @@ def getCompanyStatistics(
 
 
             # Увеличиваем число выгруженных кампаний
-            uploaded_companies_amount += current_companies_amount
+            uploaded_companies_amount =+ current_companies_amount
             # Сброс task_id для следующего диапазона кампаний
             task_id = None
 
