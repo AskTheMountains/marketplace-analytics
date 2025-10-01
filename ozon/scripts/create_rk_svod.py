@@ -67,10 +67,6 @@ def create_client_rk_svod_dir(client_name, date_report=str(date.today())):
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
     # Задаем путь к директории
-    # upload_path_statistic = (
-    #     f"{BASE_DIR}/"
-    #     f"Clients/{client_name}/ClientSvod/"
-    #     f"{date_report}/{date_report}_Кампании_API"
     upload_path_statistic = (
         BASE_DIR / "Clients" / client_name / "CampaignsReport" / date_report / f"{date_report}_Кампании_API"
     )
@@ -231,19 +227,7 @@ def process_campaigns_report(
 def process_product_list(df_products):
     # Создаем копию для избежания изменений в оригинальном df
     df_products_processed = df_products.copy()
-    # Убираем ненужные колонки
-    # df_products_processed = df_products_processed.loc[:, ~df_products_processed.columns.isin([
-    #     'FBS OZON SKU ID', 'Контент-рейтинг', 'Рейтинг', 'Причины скрытия', 'Бренд', 'Размер', 'Цвет',
-    #     'Статус товара', 'Видимость FBO', 'Причины скрытия FBO (при наличии)',
-    #     'Видимость FBS', 'Причины скрытия FBS (при наличии)', 'Дата создания',
-    #     'Категория комиссии', 'Объем товара, л', 'Объемный вес, кг',
-    #     'Доступно к продаже по схеме FBO, шт.',
-    #     'Вывезти и нанести КИЗ (кроме Твери), шт', 'Зарезервировано, шт',
-    #     'Доступно к продаже по схеме FBS, шт.',
-    #     'Доступно к продаже по схеме realFBS, шт.',
-    #     'Зарезервировано на моих складах, шт',
-    #     'Актуальная ссылка на рыночную цену', 'Размер НДС, %'
-    #    ])]
+    # Выбираем нужные колонки
     df_products_processed = df_products_processed.loc[:, df_products_processed.columns.isin([
         'Артикул',
         'Название товара',
@@ -280,7 +264,7 @@ def process_product_list(df_products):
     df_products_processed['SKU'] = df_products_processed['SKU'].astype(str)
     # Переводим Артикул в строку
     df_products_processed['Артикул'] = df_products_processed['Артикул'].astype(str)
-    # Выбираем нужные колонки
+
 
     return df_products_processed
 
@@ -560,12 +544,12 @@ if __name__ == '__main__':
     # Директория, куда будет загружена статистика кампаний
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем диапазон дат
-    df_dates= generate_dates(
+    df_dates = generate_dates(
         reference_date=dates_cli["reference_date"],
         start_date=dates_cli["start_date"],
         end_date=dates_cli["end_date"],
         # start_date='2025-09-01',
-        # end_date='2025-09-30'
+        # end_date='2025-09-28'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]
