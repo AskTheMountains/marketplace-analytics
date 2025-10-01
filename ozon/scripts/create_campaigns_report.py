@@ -989,7 +989,7 @@ def add_products_data_to_orders(df_orders_all, df_products_processed):
     )
 
     if not df_missing_products.empty:
-        logger.warning(f"No info about products: {df_missing_products.to_string(index=False)}")
+        logger.warning(f"No info about products: \n{df_missing_products.to_string(index=False)}")
 
     # Удаляем колонку с индикатором мерджа
     df_orders_products_data = (
@@ -2230,7 +2230,7 @@ if __name__ == '__main__':
         start_date=dates_cli["start_date"],
         end_date=dates_cli["end_date"],
         # start_date='2025-09-01',
-        # end_date='2025-09-30'
+        # end_date='2025-09-28'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(promotion_companies, df_date_range)
