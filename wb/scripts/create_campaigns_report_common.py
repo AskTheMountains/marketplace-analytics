@@ -13,6 +13,7 @@ from loguru import logger
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -27,9 +28,18 @@ from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
 
 parser = argparse.ArgumentParser(
     description="Create promotion report (WB)",
-    usage="python.exe -m wb.scripts.create_rk_svod [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
-    epilog="Example: python.exe -m wb.scripts.create_rk_svod 2025-08-27 2025-09-02",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.create_rk_svod [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD] "
+        "[-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.create_rk_svod 2025-08-27 2025-09-02\n\n"
+        "  python.exe -m wb.scripts.create_rk_svod --start_date 2025-08-27 --end_date 2025-09-02 --client 2\n\n"
+        "  python.exe -m wb.scripts.create_rk_svod --reference_date 2025-09-01 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 # Папка, где лежит текущий скрипт

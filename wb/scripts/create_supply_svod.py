@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 # Функция форматирования файла excel
 import wb.scripts.format_supply_svod as format_supply_svod
@@ -21,9 +22,16 @@ from wb.scripts.constants import (cargo_type, catalog_supply_columns,
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate supply report (WB)",
-    usage='python.exe -m wb.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
-    epilog="Example: python.exe -m wb.scripts.create_supply_svod 2025-01-01",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.create_supply_svod 2025-01-01\n\n"
+        "  python.exe -m wb.scripts.create_supply_svod --ref_dt 2025-01-01 --client 2\n\n"
+        "  python.exe -m wb.scripts.create_supply_svod 2025-01-01 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 # Директории с загруженными файлами из апи

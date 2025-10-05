@@ -13,6 +13,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -43,11 +44,19 @@ from ozon.scripts.uploadDataFromOzon import get_ozon_product
 
 parser = argparse.ArgumentParser(
     description="Create promotion report (Ozon)",
-    usage="python.exe -m ozon.scripts.create_rk_svod [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD]",
-    epilog="Example: python.exe -m ozon.scripts.create_rk_svod 2024-11-13 2024-11-20",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m ozon.scripts.create_campaigns_report [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD] "
+        "[-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report 2024-11-13 2024-11-20\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --reference_date 2024-11-21 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
-
 
 
 # Функция создания директории, куда будет помещен итоговый отчет

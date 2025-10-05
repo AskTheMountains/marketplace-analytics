@@ -4,23 +4,65 @@ from rich_argparse import RichHelpFormatter
 RichHelpFormatter.styles["argparse.text"] = "bold"
 RichHelpFormatter.group_name_formatter = str.upper
 
+# Функция безопасного добавления аргументов командной строки
+def safe_add_argument(parser, *args, **kwargs):
+    # Ключ по приоритету: или именованный параметр, или dest (для позиционных)
+    option_strings = args
+    dest = kwargs.get('dest')
+    for action in parser._actions:
+        # Проверка именованных
+        if option_strings and any(opt in action.option_strings for opt in option_strings):
+            return
+        # Проверка позиционных по 'dest'
+        if dest and getattr(action, 'dest', None) == dest:
+            return
+        # Проверка позиционного по имени первого позиционного параметра
+        if not option_strings and args and getattr(action, 'dest', None) == args[0]:
+            return
+    parser.add_argument(*args, **kwargs)
+
+def cli_client_number(parser, default=None):
+    """
+    Добавляет аргумент командной строки --client или -c для выбора номера клиента.
+    Приоритет: командная строка > default.
+    """
+    safe_add_argument(
+        parser,
+        '--client', '-c',
+        type=int,
+        help='Номер клиента, для которого формируется отчет (см. файл options.py)',
+        metavar=''
+    )
+    args, unknown = parser.parse_known_args()
+    if hasattr(args, 'client') and args.client is not None:
+        return args.client
+    return default  # Можно передавать client_number дефолтный из options.py
+
 def cli_reference_date(parser):
     """
     Парсит reference_date как позиционный и как именованный аргумент.
     Приоритет: позиционный > именованный > сегодняшняя дата.
     """
-    # parser = argparse.ArgumentParser(description="Парсер reference_date")
-    parser.add_argument(
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
         'reference_date_pos',
         nargs='?',
         # help='Опорная дата (позиционный аргумент) в формате YYYY-MM-DD',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--ref_dt',
         type=str,
-        help='Опорная дата в формате YYYY-MM-DD',
-        metavar=''
+        help='Опорная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — берется сегодняшняя дата)',
+        metavar='YYYY-MM-DD'
     )
     # Jupyter fix
     args, unknown = parser.parse_known_args()
@@ -38,32 +80,44 @@ def cli_dates(parser):
     reference_date — только как именованный.
     Возвращает dict с ключами: start_date, end_date, reference_date.
     """
-    parser.add_argument(
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
         'start_date_pos',
         nargs='?',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         'end_date_pos',
         nargs='?',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--start_date',
         type=str,
-        help='Начальная дата в формате ГГГГ-ММ-ДД',
-        metavar=''
+        help='Начальная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--end_date',
         type=str,
-        help='Конечная дата в формате ГГГГ-ММ-ДД',
-        metavar=''
+        help='Конечная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--reference_date',
         type=str,
-        help='Опорная дата (например, для автоматического диапазона) в формате YYYY-MM-DD',
+        help='Опорная дата (например, для автоматического диапазона) в формате YYYY-MM-DD (опционально)',
         metavar=''
     )
     args, unknown = parser.parse_known_args()
@@ -89,27 +143,39 @@ def cli_date_range(parser):
     Приоритет: оба позиционных > оба именованных > None.
     Возвращает dict: {"start_date": ..., "end_date": ...}
     """
-    parser.add_argument(
+
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
         'start_date_pos',
         nargs='?',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         'end_date_pos',
         nargs='?',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--start_date',
         type=str,
-        help='Начальная дата в формате ГГГГ-ММ-ДД',
-        metavar=''
+        help='Начальная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--end_date',
         type=str,
-        help='Конечная дата в формате ГГГГ-ММ-ДД',
-        metavar=''
+        help='Конечная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
     )
     args, unknown = parser.parse_known_args()
 
@@ -126,16 +192,25 @@ def cli_days_ago(parser):
     Парсит days_ago как позиционный и как именованный аргумент.
     Приоритет: позиционный > именованный > 0.
     """
-    parser.add_argument(
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
         'days_ago_pos',
         nargs='?',
         help=argparse.SUPPRESS
     )
-    parser.add_argument(
+    safe_add_argument(
+        parser,
         '--days_ago',
         type=int,
-        help='Количество дней назад для обработки',
-        metavar=''
+        help='Количество дней назад для обработки (необязательный, если не передан — 30)',
+        metavar='[N]'
     )
     args, unknown = parser.parse_known_args()
 

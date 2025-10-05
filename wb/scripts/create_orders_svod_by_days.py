@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
@@ -34,11 +35,20 @@ from wb.scripts.constants import client_name, headers, marketplace_dir_name
 from wb.scripts.uploadDataFromWB import getOrdersWB as get_orders
 from wb.scripts.uploadDataFromWB import getWBProduct
 
+# Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Create orders report by days (WB)",
-    usage="python.exe -m wb.scripts.orders_svod_by_days [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
-    epilog="Example: python.exe -m wb.scripts.orders_svod_by_days 2025-08-27 2025-09-02",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.orders_svod_by_days [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.orders_svod_by_days 2025-08-27 2025-09-02\n\n"
+        "  python.exe -m wb.scripts.orders_svod_by_days --start_date 2025-08-27 --end_date 2025-09-02 --client 2\n\n"
+        "  python.exe -m wb.scripts.orders_svod_by_days 2025-08-27 2025-09-02 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 

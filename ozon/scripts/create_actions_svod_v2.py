@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None
 
@@ -33,9 +34,14 @@ from wb.scripts.uploadDataFromWB import get_wb_product
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate actions report (Ozon)",
-    usage='python.exe -m ozon.scripts.create_actions_svod_v2 [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
-    epilog='Example: python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01',
-    formatter_class=RichHelpFormatter
+    usage="python.exe -m ozon.scripts.create_actions_svod_v2 [YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]",
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --ref_dt 2025-01-01 --client 2\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 # Директория файлов с данными по акциям
@@ -46,7 +52,7 @@ path_download_actions = (
 )
 
 # Имя файла с данными по акциям (с расширением)
-actions_file_name = None
+actions_file_name = 'products-1977747-next-auto-add-2025-10-03.xlsx'
 
 
 # Функция чтения файла с акциями "Бустинг"
@@ -56,7 +62,7 @@ def read_action_file(path_download_actions, actions_file_name):
     # Считываем файл по акциям в бустинге
     df_actions_from_file = pd.read_excel(
         filepath_download_actions,
-        sheet_name='Товары и цены',
+        sheet_name=1,
         skiprows=1
         )
     # Убираем первую строку
@@ -72,6 +78,18 @@ def read_action_file(path_download_actions, actions_file_name):
     return df_actions_from_file
 
 
+# Функция поиска колонок с акциями в файле ЛК
+def find_action_col(columns, pattern):
+    """
+    Возвращает первый столбец, в котором pattern встречается как подстрока (без учёта регистра).
+    """
+    pattern_lower = pattern.lower()
+    for col in columns:
+        if pattern_lower in col.lower():
+            return col
+    return None
+
+
 # Функция обработки данных файла по акциям
 def process_action_file(df_actions_from_file):
 
@@ -83,56 +101,60 @@ def process_action_file(df_actions_from_file):
 
     # Формируем словарь с названиями акций в файле из ЛК
     action_column_names = {
-       'Бустинг х2 (Из ЛК)': [
-           'Цена для получения преимуществ акции Бустинг х2',
+    'Бустинг х2 (Из ЛК)': [
+        'Цена для получения преимуществ акции Бустинг х2',
         ],
-       'Бустинг х3 (Из ЛК)': [
-           'Цена для получения преимуществ акции Бустинг х3',
+    'Бустинг х3 (Из ЛК)': [
+        'Цена для получения преимуществ акции Бустинг х3',
         ],
-       'Бустинг х4 (Из ЛК)': [
-           'Цена для получения преимуществ акции Бустинг х4',
+    'Бустинг х4 (Из ЛК)': [
+        'Цена для получения преимуществ акции Бустинг х4',
         ],
-       'Максимальный бустинг (Из ЛК)': [
-           'Цена для максимального акционного бустинга',
+    'Максимальный бустинг (Из ЛК)': [
+        'Цена для максимального акционного бустинга',
         ],
+        'Минимальный бустинг (Из ЛК)': [
+            'Цена для минимального акционного бустинга'
+        ]
     }
-    # Проверяем, что хотя бы одна акция есть
 
-    # Собираем названия акций, по которым нашлись данные
-    action_list_from_file = [
-        key
-        for key, colnames in action_column_names.items()
-        if any(col in df_actions_from_file_processed.columns for col in colnames)
-    ]
-    if action_list_from_file:
+    rename_dict = {}
+    found_action_cols = {}  # ключ: 'Бустинг х2 (Из ЛК)', значение: новое имя колонки
+    for action_key, pattern_list in action_column_names.items():
+        for pattern in pattern_list:
+            found_col = find_action_col(df_actions_from_file_processed.columns, pattern)
+            if found_col:
+                new_col_name = f"Цена по акции {action_key}"
+                rename_dict[found_col] = new_col_name
+                found_action_cols[action_key] = new_col_name
+                break  # как только нашли для одного шаблона — к следующей акции
+
+    # Проверяем, что хотя бы один колонка нашлась:
+    if found_action_cols:
         print(
             f"В файле по акциям найдены колонки по следующим акциям: \n"
-            f"{action_list_from_file}"
-            )
+            f"{list(found_action_cols.keys())}"
+        )
     else:
         raise ValueError('В файле по акциям не найдены колонки с инфой по акциям')
 
-    # # Соберём все потенциальные имена колонок в один список
-    # all_possible_columns = [col for names in action_column_names.values() for col in names]
+    # Переименовываем найденные колонки:
+    df_actions_from_file_processed = df_actions_from_file_processed.rename(columns=rename_dict)
 
-    # # Проверяем пересечение
-    # exists = any(col in df_actions_from_file_processed.columns for col in all_possible_columns)
+    # Задаем имена столбцов, от которых считаем участие в акциях
+    participate_column_patterns = {
+        "Участие в акции": "Участие товара в акции",
+        "Итоговая цена по акции": "Итоговая цена по акции"
+    }
+    # Ищем нужные колонки и добавляем их в словарь
+    participate_rename_dict = {}
+    for new_col, pattern in participate_column_patterns.items():
+        found_col = find_action_col(df_actions_from_file_processed.columns, pattern)
+        if found_col:
+            participate_rename_dict[found_col] = new_col
 
-    # # Выводим найденные колонки
-    # matched_columns = list(set(df_actions_from_file_processed.columns) & set(all_possible_columns))
-
-    # if matched_columns:
-    #     print(f"Found actions in action file: {matched_columns}")
-    # else:
-    #     raise ValueError('В файле по акциям не найдены колонки с инфой по акциям')
-
-    # Переименовываем колонки с ценами по акциям
-    # Создаём словарь отображения: старое_имя -> новое_имя
-    rename_dict = {}
-    for new_col, old_names in action_column_names.items():
-        for old_name in old_names:
-            if old_name in df_actions_from_file_processed.columns:
-                rename_dict[old_name] = f"Цена по акции {new_col}"
+    # Переименовываем найденные колонки
+    df_actions_from_file_processed = df_actions_from_file_processed.rename(columns=participate_rename_dict)
 
     # Переименовываем колонку с Ozon Product ID
     df_actions_from_file_processed = df_actions_from_file_processed.rename(columns={
@@ -163,24 +185,25 @@ def process_action_file(df_actions_from_file):
         if col in df_actions_from_file_processed.columns:
             df_actions_from_file_processed[col] = pd.to_numeric(df_actions_from_file_processed[col])
 
+
     # Считаем скидку по каждой акции
-    for col in action_list_from_file:
-        df_actions_from_file_processed[f"Скидка по акции {col}"] = (
-            (
-                df_actions_from_file_processed[f"Цена по акции {col}"]
-                - df_actions_from_file_processed['Ваша цена']
-             )
-             / df_actions_from_file_processed['Ваша цена']
-        )
+    for action_name, action_price in found_action_cols.items():
+        if action_price in df_actions_from_file_processed.columns and 'Ваша цена' in df_actions_from_file_processed.columns:
+            df_actions_from_file_processed[f"Скидка по акции {action_name}"] = (
+                (df_actions_from_file_processed[action_price] - df_actions_from_file_processed['Ваша цена'])
+                / df_actions_from_file_processed['Ваша цена']
+            )
+
     # Определяем участие в каждой акции
-    for col in action_list_from_file:
-        df_actions_from_file_processed[f"Участие в акции {col}"] = np.where(
-            df_actions_from_file_processed['Итоговая цена по акции'] <= df_actions_from_file_processed[f"Цена по акции {col}"],
+    for action_name, action_price in found_action_cols.items():
+        df_actions_from_file_processed[f"Участие в акции {action_name}"] = np.where(
+            df_actions_from_file_processed['Итоговая цена по акции'] <= df_actions_from_file_processed[action_price],
             'Да',
             'Нет'
         )
 
-    return action_list_from_file, df_actions_from_file_processed
+    # Итоговый возврат используется так:
+    return list(found_action_cols.keys()), df_actions_from_file_processed
 
 
 # Функция вызова функций, связанных с файлом по акциям
@@ -1205,22 +1228,25 @@ def save_excel(
         "date_start_excel": "Дата начала акции",
         "date_end_excel": "Дата окончания акции"
     })
+    # Задаем путь, где хранятся отчеты по акциям
+    path_actions_svod =  (
+            marketplace_dir_name
+            / "Clients"
+            / client_name
+            / "Actions"
+    )
+    # Создаем директорию, если её нет
+    path_actions_svod.mkdir(parents=True, exist_ok=True)
     # Определяем имя файла для сохранения
     if actions_file_name is not None:
         file_name_actions_excel = (
-            marketplace_dir_name
-            / "Clients"
-            / client_name
-            / "Actions"
-        / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
+            path_actions_svod
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
     )
     else:
         file_name_actions_excel = (
-            marketplace_dir_name
-            / "Clients"
-            / client_name
-            / "Actions"
-        / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
+            path_actions_svod
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
     )
     # Сохраняем отчет по акциям в файл excel
     with pd.ExcelWriter(file_name_actions_excel) as w:

@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
+
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
@@ -21,9 +23,17 @@ from ozon.scripts.command_args_parser import cli_reference_date
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate metrics for Ozon marketplace",
-    usage='python.exe -m ozon.scripts.calcMetrics [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
-    epilog='Example: python.exe -m ozon.scripts.calcMetrics 2024-11-13',
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m ozon.scripts.calcMetrics "
+        "[YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.calcMetrics 2024-11-13\n\n"
+        "  python.exe -m ozon.scripts.calcMetrics --ref_dt 2024-11-13 -c 2\n\n"
+        "  python.exe -m ozon.scripts.calcMetrics 2024-11-13 --client 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 

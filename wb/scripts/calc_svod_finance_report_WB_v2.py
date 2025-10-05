@@ -14,6 +14,7 @@ from loguru import logger
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -31,11 +32,20 @@ from wb.scripts.wb_generic_functions import get_company_stats_v2
 from wb.scripts.wb_generic_functions import \
     load_full_report as upload_realization_report_new
 
+# Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Create finance report (WB)",
-    usage="python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
-    epilog="Example: python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 2024-11-13 2024-11-20",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 2024-11-13 2024-11-20\n\n"
+        "  python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
+        "  python.exe -m wb.scripts.calc_svod_finance_report_WB_v2 2024-11-13 2024-11-20 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 # Функция генерации диапазона дат

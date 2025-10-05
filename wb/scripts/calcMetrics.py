@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 from wb.scripts.command_args_parser import cli_reference_date
@@ -17,9 +18,16 @@ from wb.scripts.constants import (cargo_type, client_name,
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate metrics for WB marketplace",
-    usage='python.exe -m wb.scripts.calcMetrics [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
-    epilog='Example: python.exe -m wb.scripts.calcMetrics 2025-05-28',
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.calcMetrics [YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.calcMetrics 2025-05-28\n\n"
+        "  python.exe -m wb.scripts.calcMetrics --ref_dt 2025-05-28 --client 2\n\n"
+        "  python.exe -m wb.scripts.calcMetrics 2025-05-28 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 

@@ -277,8 +277,8 @@ def getTransactionReport(headers, date_start, date_end):
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Задаем даты начала и окончания выгрузки
-    date_start = '2024-05-01'
-    date_end = '2025-09-01'
+    date_start = '2023-08-01'
+    date_end = '2025-08-01'
     # Переводим даты в нужный формат для сохранения в файл
     date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d.%m.%Y')
     date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d.%m.%Y')

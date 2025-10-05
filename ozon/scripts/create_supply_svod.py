@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 # Файл с функциями форматирования листов excel
 import ozon.scripts.format_supply_svod as format_supply_svod
@@ -21,9 +22,14 @@ from ozon.scripts.constants import (catalog_supply_columns, client_name,
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate supply report (Ozon)",
-    usage='python.exe -m ozon.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD]',
-    epilog='Example: python.exe -m ozon.scripts.create_supply_svod 2024-11-13',
-    formatter_class=RichHelpFormatter
+    usage="python.exe -m ozon.scripts.create_supply_svod [YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]",
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.create_supply_svod 2024-11-13\n\n"
+        "  python.exe -m ozon.scripts.create_supply_svod --ref_dt 2024-11-13 --client 2\n\n"
+        "  python.exe -m ozon.scripts.create_supply_svod 2024-11-13 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 
@@ -478,12 +484,18 @@ def save_sheets_to_excel(
         svod_excel_for_sku_jewelry,
         date_metrics
     ):
-    # Задаем имя файла (с путем) для сохранения
-    file_name_supply_svod = (
+    # Задаем путь для сохранения
+    path_supply_svod = (
         marketplace_dir_name
         / f"Clients"
         / f"{client_name}"
-        / f"SupplySvod/{date_metrics}_Расчет_поставок_{client_name}_Ozon.xlsx"
+        / f"SupplySvod"
+    )
+    path_supply_svod.mkdir(parents=True, exist_ok=True)
+    # Задаем имя файла (с путем) для сохранения
+    file_name_supply_svod = (
+        path_supply_svod
+        / f"{date_metrics}_Расчет_поставок_{client_name}_Ozon.xlsx"
     )
     with pd.ExcelWriter(file_name_supply_svod) as w:
         svod_excel_for_sku.to_excel(w, sheet_name='Всего', index=False)

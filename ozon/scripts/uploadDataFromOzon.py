@@ -13,6 +13,7 @@ import pandas as pd
 import requests
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -27,9 +28,16 @@ from ozon.scripts.update_clusters import update_cluster_list
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Upload data for Ozon marketplace",
-    usage='python.exe -m ozon.scripts.uploadDataFromOzon [days_ago] [--days_ago <days_ago>]\n',
-    epilog='Example: python.exe -m ozon.scripts.uploadDataFromOzon 30',
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m ozon.scripts.uploadDataFromOzon [days_ago] [--days_ago N] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.uploadDataFromOzon 30\n\n"
+        "  python.exe -m ozon.scripts.uploadDataFromOzon --days_ago 10 --client 2\n\n"
+        "  python.exe -m ozon.scripts.uploadDataFromOzon 7 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 

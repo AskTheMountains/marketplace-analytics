@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.set_option('chained_assignment',None)
 
@@ -25,9 +26,16 @@ from wb.scripts.command_args_parser import cli_days_ago
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Upload data for WB marketplace",
-    usage='python.exe -m wb.scripts.uploadDataFromWB [days_ago] [--days_ago <days_ago>]',
-    epilog='Example: python.exe -m wb.scripts.uploadDataFromWB 30',
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.uploadDataFromWB [days_ago] [--days_ago N] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.uploadDataFromWB 30\n\n"
+        "  python.exe -m wb.scripts.uploadDataFromWB --days_ago 10 --client 2\n\n"
+        "  python.exe -m wb.scripts.uploadDataFromWB 7 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 # Функция генерации дат периода выгрузки данных

@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Border, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 # Доп. функции
 from generic_functions import move_columns
@@ -22,11 +23,20 @@ from wb.scripts.constants import client_name, headers, marketplace_dir_name
 # Функции выгрузки данных по АПИ, которые уже готовы
 from wb.scripts.uploadDataFromWB import getOrdersWB, getSalesWB
 
+# Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Create sales and orders report (WB)",
-    usage='python.exe -m wb.scripts.create_sales_and_orders_svod [start_date] [end_date]',
-    epilog="Example: python.exe -m wb.scripts.create_sales_and_orders_svod 2025-08-27 2025-09-02",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m wb.scripts.create_sales_and_orders_svod [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m wb.scripts.create_sales_and_orders_svod 2025-08-27 2025-09-02\n\n"
+        "  python.exe -m wb.scripts.create_sales_and_orders_svod --start_date 2025-08-27 --end_date 2025-09-02 --client 2\n\n"
+        "  python.exe -m wb.scripts.create_sales_and_orders_svod 2025-08-27 2025-09-02 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
 
 
