@@ -11,6 +11,7 @@ import openpyxl
 import pandas as pd
 from loguru import logger
 from rich_argparse import RichHelpFormatter
+from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
 from openpyxl.styles import Alignment, Border, Font, Side
@@ -34,11 +35,18 @@ from ozon.scripts.uploadFinanceReports import get_products_realization_report
 
 parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",
-    usage="python.exe -m ozon.scripts.calc_svod_finance_report_new [start_date] [end_date] [--start_date YYYY-MM-DD --end_date YYYY-MM-DD]",
-    epilog="Example: python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20",
-    formatter_class=RichHelpFormatter
+    usage=(
+        "python.exe -m ozon.scripts.calc_svod_finance_report_new [start_date] [end_date] "
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] [-c N | --client N]"
+    ),
+    epilog=(
+        "Примеры:\n\n"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20\n\n"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20 -c 3"
+    ),
+    formatter_class=ParagraphRichHelpFormatter
 )
-
 # Функция генерации диапазона дат
 def generate_date_range(date_start, date_end):
     # Если не заданы аргументы командной строки, то генерируем диапазон за предыдущий месяц
@@ -1308,45 +1316,44 @@ def format_excel(
     for row in range(start_row, end_row + 1):
         # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
         if existing_promotion_columns:
-            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
-            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = f"={promo_sum}"
+            promo_cells = ','.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
+            promo_formula = f"=SUM({promo_cells})"
+            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = promo_formula
         else:
             final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
-        # --- "% Затрат на рекламу": делим затраты на выручку после возвратов (в руб.), не делим на 0!
-        # Имена используемых столбцов должны ТОЧНО совпадать с DataFrame
+
+        # --- "% Затрат на рекламу" (через IFERROR, чтобы не было #ЗНАЧ!)
         cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
         cell_sales_minus_returns = f"{col_map['Продажи - Возвраты (руб)']}{row}"
-        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
+        formula_percent = (
+            f'=IFERROR(ABS({cell_promo}/{cell_sales_minus_returns}*100), "")'
+        )
         final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
 
-        # Получаем значение себестоимости
-        cell_sebestoimost = final_costs_worksheet[f"{col_map['Себестоимость']}{row}"]
-        if cell_sebestoimost.value in (None, "", 0):
-            final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = ""
-            final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = ""
-            final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = ""
-        else:
-            # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат
-            base = f"{col_map['Продажи - Возвраты (руб)']}{row}"
-            formula = base
-            for col in cost_columns:
-                formula += f"+{col_map[col]}{row}"
-            final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+        # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат (IFERROR — пропускать ошибки)
+        base_sales = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        cost_sum = '+'.join(f"{col_map[col]}{row}" for col in cost_columns)
+        cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
+        margin_formula = (
+            f'=IFERROR(IF(OR({cell_sebestoimost}=0,{cell_sebestoimost}=""),"",{base_sales}+{cost_sum}), "")'
+        )
+        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
 
-            # --- "Маржинальность %": маржинальность делим на валовую выручку (не делим на 0)
-            cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-            cell_sales = f"{col_map['Продажи руб']}{row}"
-            formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
-            final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+        # --- "Маржинальность %" (через IFERROR)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_sales = f"{col_map['Продажи руб']}{row}"
+        formula_percent_margin = (
+            f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
+        )
+        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
-            # --- "Маржинальность на ед. товара руб": делим рублевую маржу на продажи-возвраты в штуках/шт
-            cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
-            formula_na_ed = (
-                f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
-            )
-            final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed        # --- ШАГ 3. Сделать формат процентов только для столбца "Маржинальность %"
+        # --- "Маржинальность на ед. товара руб" (через IFERROR)
+        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        formula_na_ed = (
+            f'=IFERROR(ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}), "")'
+        )
+        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed        # Форматирование столбца Маржинальность % в формат процентного числа
 
-        # Форматирование столбца Маржинальность % в формат процентного числа
         try:
             # Получаем букву столбца для "Маржинальность %"
             percent_col_letter = col_map['Маржинальность %']
@@ -1423,8 +1430,8 @@ if __name__ == "__main__":
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-09-01',
-        date_end='2025-09-30'
+        date_start = '2025-07-01',
+        date_end='2025-07-31'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
