@@ -135,6 +135,10 @@ def getCompanyStatistics(
     total_companies = df_companies_.shape[0]
     # Сколько выгружено кампаний
     uploaded_companies_amount = 0
+    # Выбираем приоритетные даты для лога
+    log_date_start = date_from if date_from else date_start
+    log_date_end = date_to if date_to else date_end
+
     # Цикл по каждому диапазону
     for chunk in df_companies_['chunks'].unique():
         # Проверяем срок действия токена
@@ -165,6 +169,7 @@ def getCompanyStatistics(
         if date_start == '' or date_end == '':
             params_companies_stats.pop('from')
             params_companies_stats.pop('to')
+
         # Если не задан ID задания на генерацию отчета, то создаем задание на генерацию отчета
         # Если он задан (например, мы до этого запускали и не получили отчеты с  этого задания),
         # то пропускаем этот этап
@@ -219,7 +224,7 @@ def getCompanyStatistics(
                 f"{current_companies_amount} of {total_companies} companies\n"
                 f"(Chunk {chunk} of {total_chunks})\n"
                 f"Already uploaded: {uploaded_companies_amount} companies\n"
-                f"Dates: {date_start} - {date_end}\n"
+                f"Dates: {log_date_start} - {log_date_end}\n"
                 f"Report creation status: {report_status}\n"
                 f"Task id: {task_id}"
             )
@@ -269,7 +274,7 @@ def getCompanyStatistics(
 
 
             # Увеличиваем число выгруженных кампаний
-            uploaded_companies_amount =+ current_companies_amount
+            uploaded_companies_amount += current_companies_amount
             # Сброс task_id для следующего диапазона кампаний
             task_id = None
 
@@ -277,10 +282,18 @@ def getCompanyStatistics(
 
 # Отчёт по товарам в продвижении в поиске
 def getProductsSearchPromote(auth_token, date_start, date_end):
+
+    # Преобразуем строки в datetime с часовым поясом Moscow
+    dt_start = pd.to_datetime(date_start).tz_localize('Europe/Moscow').replace(hour=0, minute=0, second=0)
+    dt_end = pd.to_datetime(date_end).tz_localize('Europe/Moscow').replace(hour=23, minute=59, second=59)
+
+    # Переводим в UTC и форматируем как строку ISO с Z
+    date_start_msk = dt_start.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
+    date_end_msk = dt_end.tz_convert('UTC').strftime('%Y-%m-%dT%H:%M:%SZ')
     # Даты формирования отчета
     params_report_id = {
-    "from": date_start,
-    "to": date_end
+        "from": date_start_msk,
+        "to": date_end_msk,
     }
     # Авторизация
     headers = {
@@ -292,7 +305,10 @@ def getProductsSearchPromote(auth_token, date_start, date_end):
                               json=params_report_id).json()
     # Получаем статус отчета
     report_status = ''
-    logger.info("Getting products promote report status")
+    logger.info(
+        "\nGetting products promote report status\n",
+        f"Dates: {date_start_msk} - {date_end_msk}"
+    )
     while report_status not in ['OK', 'ERROR']:
         resp_data_report_status = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/{resp_data_report_id['UUID']}",
                                             headers=headers).json()
@@ -453,6 +469,8 @@ def upload_data_performane(
         client_id_performance,
         client_secret_performance,
         companies_stats_dir,
+        date_from='',
+        date_to='',
         df_companies=None,
         task_id=None,
         payment_for_orders=False,
@@ -474,6 +492,8 @@ def upload_data_performane(
         auth_token,
         df_companies_for_statistic,
         companies_stats_dir,
+        date_from,
+        date_to,
         task_id
     )
 
