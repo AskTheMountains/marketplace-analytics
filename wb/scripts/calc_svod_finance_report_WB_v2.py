@@ -2171,6 +2171,9 @@ def format_excel(
     promotion_columns,
     columns_to_exclude_from_final_costs,
 ):
+
+    logger.info(f"Formatting Finance report for client {client_name}")
+
     # Формируем путь к итоговому файлу Excel
     filename = current_report_dir / f"{date_report}_Свод_реализации_WB_{client_name}.xlsx"
     # Загружаем рабочую книгу Excel
@@ -2227,49 +2230,51 @@ def format_excel(
 
     start_row = 2
     end_row = final_ws.max_row  # Последняя строка с данными в финальной таблице
+
     # Колонка продаж минус возвратов
     sales_minus_returns_col = 'Продажи минус возвраты руб без СПП'
     sales_minus_returns_amount_col = 'Продажи минус возвраты шт'
+
     for row in range(start_row, end_row + 1):
         # --- Формула: "Затраты на рекламу руб"
         if existing_promotion_columns:
-            promo_sum = '+'.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
-            final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = f'={promo_sum}'
+            promo_cells = ','.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
+            promo_formula = f"=SUM({promo_cells})"
+            final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = promo_formula
         else:
             final_ws[f"{col_map['Затраты на рекламу руб']}{row}"].value = '0'
 
-        # --- Формула: "% Затрат на рекламные кампании"
+        # --- Формула: "% Затрат на рекламные кампании" (IFERROR — чтобы не было #ЗНАЧ!)
         cell_promo = f"{col_map['Затраты на рекламу руб']}{row}"
         cell_sales_minus_returns = f"{col_map[sales_minus_returns_col]}{row}"
-        formula_percent = f'=IF({cell_sales_minus_returns}=0,"",ABS({cell_promo}/{cell_sales_minus_returns}*100))'
+        formula_percent = (
+            f'=IFERROR(ABS({cell_promo}/{cell_sales_minus_returns}*100), "")'
+        )
         final_ws[f"{col_map['% Затрат на рекламные кампании']}{row}"].value = formula_percent
 
-        # --- Формула: "Маржинальность руб"
-        cell_sebestoimost = final_ws[f"{col_map['Себестоимость']}{row}"]
-        if cell_sebestoimost.value in (None, "", 0):
-            final_ws[f"{col_map['Маржинальность руб']}{row}"].value = ""
-            final_ws[f"{col_map['Маржинальность %']}{row}"].value = ""
-            final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = ""
-        else:
-            # --- "Маржинальность руб"
-            base = f"{col_map[sales_minus_returns_col]}{row}"
-            formula = base
-            for col in cost_columns:
-                formula += f"-{col_map[col]}{row}"
-            final_ws[f"{col_map['Маржинальность руб']}{row}"].value = f'={formula}'
+        # --- Формула: "Маржинальность руб" (IFERROR — если что-то не так)
+        cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
+        base = f"{col_map[sales_minus_returns_col]}{row}"
+        cost_formula = '-'.join(f"{col_map[col]}{row}" for col in cost_columns)
+        margin_base_formula = f"{base}-" + f"-".join(f"{col_map[col]}{row}" for col in cost_columns) if cost_columns else base
+        margin_formula = (
+            f'=IF(OR({cell_sebestoimost}=0, {cell_sebestoimost}=""), "", IFERROR({margin_base_formula}, ""))'
+        )
+        final_ws[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
+        # --- Формула: "Маржинальность %" (IFERROR)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_sales = base
+        formula_percent_margin = (
+            f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
+        )
+        final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
-            # --- "Маржинальность %"
-            cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-            cell_sales = f"{col_map[sales_minus_returns_col]}{row}"
-            formula_percent_margin = f'=IF({cell_sales}=0,"",{cell_marg_rub}/{cell_sales})'
-            final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
-
-            # --- "Маржинальность на ед. товара руб"
-            cell_qty = f"{col_map[sales_minus_returns_amount_col]}{row}"
-            formula_na_ed = (
-                f'=IF({cell_qty}=0,"",ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}))'
-            )
-            final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+        # --- Формула: "Маржинальность на ед. товара руб" (IFERROR)
+        cell_qty = f"{col_map[sales_minus_returns_amount_col]}{row}"
+        formula_na_ed = (
+            f'=IFERROR(ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}), "")'
+        )
+        final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
 
     # --- Форматирование всех листов (без формул) ---
     # Задаем стиль границы
@@ -2325,7 +2330,7 @@ def format_excel(
     # Сохраняем итоговый файл с формулами и форматированием
     wb.save(filename)
     # Выводим сообщение
-    logger.info(f"Finance report saved in: {filename}")
+    # logger.info(f"Finance report saved in: {filename}")
 
 
 # %% Вызов всех функций
@@ -2343,7 +2348,7 @@ if __name__ == '__main__':
         # date_start,
         # date_end,
         date_start = '2025-09-01',
-        date_end='2025-09-28'
+        date_end='2025-09-30'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
