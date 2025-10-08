@@ -187,6 +187,55 @@ def cli_date_range(parser):
     else:
         return {"start_date": None, "end_date": None}
 
+
+def cli_actions(parser):
+
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
+        'reference_date_pos',
+        nargs='?',
+        help=argparse.SUPPRESS
+    )
+    safe_add_argument(
+        parser,
+        '--ref_dt',
+        type=str,
+        help='Опорная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — берется сегодняшняя дата)',
+        metavar='YYYY-MM-DD'
+    )
+    safe_add_argument(
+        parser,
+        '--file', '-f',
+        type=str,
+        help='Имя файла с акциями ЛК (необязательный, если не передан - данные по акциям ЛК не будут включены в отчет)',
+        metavar='.xlsx'
+    )
+
+    args, unknown = parser.parse_known_args()
+
+    # Собираем параметры с приоритетами
+    reference_date = (
+        args.reference_date_pos or
+        args.ref_dt or
+        datetime.now().strftime('%Y-%m-%d')
+    )
+    actions_file_name = getattr(args, 'actions_file_name', None)
+    client = getattr(args, 'client', None)
+
+    return {
+        "reference_date": reference_date,
+        "actions_file_name": actions_file_name,
+        "client": client
+    }
+
+
 def cli_days_ago(parser):
     """
     Парсит days_ago как позиционный и как именованный аргумент.
@@ -207,7 +256,7 @@ def cli_days_ago(parser):
     )
     safe_add_argument(
         parser,
-        '--days_ago',
+        '--days_ago', '-d',
         type=int,
         help='Количество дней назад для обработки (необязательный, если не передан — 30)',
         metavar='[N]'

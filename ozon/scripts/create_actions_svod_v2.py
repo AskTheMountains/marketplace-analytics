@@ -17,12 +17,12 @@ pd.options.mode.chained_assignment = None
 
 # Некоторые дополнительные функции
 from generic_functions import add_element_to_list, move_columns
-from ozon.scripts.command_args_parser import cli_reference_date
+from ozon.scripts.command_args_parser import cli_actions
 # Файл с некоторыми константами
 from ozon.scripts.constants import (
     catalog_action_columns, client_name,
     headers, headers_wb, marketplace_dir_name,
-    net_cost_koef, svod_actions_cols
+    net_cost_koef, svod_actions_cols, path_download_actions
 )
 # Функция форматирования excel с планом акций, отдельный скрипт
 from ozon.scripts.format_svod_actions import format_excel_actions
@@ -34,26 +34,35 @@ from wb.scripts.uploadDataFromWB import get_wb_product
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Calculate actions report (Ozon)",
-    usage="python.exe -m ozon.scripts.create_actions_svod_v2 [YYYY-MM-DD] [--ref_dt YYYY-MM-DD] [-c N | --client N]",
+    usage=(
+        "python.exe -m ozon.scripts.create_actions_svod_v2 "
+        "[YYYY-MM-DD] [--ref_dt YYYY-MM-DD] "
+        "[-c N | --client N] "
+        "[--actions_file_name ACTIONS_FILE]"
+    ),
     epilog=(
         "Примеры:\n\n"
         "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01\n\n"
         "  python.exe -m ozon.scripts.create_actions_svod_v2 --ref_dt 2025-01-01 --client 2\n\n"
-        "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01 -c 3"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01 -c 3\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --file products-1977747 (29).xlsx\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --client 5 -f products-1977747 (29).xlsx"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
 
-# Директория файлов с данными по акциям
-path_download_actions = (
-    Path('d:/')
-    / 'artem'
-    / 'downloads'
-)
+# # Директория файлов с данными по акциям
+# path_download_actions = (
+#     Path('d:/')
+#     / 'artem'
+#     / 'downloads'
+# )
 
+# Считываем аргументы командной строки
+cli_params = cli_actions(parser)
 # Имя файла с данными по акциям (с расширением)
-actions_file_name = 'products-1977747-next-auto-add-2025-10-03.xlsx'
-
+actions_file_name = cli_params["actions_file_name"]
+# actions_file_name = 'products-1977747 (29).xlsx'
 
 # Функция чтения файла с акциями "Бустинг"
 def read_action_file(path_download_actions, actions_file_name):
@@ -1273,7 +1282,7 @@ def save_excel(
 if __name__ == '__main__':
     # Дата, за которую были выгружены данные
     # date_report_created = '2025-09-02'
-    date_report_created = cli_reference_date(parser)
+    date_report_created = cli_params["reference_date"]
 
     logger.info(f"Calculating svod actions for client {client_name} for date {date_report_created}")
     # Получение каталога
