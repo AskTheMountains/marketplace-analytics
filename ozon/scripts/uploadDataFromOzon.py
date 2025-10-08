@@ -109,7 +109,7 @@ def save_dates_to_csv(date_start, date_end):
                              'date_start_file': date_start_file},
                              index=[0])
     path_save = uploaddir_today / f"{str(date.today())}_dates_from_to.csv"
-    df_dates.to_csv(path_save, sep=';', index=False)
+    df_dates.to_csv(path_save, sep=';', index=False, encoding='utf-8-sig')
 
 
 # Отчет по товарам (список товаров)
@@ -150,7 +150,7 @@ def getOzonProduct(headers, to_save=True):
         df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
         if to_save:
             file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
-            df_products.to_csv(file_name_products, sep=';')
+            df_products.to_csv(file_name_products, sep=';', index=False, encoding='utf-8-sig')
         else:
             return df_products
     else:
@@ -632,6 +632,9 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
             "statuses": [],
             "title": ""
         },
+        # "with": {
+        #     "customer_data": True
+        # },
         "language": "DEFAULT"
     })
 
@@ -746,13 +749,13 @@ def getFinalOrders_fbo(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBO orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-                df.to_csv(file_name_final_orders, sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False, encoding='utf-8-sig')
 
 
     # Если заказов FBO не было, сохраняем пустой df
     else:
         df_fbo_orders = pd.DataFrame(columns = ['Артикул', 'Кластер доставки', 'Статус', 'Сумма отправления', 'Объемный вес товаров, кг'])
-        df_fbo_orders.to_csv(file_name_final_orders, sep=";", index = False)
+        df_fbo_orders.to_csv(file_name_final_orders, sep=";", index=False, encoding='utf-8-sig')
 
 
 # Кластеры отправлений (FBS)
@@ -824,9 +827,9 @@ def getFinalOrders_fbs(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBS orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-                df.to_csv(file_name_final_orders, sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False, encoding='utf-8-sig')
     else:
-        df.to_csv(file_name_final_orders, sep=";", index = False)
+        df.to_csv(file_name_final_orders, sep=";", index = False, encoding='utf-8-sig')
 
     #os.remove(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbs.csv")
 
@@ -876,7 +879,7 @@ def getStockRemainders_fbo(headers):
         # Если остатков нет, сохраняем пустой файл
         else:
             df_stock_rem_fbo = pd.DataFrame(columns=['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв'])
-            df_stock_rem_fbo.to_csv(file_name_stock_rem_fbo, sep=";", index = False)
+            df_stock_rem_fbo.to_csv(file_name_stock_rem_fbo, sep=";", index=False, encoding='utf-8-sig')
 
     # Если есть остатки, начинаем обработку файла с остатками
     if os.path.exists(file_name_stock_rem_fbo_temp):
@@ -896,7 +899,7 @@ def getStockRemainders_fbo(headers):
         headerList = ['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв']
         # Кластеры, которых нет в списке, помечаем как "Неизвестный кластер"
         new_df['cluster'] = new_df['cluster'].fillna('Неизвестный кластер')
-        new_df.to_csv(file_name_stock_rem_fbo,sep=";",header=headerList, index = False)
+        new_df.to_csv(file_name_stock_rem_fbo,sep=";",header=headerList, index=False, encoding='utf-8-sig')
         os.remove(file_name_stock_rem_fbo_temp)
         os.remove(file_name_stock_rem_fbo_processed)
         # Выводим предупреждение, если есть кластеры, отсутствующие в файле
@@ -1004,7 +1007,7 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
         df_fbo_reminders = pd.DataFrame(columns=list(rename_dict.values()))
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
-        df_fbo_reminders.to_csv(file_name_stock_rem_fbo, sep=";", index=False)
+        df_fbo_reminders.to_csv(file_name_stock_rem_fbo, sep=";", index=False, encoding='utf-8-sig')
 
     # иначе - возвращаем df с товарами
     else:
@@ -1163,7 +1166,7 @@ def getTransactionReport(headers, date_start, date_end):
     df_transaction_list['items_amount'] = df_transaction_list['items'].apply(lambda x: len(x))
     df_transaction_list['services_amount'] = df_transaction_list['services'].apply(lambda x: len(x))
     # Сохраняем csv
-    df_transaction_list.to_csv(file_name_transactions, sep=';', index=False)
+    df_transaction_list.to_csv(file_name_transactions, sep=';', index=False, encoding='utf-8-sig')
 
 
 # Продажи FBO
@@ -1259,7 +1262,7 @@ def getSalesFBO(headers):
        'Валюта отправления', 'Номер_заказа', 'Номер_отправления', 'Склад',
        'Кластер_отправления', 'Кластер_доставки', 'Сумма_отправления', 'Схема доставки', 'Статус']
         sales_fbo = pd.DataFrame(columns=colnames_sales_fbo)
-    sales_fbo.to_csv(file_name_sales_fbo, sep=';', index=False)
+    sales_fbo.to_csv(file_name_sales_fbo, sep=';', index=False, encoding='utf-8-sig')
 
 
 # Продажи FBS
@@ -1355,7 +1358,7 @@ def getSalesFBS(headers):
        'Номер_заказа', 'Номер_отправления', 'Склад', 'Кластер_отправления',
        'Кластер_доставки', 'Сумма_отправления', 'Статус', 'Схема доставки']
         sales_fbs = pd.DataFrame(columns=colnames_sales_fbs)
-    sales_fbs.to_csv(file_name_sales_fbs, sep=';', index=False)
+    sales_fbs.to_csv(file_name_sales_fbs, sep=';', index=False, encoding='utf-8-sig')
 
 
 # Функция выгрузки товаров в заявках на поставку
@@ -1498,7 +1501,7 @@ def get_supply_orders(
                                         "is_asc": True,
                                         "last_id": last_id,
                                         "limit": 100
-                                        })
+                })
                 resp_data_supply_orders_items = requests.post(f"{ozon_seller_api_url}/v1/supply-order/bundle", headers=headers, data=params_supply_orders_items).json()
                 # Получаем товары из ответа
                 df_items = pd.DataFrame(resp_data_supply_orders_items['items'])
@@ -1551,7 +1554,7 @@ def get_supply_orders(
         ])
     # Если нужно сохранить результат, сохраняем его
     if to_save:
-        df_supply_orders_items.to_csv(file_name_supply_orders, sep=';', index=False)
+        df_supply_orders_items.to_csv(file_name_supply_orders, sep=';', index=False, encoding='utf-8-sig')
     # Если нет, возвращаем результат
     else:
         return df_supply_orders_items
