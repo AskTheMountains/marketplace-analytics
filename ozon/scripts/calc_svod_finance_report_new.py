@@ -29,7 +29,10 @@ from ozon.scripts.constants import (catalog_finace_svod_columns,
 # Функция выгрузки товаров в поставках
 from ozon.scripts.uploadDataFromOzon import get_supply_orders
 # Функция выгрузки данных о рекламных кампаниях
-from ozon.scripts.uploadDataFromOzonPerformance import upload_data_performane
+from ozon.scripts.uploadDataFromOzonPerformance import (
+    upload_data_performane,
+    getCompanyStatistics
+)
 # Функция выгрузки отчета о релизации товаров
 from ozon.scripts.uploadFinanceReports import get_products_realization_report
 
@@ -87,48 +90,45 @@ def create_current_report_dir(client_name, date_start, date_end):
 
 
 # Функция поиска отчета с файлом в директории
-def rename_finance_report_file(current_report_dir, client_name, date_start, date_end):
-    # Преобразуем даты из формата YYYY-MM-DD в DD.MM.YYYY для поиска существующего файла
+def rename_finance_report_file(finance_report_dir, client_name, date_start, date_end):
     try:
-        start = datetime.strptime(date_start, "%Y-%m-%d").strftime("%d.%m.%Y")
-        end = datetime.strptime(date_end, "%Y-%m-%d").strftime("%d.%m.%Y")
+        start_dot = datetime.strptime(date_start, "%Y-%m-%d").strftime("%d.%m.%Y")
+        end_dot = datetime.strptime(date_end, "%Y-%m-%d").strftime("%d.%m.%Y")
+        start_us = datetime.strptime(date_start, "%Y-%m-%d").strftime("%d_%m_%Y")
+        end_us = datetime.strptime(date_end, "%Y-%m-%d").strftime("%d_%m_%Y")
     except Exception as e:
-        f"Ошибка формата даты: {e}"
+        return f"Ошибка формата даты: {e}"
 
-    reports_dir = Path(current_report_dir)
-
-    # Маска финального (нужного) имени файла
+    reports_dir = Path(finance_report_dir)
     final_name = f"{client_name}_Отчет_по_начислениям_{date_start}_{date_end}.xlsx"
     final_path = reports_dir / final_name
 
-    # Если файл уже есть — вернуть его путь сразу
     if final_path.exists():
         return final_path
 
-    # Шаблон поиска исходного файла
-    pattern = re.compile(
-        rf"отчет[ _]по[ _]начислениям[ _]{start}-{end}.*\.(xlsx|xls)$",
+    # Паттерн для точечного формата с тире
+    pattern1 = re.compile(
+        rf"отчет[ _]по[ _]начислениям[ _]{start_dot}-{end_dot}.*\.(xlsx|xls)$",
+        re.I
+    )
+    # Исправленный паттерн для подчеркиваний (более одного _ или пробела)
+    pattern2 = re.compile(
+        rf"отчет[ _]по[ _]начислениям[ _]{start_us}[ _]+{end_us}.*\.(xlsx|xls)$",
         re.I
     )
 
     matched_files = []
 
-    # Поиск файлов по маске
     for f in reports_dir.iterdir():
-        if f.is_file() and pattern.match(f.name):
+        if f.is_file() and (pattern1.match(f.name) or pattern2.match(f.name)):
             matched_files.append((f, f.stat().st_mtime))
 
     if not matched_files:
         return "Файл отчета по заданным датам не найден."
 
-    # Сортировка по дате изменения (от нового к старому)
     matched_files.sort(key=lambda x: x[1], reverse=True)
     chosen_file = matched_files[0][0]
-
-    # Переименование
     chosen_file.rename(final_path)
-
-    # Возврат нового пути
     return final_path
 
 # Функция чтения файла с отчетом
@@ -391,10 +391,14 @@ def check_companies_costs(df_finance_report):
     # Флаг наличия рекламных расходов
     companies_costs_flag = False
     # Выбираем затраты по рекламе, где есть кампании
+    # df_companies_costs = df_finance_report.loc[
+    #     (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
+    #     | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
+    #     ['Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+    # ]
     df_companies_costs = df_finance_report.loc[
-        (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
-        | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
-        ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+        df_finance_report['Тип начисления'].str.contains('Оплата за клик|Продвижение с оплатой за заказ', na=False),
+        ['Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
     ]
 
     if not df_companies_costs.empty:
@@ -403,43 +407,62 @@ def check_companies_costs(df_finance_report):
     return companies_costs_flag
 
 
+# Функция нахождения id строк с расходами по РК
+def get_companies_costs_ids(df_finance_report):
+    df_companies_costs = df_finance_report.loc[
+        df_finance_report['Тип начисления'].str.contains('Оплата за клик|Продвижение с оплатой за заказ', na=False),
+        ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+    ]
+    # id строк с расходами, которые относим к РК
+    companies_costs_ids = df_companies_costs['id'].to_list()
+
+    return companies_costs_ids
+
 # Функция нахождения идентификаторов рекламных кампаний
-def get_companies_ids(df_finance_report):
+def get_companies_ids(df_finance_report, companies_costs_ids):
 
     # Выбираем затраты по рекламе, где есть кампании
+    # df_companies_costs = df_finance_report.loc[
+    #     (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
+    #     | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
+    #     ['Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+    # ]
     df_companies_costs = df_finance_report.loc[
-        (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
-        | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
-        ['Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+        df_finance_report['id'].isin(companies_costs_ids),
+        ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
     ]
-
     if df_companies_costs.shape[0] > 0:
-        # Создаем столбец с номером кампании
-        conditions = [
-            # Трафареты
-            df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
-            # Выводы в топ
-            df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
-        ]
-        choices = [
-            # Номер кампании для трафаретов
-            (df_companies_costs['Название товара']
-            .str.split('Заказ №').str[1]
-            .str.split('.').str[0]),
-            # Номер кампании для выводов в топ
-            df_companies_costs['ID начисления']
-        ]
-        df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
+        # # Создаем столбец с номером кампании
+        # conditions = [
+        #     # Трафареты
+        #     df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
+        #     # Выводы в топ
+        #     df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
+        # ]
+        # choices = [
+        #     # Номер кампании для трафаретов
+        #     (df_companies_costs['Название товара']
+        #     .str.split('Заказ №').str[1]
+        #     .str.split('.').str[0]),
+        #     # Номер кампании для выводов в топ
+        #     df_companies_costs['ID начисления']
+        # ]
+        # df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
 
         # Считаем расходы на каждую кампанию
         df_companies_costs_total = (
             df_companies_costs
-            .groupby(['Номер кампании', 'Тип начисления'])
+            .groupby(['ID начисления', 'Тип начисления'], as_index=False)
             .agg(
                 Итого_из_отчета=('Итого руб', 'sum')
             )
-            .reset_index()
+            .rename(columns={
+                'ID начисления': 'Номер кампании'
+            })
+            # .reset_index()
         )
+    else:
+        df_companies_costs_total = pd.DataFrame()
 
     return df_companies_costs_total
 
@@ -466,14 +489,14 @@ def parse_companies_files(current_report_dir, date_report):
     # Перевод в df
     filenames_companies = pd.DataFrame(filenames_companies)
     # Номер заказа
-    filenames_companies['order_number'] = filenames_companies['file_name'].str.split('_').str[0]
+    filenames_companies['company_id'] = filenames_companies['file_name'].str.split('_').str[0]
     # Сортировка по размеру
     filenames_companies = filenames_companies.sort_values(by='file_size', ascending=False, ignore_index=True)
 
     # Обработка csv по статистике кампаний в цикле
-    for i in range(len(filenames_companies)):
+    for idx, row in filenames_companies.iterrows():
         # Считываем csv
-        df_company = pd.read_csv(filenames_companies['path'][i], sep=';', decimal=',', skiprows=1)
+        df_company = pd.read_csv(row['path'], sep=';', decimal=',', skiprows=1)
         # Если по кампании есть расходы, начинаем их обрабатывать
         if df_company.shape[0] >= 2:
             # Определяем тип отчета (по первой колонке в отчете)
@@ -490,7 +513,7 @@ def parse_companies_files(current_report_dir, date_report):
                 df_company = df_company.loc[:, ['Дата', 'sku', 'Наименование товара', 'Расходы']]
                 # Сохраняем обработанный файл
                 df_company.to_csv(
-                    companies_parsed_dir / f"{filenames_companies['order_number'][i]}.csv",
+                    companies_parsed_dir / f"{row['company_id']}.csv",
                     sep=';',
                     encoding='utf-8-sig',
                     index=False
@@ -506,7 +529,7 @@ def parse_companies_files(current_report_dir, date_report):
                 df_company = df_company.loc[:, ['sku', 'Наименование товара', 'Расходы']]
                 # Сохраняем обработанный файл
                 df_company.to_csv(
-                    companies_parsed_dir / f"{filenames_companies['order_number'][i]}.csv",
+                    companies_parsed_dir / f"{row['company_id']}.csv",
                     sep=';',
                     encoding='utf-8-sig',
                     index=False
@@ -514,7 +537,7 @@ def parse_companies_files(current_report_dir, date_report):
 
 
 # Функция расчета расходов по рекламным кампаниям
-def calc_companies_cost_by_sku(date_report, df_finance_report):
+def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_ids):
 
     # df, куда будем помещать итоговый результат (разбивку расходов по SKU)
     df_result_companies_stats = pd.DataFrame()
@@ -522,55 +545,56 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
     df_companies_stats_from_report = pd.DataFrame()
     # df с сравнением расходов по рекламе из АПИ и отчета ЛК
     df_companies_api_report_stats = pd.DataFrame()
-    # id строк отчета, которые относятся к рекламным расходам
-    companies_costs_ids = []
+
 
     # Выбираем затраты по рекламе, где есть кампании
-    df_companies_costs = df_finance_report.loc[
-        (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
-        | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
-        ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
-    ]
+    # df_companies_costs = df_finance_report.loc[
+    #     (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
+    #     | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
+    #     ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
+    # ]
 
-    if df_companies_costs.shape[0] > 0:
-        # Создаем столбец с номером кампании
-        conditions = [
-            # Трафареты
-            df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
-            # Выводы в топ
-            df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
-        ]
-        choices = [
-            # Номер кампании для трафаретов
-            (df_companies_costs['Название товара']
-            .str.split('Заказ №').str[1]
-            .str.split('.').str[0]),
-            # Номер кампании для выводов в топ
-            df_companies_costs['ID начисления']
-        ]
-        df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
-        companies_costs_ids = df_companies_costs['id'].to_list()
+    # if df_companies_costs.shape[0] > 0:
+    #     # Создаем столбец с номером кампании
+    #     conditions = [
+    #         # Трафареты
+    #         df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
+    #         # Выводы в топ
+    #         df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
+    #     ]
+    #     choices = [
+    #         # Номер кампании для трафаретов
+    #         (df_companies_costs['Название товара']
+    #         .str.split('Заказ №').str[1]
+    #         .str.split('.').str[0]),
+    #         # Номер кампании для выводов в топ
+    #         df_companies_costs['ID начисления']
+    #     ]
+    #     df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
+    #     companies_costs_ids = df_companies_costs['id'].to_list()
 
-        # Считаем расходы на каждую кампанию
-        df_companies_costs_total = (
-            df_companies_costs
-            .groupby(['Номер кампании', 'Тип начисления'])
-            .agg(
-                Итого_из_отчета=('Итого руб', 'sum')
-            )
-            .reset_index()
-        )
+    #     # Считаем расходы на каждую кампанию
+    #     df_companies_costs_total = (
+    #         df_companies_costs
+    #         .groupby(['Номер кампании', 'Тип начисления'])
+    #         .agg(
+    #             Итого_из_отчета=('Итого руб', 'sum')
+    #         )
+    #         .reset_index()
+    #     )
+    df_companies_costs_total = get_companies_ids(df_finance_report, companies_costs_ids)
+    if df_companies_costs_total.shape[0] > 0:
         # Помещаем расходы в df из начала функции
         df_companies_stats_from_report = df_companies_costs_total.copy()
 
         # Сопоставление номера заказа с расходами SKU из апи
         df_companies_api = pd.DataFrame()
-        for i in range(len(df_companies_costs_total)):
+        for idx, row in df_companies_costs_total.iterrows():
             # Файл с данными по кампании
             company_file_path = (
                 current_report_dir
                 / f"{date_report}_Кампании_parsed"
-                / f"{df_companies_costs_total['Номер кампании'][i]}.csv"
+                / f"{row['Номер кампании']}.csv"
             )
             # Если данный файл есть, начинаем считать расходы по данной кампании
             if company_file_path.exists():
@@ -580,7 +604,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
             else:
                 df_company = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы'])
                 # Выводим предупреждение, что файла с расходами по данной кампании нет
-                logger.warning(f"Company file {df_companies_costs_total['Номер кампании'][i]} has not been found")
+                logger.warning(f"Company file {row['Номер кампании']} has not been found")
             # Удаляем лишнюю колонку, если есть
             if 'Unnamed: 0' in df_company.columns:
                 df_company = df_company.drop(columns='Unnamed: 0')
@@ -589,8 +613,8 @@ def calc_companies_cost_by_sku(date_report, df_finance_report):
                 Итого=('Расходы', 'sum')
             ).reset_index()
             # Добавляем столбцы с информацией о названии заказа
-            tmp_df['Номер кампании'] = df_companies_costs_total['Номер кампании'][i]
-            tmp_df['Тип начисления'] = df_companies_costs_total['Тип начисления'][i]
+            tmp_df['Номер кампании'] = row['Номер кампании']
+            tmp_df['Тип начисления'] = row['Тип начисления']
 
             # Объединяем с предыдущей кампанией
             df_companies_api = pd.concat([df_companies_api, tmp_df])
@@ -711,20 +735,21 @@ def calc_companies_costs(
     companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Проверяем, что в отчете были расходы по рекламе
-    companies_costs_flag = check_companies_costs(df_finance_report)
-    if companies_costs_flag:
+    companies_costs_ids = get_companies_costs_ids(df_finance_report)
+    # Если были расходы по РК, начинаем выгрузку отчетов по РК
+    if companies_costs_ids:
         logger.info('Found companies costs')
-        # Получаем идентификаторы рекламных кампаний
-        df_companies_ids = get_companies_ids(df_finance_report)
+        df_companies_ids = get_companies_ids(df_finance_report, companies_costs_ids)
         # Получаем список файлов в директории с кампаниями
         companies_stats_files = os.listdir(companies_stats_dir)
-
         # Если нет выгруженных файлов по кампаниям, то делаем выгрузку статистики кампаний
         if not companies_stats_files:
             logger.info('No companies files found, uploading companies stats')
             # Формируем даты для выгрузки по API Performance
-            date_start_performance = date_start + 'T00:00:00Z'
-            date_end_performance = date_end + 'T23:59:59Z'
+            date_start_performance = '' #  date_start + 'T00:00:00Z'
+            date_end_performance = '' # date_end + 'T23:59:59Z'
+            date_from_performance = date_start
+            date_to_performance = date_end
             # Выгружаем данные по рекламным кампаниям
             upload_data_performane(
                 date_start_performance,
@@ -732,6 +757,8 @@ def calc_companies_costs(
                 client_id_performance,
                 client_secret_performance,
                 companies_stats_dir,
+                date_from_performance,
+                date_to_performance,
                 df_companies_ids,
                 task_id
             )
@@ -742,7 +769,7 @@ def calc_companies_costs(
         parse_companies_files(current_report_dir, date_report)
 
     # Считаем расходы по рекламным кампаниям
-    result_companies_costs_no_article = calc_companies_cost_by_sku(date_report, df_finance_report)
+    result_companies_costs_no_article = calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_ids)
     # Добавляем артикул к SKU с рекламными расходами
     result_companies_costs = add_articles_to_companies_costs(result_companies_costs_no_article, df_sku_list_all)
 
@@ -1266,6 +1293,7 @@ def save_finance_svod_to_excel(
         # Сопоставление расходов по рекламе из АПИ и из отчета
         df_companies_api_report_stats.to_excel(w, sheet_name='Расходы по рекламе', index=False)
 
+    return filepath_finance_svod
 
 # Функция форматирования excel
 def format_excel(
@@ -1275,7 +1303,7 @@ def format_excel(
         columns_to_exclude_from_final_costs,
     ):
 
-    logger.info(f"Formatting FinanceReport for client {client_name}")
+    logger.info(f"Formatting Finance Report for client {client_name}")
 
     # Формируем путь к итоговому файлу Excel
     filepath_finance_svod = (
@@ -1411,7 +1439,7 @@ def format_excel(
     # Сохраняем файл
     wb.save(filepath_finance_svod)
     # Выводим сообщение об успешном сохранении
-    logger.info(f"Finance report saved in: {filepath_finance_svod}")
+    # logger.info(f"Finance report saved in: {filepath_finance_svod}")
 
     return filepath_finance_svod
 
@@ -1430,8 +1458,8 @@ if __name__ == "__main__":
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-07-01',
-        date_end='2025-07-31'
+        date_start = '2025-09-01',
+        date_end='2025-09-30'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
