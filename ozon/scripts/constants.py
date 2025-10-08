@@ -422,6 +422,13 @@ else:
 #         'Корректировка с учетом нулевых остатков'
 #     ]
 
+# Директория файлов с данными по акциям
+path_download_actions = (
+    Path('d:/')
+    / 'artem'
+    / 'downloads'
+)
+
 # Коэффициент себестоимости для акций
 if client_name in ['KU_And_KU']:
     net_cost_koef = 0.4
