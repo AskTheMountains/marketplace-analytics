@@ -19,6 +19,7 @@ from openpyxl.utils import get_column_letter
 
 # Некоторые доп. функции
 from generic_functions import move_columns
+from ozon.scripts.ozon_generic_functions import get_common_article
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
@@ -1123,6 +1124,9 @@ def calc_final_costs(df_all_costs_with_catalog):
         'Маржинальность %',
         'Маржинальность на ед. товара руб',
         'Маржинальность руб',
+        'Маржа от себестоимости %',
+        'Маржа по артикулу %',
+        'Приход денег на РС',
         'Все затраты (руб)',
         ]
         + catalog_finace_svod_columns + promotion_columns
@@ -1135,31 +1139,73 @@ def calc_final_costs(df_all_costs_with_catalog):
     # Вычитаем из продаж в рублях все затраты
     df_final_costs['Маржинальность руб'] = df_final_costs['Продажи - Возвраты (руб)'] + df_final_costs['Все затраты (руб)']
     df_final_costs = df_final_costs.drop(columns=['Все затраты (руб)'])
+
+    # Приход денег на РС (как маржинальность, но не учитываем Себестоимость * Факт продаж)
+    df_final_costs['Приход денег на РС'] = (
+        df_final_costs['Маржинальность руб']
+        - df_final_costs['Себестоимость * Факт продаж'].fillna(0)
+    )
     # Там, где нет себестоимости, маржинальность не считаем
     df_final_costs.loc[df_final_costs['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
+
+    # Считаем маржинальность в %
+    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / marg_sales_column
+
     # Считаем маржинальность на ед. товара
     df_final_costs['Маржинальность на ед. товара руб'] = (
         df_final_costs['Маржинальность руб'] /
         df_final_costs['Продажи - Возвраты (шт)']
     )
+    # Маржинальность от себестоимости (%)
+    df_final_costs['Маржа от себестоимости %'] = (
+        df_final_costs['Маржинальность руб']
+        / df_final_costs['Себестоимость * Факт продаж']
+        * 100
+    )
+    # Выделяем артикул размера
+    df_final_costs['Артикул размерного ряда'] = get_common_article(df_final_costs)
+    # Считаем маржинальность по артикулу
+    sales_rub_mean_by_article = (
+        df_final_costs
+        .groupby(['Артикул размерного ряда'])
+        ['Продажи - Возвраты (руб)'].transform('mean')
+    )
+    marg_rub_mean_by_article = (
+        df_final_costs
+        .groupby(['Артикул размерного ряда'])
+        ['Маржинальность руб'].transform('mean')
+    )
+    df_final_costs['Маржа по артикулу %'] = (
+        marg_rub_mean_by_article / sales_rub_mean_by_article * 100
+    )
+    # Удаляем колонку с артикулом размерного ряда
+    df_final_costs = df_final_costs.drop(columns=['Артикул размерного ряда'])
+
     # Там, где маржинальность в рублях > 0, у маржинальности на единицу товара так же будет знак "+"
     # в ином случае "-"
-    df_final_costs['Маржинальность на ед. товара руб'] = np.where(
-        df_final_costs['Маржинальность руб'] < 0,
-        (-1) * abs(df_final_costs['Маржинальность на ед. товара руб']),
-        abs(df_final_costs['Маржинальность на ед. товара руб'])
-    )
+    for col in ['Маржинальность на ед. товара руб']:
+        df_final_costs[col] = np.where(
+            df_final_costs['Маржинальность руб'] < 0,
+            (-1) * abs(df_final_costs[col]),
+            abs(df_final_costs[col])
+        )
+    for col in ['Маржа от себестоимости %']:
+        df_final_costs[col] = np.where(
+            df_final_costs['Себестоимость * Факт продаж'] <= 0,
+            (-1) * abs(df_final_costs[col]),
+            abs(df_final_costs[col])
+        )
 
-    # Считаем маржинальность в %
-    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / marg_sales_column
     # Меняем inf на nan
     columns_to_replace_inf = [
         'Маржинальность %',
         'Маржинальность на ед. товара руб',
+        'Маржа от себестоимости %',
+        'Маржа по артикулу %',
         '% Затрат на рекламу',
-
     ]
     df_final_costs[columns_to_replace_inf] = df_final_costs[columns_to_replace_inf].replace([-np.inf, np.inf], np.nan)
+
 
     return df_final_costs, promotion_columns, columns_to_exclude_from_final_costs
 
@@ -1188,6 +1234,7 @@ def create_svod_by_operations(df_final_costs):
         # 'Все затраты (руб)',
         # 'Маржинальность руб',
         'Маржинальность %',
+        'Маржа по артикулу %',
 
     ]
     # Считаем сумму, от которой будем считать процент
@@ -1218,15 +1265,33 @@ def create_svod_by_operations(df_final_costs):
             ~df_final_costs_.columns.isin(columns_to_exclude)
         ]
         # Считаем суммы по остальным
-        .sum(skipna=True)
-        # Достаем столбцы из index
-        .reset_index()
-        # Переименовываем колонки
-        .rename(columns={
-            'index': 'Тип операции',
-            0: 'Итого руб'
-        })
+        .sum()
+        # Переворачиваем расходы в столбцы
+        .to_frame()
+        .T
+        .reset_index(drop=True)
+
+        # # Считаем суммы по остальным
+        # .sum(skipna=True)
+        # # Достаем столбцы из index
+        # .reset_index()
+        # # Переименовываем колонки
+        # .rename(columns={
+        #     'index': 'Тип операции',
+        #     0: 'Итого руб'
+        # })
     )
+    # Пересчитываем некоторые столбцы
+    df_final_costs_by_operation['Маржинальность на ед. товара'] = (
+        df_final_costs_by_operation['Маржинальность руб']
+        / df_final_costs_by_operation['Продажи - Возвраты (шт)']
+    )
+    # Делаем расходы снова в строках
+    df_final_costs_by_operation = (
+        df_final_costs_by_operation
+        .melt(var_name='Тип операции', value_name='Итого руб')
+    )
+
     # Сумма, от которой считаем процент
     sum_for_percent = df_final_costs_['Продажа (Выручка) руб'].sum()
 
@@ -1238,6 +1303,7 @@ def create_svod_by_operations(df_final_costs):
     no_percent_operations = [
         'Продажи шт',
         'Возвраты шт',
+        'Продажи - Возвраты (шт)',
     ]
     # Маска для loc
     mask_no_operations = df_final_costs_by_operation['Тип операции'].isin(no_percent_operations)
@@ -1314,7 +1380,7 @@ def format_excel(
     wb = openpyxl.load_workbook(filepath_finance_svod)
 
     # --- ШАГ 1. Форматируем лист "Итоговой таблицы" ---
-    final_costs_worksheet = wb['Итоговая таблица']
+    final_ws = wb['Итоговая таблица']
 
     # Готовим dataframe для сопоставления: название -> номер столбца -> буква Excel
     # excel_columns = pd.DataFrame({
@@ -1339,16 +1405,16 @@ def format_excel(
     # Маппинг название столбца -> буква столбца Excel
     col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
     start_row = 2
-    end_row = final_costs_worksheet.max_row
+    end_row = final_ws.max_row
 
     for row in range(start_row, end_row + 1):
         # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
         if existing_promotion_columns:
             promo_cells = ','.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
             promo_formula = f"=SUM({promo_cells})"
-            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = promo_formula
+            final_ws[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = promo_formula
         else:
-            final_costs_worksheet[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
+            final_ws[f"{col_map['Затраты на рекламу (руб)']}{row}"].value = "0"
 
         # --- "% Затрат на рекламу" (через IFERROR, чтобы не было #ЗНАЧ!)
         cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
@@ -1356,7 +1422,7 @@ def format_excel(
         formula_percent = (
             f'=IFERROR(ABS({cell_promo}/{cell_sales_minus_returns}*100), "")'
         )
-        final_costs_worksheet[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
+        final_ws[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
 
         # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат (IFERROR — пропускать ошибки)
         base_sales = f"{col_map['Продажи - Возвраты (руб)']}{row}"
@@ -1365,7 +1431,7 @@ def format_excel(
         margin_formula = (
             f'=IFERROR(IF(OR({cell_sebestoimost}=0,{cell_sebestoimost}=""),"",{base_sales}+{cost_sum}), "")'
         )
-        final_costs_worksheet[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
+        final_ws[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
 
         # --- "Маржинальность %" (через IFERROR)
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
@@ -1373,20 +1439,43 @@ def format_excel(
         formula_percent_margin = (
             f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
         )
-        final_costs_worksheet[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
+        final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
         # --- "Маржинальность на ед. товара руб" (через IFERROR)
         cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
         formula_na_ed = (
             f'=IFERROR(ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}), "")'
         )
-        final_costs_worksheet[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed        # Форматирование столбца Маржинальность % в формат процентного числа
+        final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed        # Форматирование столбца Маржинальность % в формат процентного числа
+
+        # --- Формула: "Маржа от себестоимости %" (IFERROR)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_cost_fact = f"{col_map['Себестоимость * Факт продаж']}{row}"
+
+        formula_margin_from_cost = (
+            f'=IFERROR(IF({cell_cost_fact}<=0, -1*ABS({cell_marg_rub}/{cell_cost_fact}*100), ABS({cell_marg_rub}/{cell_cost_fact}*100)), "")'
+        )
+        final_ws[f"{col_map['Маржа от себестоимости %']}{row}"].value = formula_margin_from_cost
+
+        # --- Формула: "Приход денег на РС"
+        # Для "Приход денег на РС" исключаем себестоимость * факт продаж:
+        prihod_cols = [
+            col for col in cost_columns if col != 'Себестоимость * Факт продаж'
+        ]
+        prihod_base_formula = (
+            f"{base_sales}+" + f"+".join(f"{col_map[col]}{row}" for col in prihod_cols)
+            if prihod_cols else base_sales
+        )
+        prihod_rs_formula = (
+            f'=IFERROR({prihod_base_formula}, "")'
+        )
+        final_ws[f"{col_map['Приход денег на РС']}{row}"].value = prihod_rs_formula
 
         try:
             # Получаем букву столбца для "Маржинальность %"
             percent_col_letter = col_map['Маржинальность %']
             # Диапазон строк (от row_start до svod_len + 1)
-            cell_range = final_costs_worksheet[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
+            cell_range = final_ws[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
             for row in cell_range:
                 for cell in row:
                     cell.number_format = '0%'
