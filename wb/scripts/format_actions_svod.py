@@ -276,7 +276,17 @@ def format_excel_actions(
     light_orange_fill = PatternFill(start_color='F8CBAD', end_color='F8CBAD', fill_type='solid')
     beige_fill = PatternFill(start_color='FFF2CC', end_color='FFF2CC', fill_type='solid')
     # Заливка для некоторых заголовков
-    gold_fill_cells = excel_columns.loc[excel_columns['column'].str.contains('№|Артикул продавца|Предмет|Наименование|Баркод|Размер|Цвет|Статус|РРЦ|Себестоимость'), 'excel_column'].to_list()
+    gold_fill_cells = (
+        excel_columns
+        .loc[
+            excel_columns['column'].str.contains(
+                '№|Артикул WB|Артикул продавца|Предмет|Наименование|Баркод|'
+                'Размер|Цвет|Статус|РРЦ|Себестоимость'
+            ),
+            'excel_column'
+        ]
+        .to_list()
+    )
     yellow_fill_cells = [discount_to_marketing_price] # + [result_price] + [result_discount]
     blue_fill_cells = action_discount_cols
     light_red_fill_cells = []
