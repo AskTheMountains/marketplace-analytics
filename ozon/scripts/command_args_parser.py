@@ -190,6 +190,7 @@ def cli_date_range(parser):
 
 def cli_actions(parser):
 
+
     safe_add_argument(
         parser,
         "--client", "-c",
@@ -213,34 +214,36 @@ def cli_actions(parser):
     safe_add_argument(
         parser,
         '--file', '-f',
+        dest='actions_file_path',
         type=str,
-        help='Имя файла с акциями ЛК (необязательный, если не передан - данные по акциям ЛК не будут включены в отчет)',
-        metavar='.xlsx'
+        help='Путь или имя файла с акциями ЛК (.xlsx, не обязательно, если не передан — используется файл по умолчанию)',
+        # metavar='.xlsx'
     )
 
     args, unknown = parser.parse_known_args()
 
-    # Собираем параметры с приоритетами
     reference_date = (
         args.reference_date_pos or
         args.ref_dt or
         datetime.now().strftime('%Y-%m-%d')
     )
-    actions_file_name = getattr(args, 'actions_file_name', None)
+    actions_file_path = getattr(args, 'actions_file_path', None)
     client = getattr(args, 'client', None)
 
     return {
         "reference_date": reference_date,
-        "actions_file_name": actions_file_name,
+        "actions_file_path": actions_file_path,
         "client": client
     }
 
 
 def cli_days_ago(parser):
     """
-    Парсит days_ago как позиционный и как именованный аргумент.
-    Приоритет: позиционный > именованный > 0.
+    Парсит days_ago (позиционный и именованный) ИЛИ start_date и end_date.
+    Приоритет: позиционный days_ago > --days_ago > даты > 30 дней по умолчанию.
     """
+    import argparse
+
     safe_add_argument(
         parser,
         "--client", "-c",
@@ -261,11 +264,31 @@ def cli_days_ago(parser):
         help='Количество дней назад для обработки (необязательный, если не передан — 30)',
         metavar='[N]'
     )
+    safe_add_argument(
+        parser,
+        '--start_date',
+        type=str,
+        help='Дата начала периода (формат YYYY-MM-DD)',
+        metavar='[YYYY-MM-DD]'
+    )
+    safe_add_argument(
+        parser,
+        '--end_date',
+        type=str,
+        help='Дата конца периода (формат YYYY-MM-DD)',
+        metavar='[YYYY-MM-DD]'
+    )
+
     args, unknown = parser.parse_known_args()
 
+    # Приоритет: позиционный days_ago > --days_ago > даты > 30 дней
     if args.days_ago_pos:
-        return int(args.days_ago_pos)
+        return int(args.days_ago_pos), None, None
     elif args.days_ago:
-        return args.days_ago
+        return args.days_ago, None, None
+    elif args.start_date or args.end_date:
+        # Вернем None для days_ago, но либо дату-строку (или None), если указана хотя бы одна дата
+        return None, args.start_date, args.end_date
     else:
-        return 30
+        # По умолчанию 30
+        return 30, None, None
