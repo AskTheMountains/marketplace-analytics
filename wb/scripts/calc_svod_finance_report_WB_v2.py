@@ -15,7 +15,7 @@ from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
-
+pd.set_option('future.no_silent_downcasting', True)
 pd.options.mode.chained_assignment = None  # default='warn'
 
 # Вспомогательные функции
@@ -30,7 +30,7 @@ from wb.scripts.uploadDataFromWB import getOrdersWB
 from wb.scripts.uploadDataPerformanceWB import get_costs_history
 from wb.scripts.wb_generic_functions import get_company_stats_v2
 from wb.scripts.wb_generic_functions import \
-    load_full_report as upload_realization_report_new
+    upload_realization_report as upload_realization_report_new
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -1211,7 +1211,10 @@ def union_sku_paid_storage_acceptance_costs(df_sku_and_paid_storage_stats, resul
 def get_promotion_dates(df_realization_report_date_filtered):
     # Ищем даты расходов по ВБ Продвижению
     promotion_dates = df_realization_report_date_filtered.loc[
-        df_realization_report_date_filtered['Обоснование штрафов и доплат'] == 'Оказание услуг «ВБ.Продвижение»',
+        df_realization_report_date_filtered['Обоснование штрафов и доплат'].isin([
+            'Оказание услуг «ВБ.Продвижение»',
+            'Оказание услуг «WB Продвижение»'
+            ]),
         ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Итого руб']
     ]
     if not promotion_dates.empty:
@@ -1934,10 +1937,10 @@ def add_data_from_catalog(result_other_costs):
 # Функция расчета финальных расходов
 def calc_final_costs(df_all_costs_stats_with_catalog):
     # Создание копии для избежания изменений в оригинальном df
-    df_all_costs_stats_ = df_all_costs_stats_with_catalog.copy()
+    df_final_costs = df_all_costs_stats_with_catalog.copy()
     # Колонка, от которой будем считать маржинальность в %
-    marg_sales_column = df_all_costs_stats_['Продажи минус возвраты руб без СПП']
-    marg_sales_amount_column = df_all_costs_stats_['Продажи минус возвраты шт']
+    marg_sales_column = pd.to_numeric(df_final_costs['Продажи минус возвраты руб с СПП'], errors='coerce')
+    marg_sales_amount_column = df_final_costs['Продажи минус возвраты шт']
     # Колонки, по которым нужно поменять знаки расходов с + на -
     change_sign_columns = [
         'Возмещение издержек по перевозке',
@@ -1947,8 +1950,8 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     ]
     # Изменяем знак некоторых расходов с + на -
     for col in change_sign_columns:
-        if col in df_all_costs_stats_.columns:
-            df_all_costs_stats_[col] = df_all_costs_stats_[col] * (-1)
+        if col in df_final_costs.columns:
+            df_final_costs[col] = df_final_costs[col] * (-1)
 
     # Считаем все расходы на рекламные кампании
     promotion_columns = [
@@ -1959,25 +1962,25 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Стоимость участия в программе лояльности',
     ]
     # Находим колонки по рекламе, которые реально есть в отчете реализации
-    existing_promotion_columns = [col for col in df_all_costs_stats_.columns if col in promotion_columns]
+    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
     if existing_promotion_columns:
-        df_all_costs_stats_['Затраты на рекламу руб'] = df_all_costs_stats_[existing_promotion_columns].sum(axis=1)
+        df_final_costs['Затраты на рекламу руб'] = df_final_costs[existing_promotion_columns].sum(axis=1)
     else:
-        df_all_costs_stats_['Затраты на рекламу руб'] = 0.0
+        df_final_costs['Затраты на рекламу руб'] = 0.0
 
     # Считаем % по рекламным расходам
-    df_all_costs_stats_['% Затрат на рекламные кампании'] = (
+    df_final_costs['% Затрат на рекламные кампании'] = (
         abs(
-            df_all_costs_stats_['Затраты на рекламу руб'] /
+            df_final_costs['Затраты на рекламу руб'] /
             marg_sales_column
             * 100
         )
     )
     # Переносим % по рекламным расходам до маржинальности
-    df_all_costs_stats_ = move_columns(
-        df_all_costs_stats_,
+    df_final_costs = move_columns(
+        df_final_costs,
         ['Затраты на рекламу руб', '% Затрат на рекламные кампании'],
-        position=df_all_costs_stats_.columns.shape[0] - 2,
+        position=df_final_costs.columns.shape[0] - 2,
         insert_type='before'
     )
 
@@ -2004,6 +2007,8 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         '% Затрат на рекламные кампании',
         'Маржинальность руб',
         'Маржинальность %',
+        'Маржа от себестоимости %',
+        'Маржа по артикулу %',
         'Маржинальность на ед. товара руб',
         'Себестоимость',
         # 'Вознаграждение WB без НДС',
@@ -2011,38 +2016,82 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Комиссия WB, %',
         # 'Платное хранение (отдельный отчет)',
         # 'Платная приемка (отдельный отчет)'
+        'Приход денег на РС'
         ] + promotion_columns
     )
 
     # Расчет маржинальности в рублях
-    df_all_costs_stats_['Маржинальность руб'] = marg_sales_column
-    for col in df_all_costs_stats_.columns[~df_all_costs_stats_.columns.isin(columns_to_exclude_from_final_costs)]:
-        df_all_costs_stats_['Маржинальность руб'] = df_all_costs_stats_['Маржинальность руб'] - df_all_costs_stats_[col]
-
+    df_final_costs['Маржинальность руб'] = marg_sales_column
+    for col in df_final_costs.columns[~df_final_costs.columns.isin(columns_to_exclude_from_final_costs)]:
+        df_final_costs['Маржинальность руб'] = (
+            df_final_costs['Маржинальность руб'] - df_final_costs[col].fillna(0)
+        )
+    # Приход денег на РС (как маржинальность, но не учитываем Себестоимость * Факт продаж)
+    df_final_costs['Приход денег на РС'] = (
+        df_final_costs['Маржинальность руб']
+        + df_final_costs['Себестоимость * Факт продаж'].fillna(0)
+    )
     # Расчет Маржинальности в процентах
     # Там, где нет себестоимости, маржинальность не считаем
-    df_all_costs_stats_.loc[df_all_costs_stats_['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
-    df_all_costs_stats_['Маржинальность %'] = df_all_costs_stats_['Маржинальность руб'] / marg_sales_column * 100
-
+    df_final_costs.loc[df_final_costs['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
+    df_final_costs['Маржинальность %'] = np.where(
+        (marg_sales_column != 0) & (~np.isnan(marg_sales_column)),
+        df_final_costs['Маржинальность руб'] / marg_sales_column * 100,
+        np.nan
+    )
     # Расчет маржинальности на единицу товара
-    df_all_costs_stats_['Маржинальность на ед. товара руб'] = (
-        df_all_costs_stats_['Маржинальность руб'] /
-        marg_sales_amount_column
+    df_final_costs['Маржинальность на ед. товара руб'] = np.where(
+        (marg_sales_amount_column != 0) & (~pd.isna(marg_sales_amount_column)),
+        df_final_costs['Маржинальность руб'] / marg_sales_amount_column,
+        np.nan
     )
-    # Там, где маржинальность в рублях > 0, у маржинальности на единицу товара так же будет знак "+"
-    # в ином случае "-"
-    df_all_costs_stats_['Маржинальность на ед. товара руб'] = np.where(
-        df_all_costs_stats_['Маржинальность руб'] < 0,
-        (-1) * abs(df_all_costs_stats_['Маржинальность на ед. товара руб']),
-        abs(df_all_costs_stats_['Маржинальность на ед. товара руб'])
+    # Маржинальность от себестоимости (%)
+    df_final_costs['Маржа от себестоимости %'] = (
+        df_final_costs['Маржинальность руб']
+        / df_final_costs['Себестоимость * Факт продаж']
+        * 100
     )
+    # Считаем маржинальность по артикулу
+    sales_rub_mean_by_article = (
+        df_final_costs
+        .groupby(['Артикул WB'])
+        ['Продажи руб без СПП'].transform('mean')
+    )
+    marg_rub_mean_by_article = (
+        df_final_costs
+        .groupby(['Артикул WB'])
+        ['Маржинальность руб'].transform('mean')
+    )
+    df_final_costs['Маржа по артикулу %'] = (
+        marg_rub_mean_by_article / sales_rub_mean_by_article * 100
+    )
+    # У некоторых колонок с маржинальностью меняем знак по принципу:
+    # там, где маржинальность в рублях > 0, знак "+  в ином случае "-"
+    for col in ['Маржинальность на ед. товара руб']:
+        df_final_costs[col] = np.where(
+            df_final_costs['Маржинальность руб'] < 0,
+            (-1) * abs(df_final_costs[col]),
+            abs(df_final_costs[col])
+        )
+    for col in ['Маржа от себестоимости %']:
+        df_final_costs[col] = np.where(
+            df_final_costs['Себестоимость * Факт продаж'] <= 0,
+            (-1) * abs(df_final_costs[col]),
+            abs(df_final_costs[col])
+        )
 
     # Меняем inf на nan в маржинальностях
-    for col in ['Маржинальность %', 'Маржинальность на ед. товара руб']:
-        df_all_costs_stats_[col] = df_all_costs_stats_[col].replace([-np.inf, np.inf], np.nan)
+    marg_columns = [
+        'Маржинальность %',
+        'Маржинальность на ед. товара руб',
+        'Маржа от себестоимости %',
+        'Маржа по артикулу %',
+    ]
+    for col in marg_columns:
+        df_final_costs[col] = df_final_costs[col].replace([-np.inf, np.inf], np.nan)
 
 
-    return df_all_costs_stats_, promotion_columns, columns_to_exclude_from_final_costs
+    return df_final_costs, promotion_columns, columns_to_exclude_from_final_costs
 
 
 # Функция расчета сводной таблицы по всем расходам
@@ -2062,7 +2111,8 @@ def create_svod_by_operations(df_final_costs):
         # 'Все затраты (руб)',
         # 'Маржинальность руб',
         'Маржинальность %',
-        'Маржинальность на ед. товара',
+        'Маржа по артикулу %',
+        # 'Маржинальность на ед. товара',
         '% Затрат на рекламные кампании',
     ]
     # Создаем копию для избежения изменений в исходном df
@@ -2074,6 +2124,7 @@ def create_svod_by_operations(df_final_costs):
         df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
         + df_final_costs_by_operation['Вознаграждение WB без НДС']
     )
+
     # Считаем суммы по остальным столбцам
     df_final_costs_by_operation = (
         df_final_costs_by_operation
@@ -2084,15 +2135,34 @@ def create_svod_by_operations(df_final_costs):
         ]
         # Считаем суммы по остальным
         .sum()
-        # Достаем столбцы из index
-        .reset_index()
-        # Переименовываем колонки
-        .rename(columns={
-            'index': 'Тип операции',
-            0: 'Итого руб'
-        })
-
+        # Переворачиваем расходы в столбцы
+        .to_frame()
+        .T
+        .reset_index(drop=True)
+        # # Достаем столбцы из index
+        # .reset_index()
+        # # Переименовываем колонки
+        # .rename(columns={
+        #     'index': 'Тип операции',
+        #     0: 'Итого руб'
+        # })
     )
+    # Пересчитываем некоторые столбцы
+    df_final_costs_by_operation['Вознаграждение WB без НДС'] = (
+        df_final_costs_by_operation['Продажи минус возвраты руб с СПП'] -
+        df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
+        + df_final_costs_by_operation['Вознаграждение WB без НДС']
+    )
+    df_final_costs_by_operation['Маржинальность на ед. товара'] = (
+        df_final_costs_by_operation['Маржинальность руб']
+        / df_final_costs_by_operation['Продажи минус возвраты шт']
+    )
+    # Делаем расходы снова в строках
+    df_final_costs_by_operation = (
+        df_final_costs_by_operation
+        .melt(var_name='Тип операции', value_name='Итого руб')
+    )
+
     # Считаем сумму, от которой будем считать процент
     sum_columns = [
         'Продажи минус возвраты руб с СПП',
@@ -2232,7 +2302,7 @@ def format_excel(
     end_row = final_ws.max_row  # Последняя строка с данными в финальной таблице
 
     # Колонка продаж минус возвратов
-    sales_minus_returns_col = 'Продажи минус возвраты руб без СПП'
+    sales_minus_returns_col = 'Продажи минус возвраты руб с СПП'
     sales_minus_returns_amount_col = 'Продажи минус возвраты шт'
 
     for row in range(start_row, end_row + 1):
@@ -2275,6 +2345,29 @@ def format_excel(
             f'=IFERROR(ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}), "")'
         )
         final_ws[f"{col_map['Маржинальность на ед. товара руб']}{row}"].value = formula_na_ed
+
+        # --- Формула: "Маржа от себестоимости %" (IFERROR)
+        cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
+        cell_cost_fact = f"{col_map['Себестоимость * Факт продаж']}{row}"
+
+        formula_margin_from_cost = (
+            f'=IFERROR(IF({cell_cost_fact}<=0, -1*ABS({cell_marg_rub}/{cell_cost_fact}*100), ABS({cell_marg_rub}/{cell_cost_fact}*100)), "")'
+        )
+        final_ws[f"{col_map['Маржа от себестоимости %']}{row}"].value = formula_margin_from_cost
+
+        # --- Формула: "Приход денег на РС"
+        # Для "Приход денег на РС" исключаем себестоимость * факт продаж:
+        prihod_cols = [
+            col for col in cost_columns if col != 'Себестоимость * Факт продаж'
+        ]
+        prihod_base_formula = (
+            f"{base}-" + f"-".join(f"{col_map[col]}{row}" for col in prihod_cols)
+            if prihod_cols else base
+        )
+        prihod_rs_formula = (
+            f'=IFERROR({prihod_base_formula}, "")'
+        )
+        final_ws[f"{col_map['Приход денег на РС']}{row}"].value = prihod_rs_formula
 
     # --- Форматирование всех листов (без формул) ---
     # Задаем стиль границы
@@ -2347,8 +2440,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-09-01',
-        date_end='2025-09-30'
+        date_start = '2025-10-01',
+        date_end='2025-10-19'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
