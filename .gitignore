@@ -174,4 +174,4 @@ wb/scripts/Склады поставки для группировки.xlsx
 mkdocs.yml
 docs/
 docs-mkdocs/
-application/
+# application/
