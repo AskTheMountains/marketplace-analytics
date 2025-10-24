@@ -19,6 +19,7 @@ BASE_DIR = Path(__file__).parent.parent
 
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
+from ozon.scripts.ozon_generic_functions import msk_boundary_to_utc
 from ozon.scripts.command_args_parser import cli_dates
 # Файл с настройками и номером клиента
 # from options import settings, client_number, headers
@@ -446,6 +447,7 @@ def get_company_statistics(
         df_input_companies_parsed,
         upload_path,
         auth_token,
+        task_id=None,
 ):
     # Проверяем, есть ли кампании, по которым не загружена статистика
     df_missing_companies = get_missing_companies(
@@ -472,7 +474,7 @@ def get_company_statistics(
                 companies_stats_dir=upload_path,
                 date_from=date_from,
                 date_to=date_to,
-                task_id=None,
+                task_id=task_id,
             )
     else:
         logger.info("Файлы по всем кампаниями уже загружены")
@@ -637,22 +639,21 @@ def get_promo_orders(
         upload_path,
         auth_token,
 ):
-    # Получаем ожидаемые даты в имени файла
+    # Получаем даты начала и окончания выгрузки отчета
+    date_start = df_date_range['date_start'].iloc[0]
+    date_end = df_date_range['date_end'].iloc[0]
+    # Переводим даты в часовой пояс UTC
+    date_start_msk = msk_boundary_to_utc(date_start)
+    date_end_msk = msk_boundary_to_utc(date_end, True)
+    # Переводим дату в формат, в котором они будут в имени файла
     date_start_file = (
-        pd.to_datetime(
-            df_date_range['date_start']
-            .iloc[0]
-        )
+        pd.to_datetime(date_start)
+        .tz_localize(None)
         .strftime('%d.%m.%Y')
     )
     date_end_file = (
-        (
-                pd.to_datetime(
-                df_date_range['date_end']
-                .iloc[0]
-            )
-            + timedelta(days=1)
-        )
+        pd.to_datetime(date_end)
+        .tz_localize(None)
         .strftime('%d.%m.%Y')
     )
     # Формируем имя ожидаемого файла с отчетом
@@ -667,8 +668,8 @@ def get_promo_orders(
         date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='orders')
         get_search_promo_orders(
             auth_token,
-            date_start_performance,
-            date_end_performance,
+            date_start_msk,
+            date_end_msk,
             upload_path,
         )
     else:
@@ -2121,6 +2122,7 @@ def create_campaigns_report(
         input_companies,
         upload_path,
         date_campaign_report = str(date.today()),
+        task_id=None,
         to_save=True,
         delete_files=False,
 ):
@@ -2153,6 +2155,7 @@ def create_campaigns_report(
         df_input_companies_parsed,
         upload_path,
         auth_token,
+        task_id=task_id
     )
     # Выгружаем отчет по товарам с оплатой за заказ
     payment_orders_report_file_name = get_promo_orders(
@@ -2240,7 +2243,7 @@ if __name__ == '__main__':
         start_date=dates_cli["start_date"],
         end_date=dates_cli["end_date"],
         # start_date='2025-09-01',
-        # end_date='2025-09-28'
+        # end_date='2025-09-30'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(promotion_companies, df_date_range)
@@ -2283,6 +2286,7 @@ if __name__ == '__main__':
         df_input_companies_parsed,
         upload_path,
         auth_token,
+        task_id=None,
     )
     # Выгружаем отчет по товарам с оплатой за заказ
     payment_orders_report_file_name = get_promo_orders(

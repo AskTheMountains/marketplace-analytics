@@ -10,7 +10,7 @@ import pandas as pd
 from loguru import logger
 from openpyxl import load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
@@ -187,6 +187,7 @@ def create_campaigns_report(
         headers,
         client_id_performance,
         client_secret_performance,
+        task_id=None,
         to_save=True,
         delete_files=False,
 
@@ -206,6 +207,7 @@ def create_campaigns_report(
         df_dates,
         input_companies,
         upload_path_statistic,
+        task_id=task_id,
         to_save=to_save,
         delete_files=delete_files
     )
@@ -397,6 +399,78 @@ def create_client_svod_excel(df_client_svod, date_report):
 
     return df_client_excel_svod
 
+
+# Функция форматирования столбца с номером РК
+def format_campaigns_columns(ws, df):
+    # 1. Список допустимых имён колонок кампаний
+    campaign_column_names = [
+        "Номер кампании", "номер кампании", "ID Кампании", "Id кампании",
+        "id кампании", "ID campaign", "Campaign ID"
+    ]
+    # 2. Палитра из 15 неярких расцветок
+    color_palette = [
+        "FFB3C6", "FFE6E6", "B6E2D3", "B7D3DF", "DEEAF6",
+        "F7E1D7", "F5F8C4", "D4E6A5", "A2D5AB", "F9D6C1",
+        "F5B5FC", "D9D9D9", "ABC4FF", "C6F1E7", "EEE3CB"
+    ]
+
+    # 3. Находим имена колонок кампании в df
+    df_campaign_cols = [
+        col for col in df.columns if any(col.strip().lower() == name.strip().lower() for name in campaign_column_names)
+    ]
+    if not df_campaign_cols:
+        return  # Нет нужных колонок — ничего делать не надо
+
+    # 4. Получаем все уникальные значения кампании
+    unique_campaigns = []
+    for col in df_campaign_cols:
+        unique_campaigns.extend(df[col].dropna().unique())
+    unique_campaigns = list(dict.fromkeys(unique_campaigns))
+
+    # 5. Цвета кампаниям (циклично)
+    campaign_to_color = {
+        val: color_palette[i % len(color_palette)]
+        for i, val in enumerate(unique_campaigns)
+    }
+
+    # 6. Индексы колонок кампании в Excel (по строке заголовков листа)
+    header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    campaign_col_idxs = [
+        idx for idx, header in enumerate(header_cells) if header in df_campaign_cols
+    ]
+    if not campaign_col_idxs:
+        return
+
+    # 7. Форматируем ячейки
+    for idx in campaign_col_idxs:
+        prev_camp = None
+        for excel_row_idx, row in enumerate(
+            ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column), start=2
+        ):
+            cell = row[idx]
+            camp = cell.value
+            # Заливаем цвет
+            if camp in campaign_to_color:
+                cell.fill = PatternFill(
+                    start_color=campaign_to_color[camp],
+                    end_color=campaign_to_color[camp],
+                    fill_type='solid'
+                )
+            # Проверяем переход к новой кампании
+            is_last_row = (excel_row_idx == ws.max_row)
+            # Доступ к значению кампании в следующей строке (если есть)
+            next_camp = ws[excel_row_idx + 1][idx].value if not is_last_row else None
+            if camp != next_camp:
+                # Последняя строка блока — нижняя граница жирная у всей строки
+                for c in row:
+                    c.border = Border(
+                        left=c.border.left,
+                        right=c.border.right,
+                        top=c.border.top,
+                        bottom=Side(style='thick')
+                    )
+
+
 # Функция сохранения и форматирования excel
 def save_and_format_excel(
         df_client_excel_svod,
@@ -503,15 +577,18 @@ def save_and_format_excel(
         # Значок фильтра на столбцы
         ws.auto_filter.ref = ws.dimensions
 
+    # Форматируем столбец с номером РК
+    format_campaigns_columns(ws, df_campaigns_report)
+
 
     # Форматирование для листа со сводной таблицей по клиенту
-    ws = wb[sheet_name_client_svod]
+    rk_svod_ws = wb[sheet_name_client_svod]
 
     # ---  Форматирование процентных колонок ---
     for col_name in percent_cols:
         col_idx = list(df_client_excel_svod.columns).index(col_name) + 1  # Excel columns start from 1
-        for row in range(2, ws.max_row + 1):  # пропустить заголовки
-            cell = ws.cell(row=row, column=col_idx)
+        for row in range(2, rk_svod_ws.max_row + 1):  # пропустить заголовки
+            cell = rk_svod_ws.cell(row=row, column=col_idx)
             if cell.value:
                 cell.value = cell.value * 0.01 # Делим на 100 для корректного отображения %
             cell.number_format = '0.00%'  # формат: проценты с 2 знаками
@@ -520,9 +597,9 @@ def save_and_format_excel(
     gradient_cols = ['ДРР, %', 'ДРР % по размеру']
     for col_name in gradient_cols:
         col_idx = list(df_client_excel_svod.columns).index(col_name) + 1
-        col_letter = ws.cell(row=1, column=col_idx).column_letter
+        col_letter = rk_svod_ws.cell(row=1, column=col_idx).column_letter
         # Диапазон от второй строки до конца в данном столбце (без заголовков)
-        cell_range = f"{col_letter}2:{col_letter}{ws.max_row}"
+        cell_range = f"{col_letter}2:{col_letter}{rk_svod_ws.max_row}"
 
         # Устанавливаем цвет: min (зеленый), max (оранжевый), середина (по желанию, желтый)
         rule = ColorScaleRule(
@@ -530,8 +607,10 @@ def save_and_format_excel(
             mid_type='percentile', mid_value=50, mid_color='FFEB84',  # Желтый
             end_type='max', end_color='E06967',       # Красный
         )
-        ws.conditional_formatting.add(cell_range, rule)
+        rk_svod_ws.conditional_formatting.add(cell_range, rule)
 
+    # Форматируем столбец с номером РК
+    # format_campaigns_columns(rk_svod_ws, df_client_excel_svod)
 
     # Сохранение обновленного файла
     wb.save(file_name_report)
@@ -576,6 +655,7 @@ if __name__ == '__main__':
         headers,
         client_id_performance,
         client_secret_performance,
+        # task_id='',
         to_save=True,
         delete_files=False
     )

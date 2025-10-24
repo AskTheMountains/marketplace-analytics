@@ -234,6 +234,7 @@ def create_campaigns_report(
         headers,
         client_id_performance,
         client_secret_performance,
+        task_id=None,
         to_save=True,
         delete_files=False,
 
@@ -253,6 +254,7 @@ def create_campaigns_report(
         df_dates,
         input_companies,
         upload_path_statistic,
+        task_id=task_id,
         to_save=to_save,
         delete_files=delete_files
     )
@@ -841,6 +843,7 @@ if __name__ == '__main__':
         headers,
         client_id_performance,
         client_secret_performance,
+        # task_id='',
         to_save=True,
         delete_files=False
     )
