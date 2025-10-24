@@ -14,12 +14,16 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 # Доп. функции
 from generic_functions import move_columns
+from wb.scripts.wb_generic_functions import upload_realization_report
 from wb.scripts.calc_svod_finance_report_WB_v2 import (  # filter_report_dates
-    add_new_columns, rename_report_columns, upload_realization_report)
+    add_new_columns, rename_report_columns)
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_dates
 # Файл с некоторыми константами
-from wb.scripts.constants import client_name, headers, marketplace_dir_name
+from wb.scripts.constants import (
+    client_name, headers, marketplace_dir_name,
+    finance_report_price_column as sales_column
+)
 # Функции выгрузки данных по АПИ, которые уже готовы
 from wb.scripts.uploadDataFromWB import getOrdersWB, getSalesWB
 
@@ -164,8 +168,8 @@ def filter_report_dates(date_start, date_end, df_realization_report_new_columns,
 # Функция выгрузки отчета о реализации
 def get_realization_report(headers, date_start, date_end):
     # Переводим даты в нужный формат
-    date_start_ = datetime.fromisoformat(date_start).strftime('%Y-%m-%dT%H:%M:%S')
-    date_end_ = datetime.fromisoformat(date_end).strftime('%Y-%m-%dT%H:%M:%S')
+    date_start_ = datetime.fromisoformat(date_start).strftime('%Y-%m-%d')
+    date_end_ = datetime.fromisoformat(date_end).strftime('%Y-%m-%d')
     # Получение отчета о реализации по АПИ
     df_realization_report = upload_realization_report(headers, date_start_, date_end_)
     # Переименование колонок отчета о реализации в русские названия
@@ -173,9 +177,12 @@ def get_realization_report(headers, date_start, date_end):
     # Расчет некоторых дополнительных колонок, которые будут участвовать в расчетах
     df_realization_report_new_columns = add_new_columns(df_realization_report_renamed)
     # Фильтр по переходным неделям
-    df_realization_report_date_filtered = filter_report_dates(date_start_, date_end_,
-                                                            df_realization_report_new_columns,
-                                                            filter_dates=True)
+    df_realization_report_date_filtered = filter_report_dates(
+        date_start_, date_end_,
+        df_realization_report_new_columns,
+        filter_dates=True
+    )
+
     return df_realization_report_date_filtered
 
 
@@ -207,10 +214,7 @@ def define_sales_column(result_sales_source, client_name):
     source = result_sales_source['source']
     # Если источник - отчет о реализации
     if source == 'realization_report':
-        if client_name in ['SENS', 'SENS_IP', 'KU_And_KU', 'Soyuz', 'TRIBE', 'Orsk_Combinat']:
-            price_column = 'Цена розничная с учетом согласованной скидки'
-        else:
-            price_column = 'Сумма продаж (возвратов)'
+        price_column = sales_column
     # Если источник - отчет АПИ
     elif source == 'api_report':
         if client_name in ['SENS', 'SENS_IP', 'KU_And_KU', 'Soyuz', 'TRIBE', 'Orsk_Combinat']:
