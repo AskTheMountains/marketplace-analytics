@@ -22,7 +22,7 @@ from ozon.scripts.command_args_parser import cli_actions
 from ozon.scripts.constants import (
     catalog_action_columns, client_name,
     headers, headers_wb, marketplace_dir_name,
-    net_cost_koef, svod_actions_cols, path_download_actions
+    net_cost_koef, svod_actions_cols, default_path_download_actions
 )
 # Функция форматирования excel с планом акций, отдельный скрипт
 from ozon.scripts.format_svod_actions import format_excel_actions
@@ -38,39 +38,55 @@ parser = argparse.ArgumentParser(
         "python.exe -m ozon.scripts.create_actions_svod_v2 "
         "[YYYY-MM-DD] [--ref_dt YYYY-MM-DD] "
         "[-c N | --client N] "
-        "[--actions_file_name ACTIONS_FILE]"
+        "[--file FILEPATH]"
     ),
     epilog=(
         "Примеры:\n\n"
         "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01\n\n"
         "  python.exe -m ozon.scripts.create_actions_svod_v2 --ref_dt 2025-01-01 --client 2\n\n"
         "  python.exe -m ozon.scripts.create_actions_svod_v2 2025-01-01 -c 3\n\n"
-        "  python.exe -m ozon.scripts.create_actions_svod_v2 --file products-1977747 (29).xlsx\n\n"
-        "  python.exe -m ozon.scripts.create_actions_svod_v2 --client 5 -f products-1977747 (29).xlsx"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --file \"products-1977747 (29).xlsx\"\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --file \"d:/path to/folder/название.xlsx\"\n\n"
+        "  python.exe -m ozon.scripts.create_actions_svod_v2 --client 5 -f \"products-1977747 (29).xlsx\"\n\n"
+        "Если путь или имя файла содержит пробелы, обязательно заключайте его в кавычки!\n"
+        "(например: --file \"actions with spaces.xlsx\")"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
 
-# # Директория файлов с данными по акциям
-# path_download_actions = (
-#     Path('d:/')
-#     / 'artem'
-#     / 'downloads'
-# )
-
-# Считываем аргументы командной строки
-cli_params = cli_actions(parser)
-# Имя файла с данными по акциям (с расширением)
-actions_file_name = cli_params["actions_file_name"]
+# Имя файла с данными по акциям
 # actions_file_name = 'products-1977747 (29).xlsx'
+actions_file_name = None
+
+# Функция парсинга аргументов командной строки пути к файлу по акциям
+def get_actions_file_path(arg_path: str | None, default_dir: Path, default_name: str | None) -> Path | None:
+    """
+    Возвращает итоговый Path к файлу акций по логике:
+      - Если передан arg_path (через --file), возвращает абсолютный путь или default_dir/относительный путь.
+      - Если не передан arg_path и default_name не задан, возвращает None.
+      - Если не передан arg_path, но задан default_name, возвращает default_dir / default_name.
+    """
+    if arg_path:  # Аргумент командной строки был передан
+        file_path = Path(arg_path)
+        if file_path.is_absolute():
+            # Передан абсолютный путь — используем как есть
+            return file_path
+        else:
+            # Передано имя или относительный путь — склеиваем с default_dir
+            return default_dir / file_path
+    else:
+        # Путь не задан — если имя не указано, возвращаем None
+        if not default_name:
+            return None
+        return default_dir / default_name
 
 # Функция чтения файла с акциями "Бустинг"
-def read_action_file(path_download_actions, actions_file_name):
+def read_action_file(final_actions_path):
     # Добавляем название файла к пути
-    filepath_download_actions = path_download_actions / actions_file_name
+    filepath_download_actions = final_actions_path
     # Считываем файл по акциям в бустинге
     df_actions_from_file = pd.read_excel(
-        filepath_download_actions,
+        final_actions_path,
         sheet_name=1,
         skiprows=1
         )
@@ -220,13 +236,12 @@ def add_data_from_actions_file(
        df_action_list_api,
        df_products_candidates_api,
        df_products_in_actions_api,
-       path_download_actions,
-       actions_file_name=None,
+       final_actions_path=None,
 ):
     # Если задан путь файла с акциями из ЛК, то добавляем данные из него
-    if actions_file_name is not None:
+    if final_actions_path is not None:
         # Считываем данные по акциям из файла
-        df_actions_from_file = read_action_file(path_download_actions, actions_file_name)
+        df_actions_from_file = read_action_file(final_actions_path)
         # Обрабатываем файл по акциям
         action_list_from_file, df_actions_from_file_processed = process_action_file(df_actions_from_file)
         # Объединяем список акций из АПИ и из файла
@@ -1172,7 +1187,7 @@ def create_svod_for_excel(
         date_report_created,
         date_start,
         date_end,
-        actions_file_name,
+        final_actions_path,
     ):
     # Создаем копию для избежания изменений в оригинальном df
     svod_actions_excel = svod_actions.copy()
@@ -1190,7 +1205,7 @@ def create_svod_for_excel(
     # Нужные колонки для свода
     svod_cols = svod_actions_cols
     # Добавляем колонку с ценой по акциям в бустинге
-    if actions_file_name is not None:
+    if final_actions_path is not None:
         svod_cols = add_element_to_list(
             svod_cols,
             'Цена после скидки',
@@ -1214,12 +1229,13 @@ def create_svod_for_excel(
     svod_actions_excel = svod_actions_excel[svod_cols]
 
     # Переименование некоторых колонок для соответствия шаблону
-    svod_actions_excel = svod_actions_excel.rename(columns={"Заказы": f"ЗАКАЗЫ с {date_start.strftime('%d.%m')} по {date_end.strftime('%d.%m')}",
-                                                      "Продажи": f"ПРОДАЖИ с {date_start.strftime('%d.%m')} по {date_end.strftime('%d.%m')}",
-                                                      "Остатки": f"Ост {date_report_created_.strftime('%d.%m')}",
-                                                      "Остатки_fbs": f"Ост fbs {date_report_created_.strftime('%d.%m')}",
-                                                      "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ": "Ожидаемое поступление"
-                                                      })
+    svod_actions_excel = svod_actions_excel.rename(columns={
+        "Заказы": f"ЗАКАЗЫ с {date_start.strftime('%d.%m')} по {date_end.strftime('%d.%m')}",
+        "Продажи": f"ПРОДАЖИ с {date_start.strftime('%d.%m')} по {date_end.strftime('%d.%m')}",
+        "Остатки": f"Ост {date_report_created_.strftime('%d.%m')}",
+        "Остатки_fbs": f"Ост fbs {date_report_created_.strftime('%d.%m')}",
+        "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ": "Ожидаемое поступление"
+    })
 
     return svod_actions_excel
 
@@ -1228,7 +1244,7 @@ def save_excel(
         svod_actions_excel,
         df_action_list,
         date_report_created,
-        actions_file_name,
+        final_actions_path,
     ):
     # Переименовываем некоторые колонки для вставки на лист списка акций
     df_action_list_excel = df_action_list.rename(columns={
@@ -1247,7 +1263,7 @@ def save_excel(
     # Создаем директорию, если её нет
     path_actions_svod.mkdir(parents=True, exist_ok=True)
     # Определяем имя файла для сохранения
-    if actions_file_name is not None:
+    if final_actions_path is not None:
         file_name_actions_excel = (
             path_actions_svod
             / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
@@ -1280,11 +1296,21 @@ def save_excel(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
+
+    # Считываем аргументы командной строки
+    cli_params = cli_actions(parser)
+    arg_actions_file_path = cli_params.get("actions_file_path")
+    # Допустим, actions_file_path — это результат из cli_actions(parser)
+    final_actions_path = get_actions_file_path(
+        arg_actions_file_path,
+        default_path_download_actions,
+        actions_file_name
+    )
     # Дата, за которую были выгружены данные
     # date_report_created = '2025-09-02'
     date_report_created = cli_params["reference_date"]
 
-    logger.info(f"Calculating svod actions for client {client_name} for date {date_report_created}")
+    logger.info(f"Creating actions report for client {client_name} for date {date_report_created}")
     # Получение каталога
     # getOzonProduct(headers)
     # catalog = get_catalog(date_report_created, headers)
@@ -1318,8 +1344,7 @@ if __name__ == '__main__':
        df_action_list_api,
        df_products_candidates_api,
        df_products_in_actions_api,
-       path_download_actions,
-       actions_file_name=actions_file_name,
+       final_actions_path,
     )
 
     # Расчет столбцов для отдельных акций
@@ -1337,14 +1362,14 @@ if __name__ == '__main__':
         date_report_created,
         report_dates['date_start_file'][0],
         report_dates['date_end_file'][0],
-        actions_file_name,
+        final_actions_path,
     )
     # Сохранение в excel
     save_excel(
         svod_actions_excel,
         df_action_list_all,
         date_report_created,
-        actions_file_name,
+        final_actions_path,
     )
     # Форматирование файла excel
     format_excel_actions(
@@ -1353,7 +1378,7 @@ if __name__ == '__main__':
         date_report_created,
         report_dates['date_start_file'][0],
         report_dates['date_end_file'][0],
-        actions_file_name
+        final_actions_path
     )
 
 # %%
