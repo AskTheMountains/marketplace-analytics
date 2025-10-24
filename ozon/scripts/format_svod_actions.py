@@ -45,24 +45,24 @@ def format_excel_actions(
         date_report_created,
         date_start,
         date_end,
-        actions_file_name,
+        final_actions_path,
 ):
     logger.info(f"Formatting action svod for client {client_name}")
     # Имя файла с акциями
-    if actions_file_name is not None:
+    if final_actions_path is not None:
         file_name_actions = (
             marketplace_dir_name
             / "Clients" / client_name / "Actions"
-            / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon"
         )
     else:
         file_name_actions = (
             marketplace_dir_name
             / "Clients" / client_name / "Actions"
-            / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
+            / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon"
         )
     # Открываем файл с расчетами Excel
-    wb = openpyxl.load_workbook(file_name_actions)
+    wb = openpyxl.load_workbook(f"{file_name_actions}.xlsx")
     ws = wb['Акции']
 
     # Кол-во строк в df
