@@ -571,7 +571,7 @@ def wildberries_get_report_detail(headers, date_from, date_to, rrdid=0, limit=10
     return response.json()
 
 ## Основная логика (обработка недель, rrd_id и бинарный сплит)
-def load_full_report(headers, date_start, date_end, verbose=False):
+def upload_realization_report(headers, date_start, date_end, verbose=False):
     """
     Выгружает финансовый отчет Wildberries по частям (по недельным окнам, с разбивкой, пагинацией
     по rrd_id и автодроблением, если данных слишком много).
