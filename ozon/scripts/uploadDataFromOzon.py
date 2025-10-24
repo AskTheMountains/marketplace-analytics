@@ -7,6 +7,7 @@ import re
 import time
 from ast import literal_eval
 from datetime import date, datetime, timedelta
+from colorama import Fore, Back, Style, init
 from pathlib import Path
 
 import pandas as pd
@@ -77,19 +78,42 @@ def generateDates(days_ago = 30):
 
 # GPT START ----
 # Функция создания диапазона дат с указанной разницей
-def generate_dates_new(days_ago=30):
-    # Получаем сегодняшнюю дату и округляем к 23:59:59 предыдущих суток
-    end_date = datetime.now()
-    end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=0) - timedelta(days=1)
+def generate_dates_new(days_ago=30, start_date_str=None, end_date_str=None):
+    """
+    Возвращает кортеж из строк начальной и конечной дат в формате ISO8601 с учётом приоритета параметров.
 
-    # Вычисляем начальную дату на 00:00:00
-    start_date = end_date - timedelta(days=days_ago) + timedelta(days=1)
-    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    Приоритет параметров:
+    1. days_ago — если задан, вычисляются даты по количеству дней назад, другие параметры игнорируются.
+    2. start_date_str и/или end_date_str — используются, если days_ago не задан.
+       Если какая-то из дат не указана, подставляются значения по умолчанию:
+           - для end_date_str: сегодня, время 23:59:59
+           - для start_date_str: end_date минус 30 дней, время 00:00:00
+    По умолчанию, если ничего не задано, возвращается диапазон "последние 30 дней".
+    """
+    # Если явно задан days_ago, используем его для расчёта диапазона дат
+    if days_ago is not None:
+        # Конечная дата: вчера, 23:59:59
+        end_date = datetime.now().replace(hour=23, minute=59, second=59, microsecond=0) - timedelta(days=1)
+        # Начальная дата: на days_ago дней раньше end_date, время 00:00:00
+        start_date = end_date - timedelta(days=days_ago) + timedelta(days=1)
+        start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # Если хотя бы одна из дат передана явно, работаем с ними
+        # Конечная дата: используем переданную или по умолчанию сегодня, 23:59:59
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=0)
+        else:
+            end_date = datetime.now().replace(hour=23, minute=59, second=59, microsecond=0)
+        # Начальная дата: используем переданную или по умолчанию минус 30 дней к end_date, 00:00:00
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start_date = end_date - timedelta(days=30)
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Устанавливаем конечную дату на 23:59:59
-    # end_date = start_date + timedelta(days=days_ago) - timedelta(seconds=1)
-
-    # Преобразуем даты в нужный формат
+    # Форматируем полученные даты в строковый вид ISO8601 (UTC с 'Z' на конце)
     start_date_str = start_date.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_date_str = end_date.strftime('%Y-%m-%dT%H:%M:%SZ')
 
@@ -1567,11 +1591,15 @@ if __name__ == '__main__':
     uploaddir_today = create_upload_dir()
 
     # Парсим аргументы командной строки
-    days_ago = cli_days_ago(parser)
+    days_ago, cli_start_date, cli_end_date = cli_days_ago(parser)
 
-    # days_to_process = read_params()
-    # date_start, date_end = generateDates()
-    date_start, date_end = generate_dates_new(days_ago)
+    date_start, date_end = generate_dates_new(
+        days_ago=days_ago,
+        start_date_str=cli_start_date,
+        end_date_str=cli_end_date,
+        # start_date_str = '2025-07-12T23:59:59.000Z'
+        # end_date_str = '2025-06-13T00:00:00.000Z'
+    )
     # date_end = '2025-07-12T23:59:59.000Z'
     # date_start = '2025-06-13T00:00:00.000Z'
     logger.info(f"Upload Files from Ozon for client {client_name} for dates {date_start} - {date_end}")
@@ -1605,4 +1633,4 @@ if __name__ == '__main__':
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
 
     logger.info(f"Uploaded files saved in: {uploaddir_today}")
-    print(f"\033[44m\033[37mDONE UPLOADING FILES FOR CLIENT {client_name}")
+    print(f"{Back.BLUE}{Fore.WHITE}DONE UPLOADING FILES FOR CLIENT {client_name}{Style.RESET_ALL}")
