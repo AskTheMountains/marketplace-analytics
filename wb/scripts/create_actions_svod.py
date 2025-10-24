@@ -128,7 +128,10 @@ def process_product_list(df_products):
     df_products_processed['Артикул_Размер'] = df_products_processed[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
     # Считаем скидку
     df_products_processed['discount'] = np.round(1 - (df_products_processed['discount_price']/df_products_processed['price']), 3)
-
+    # Переименовываем некоторые столбцы
+    df_products_processed = df_products_processed.rename(columns={
+        'nmID': 'Артикул WB'
+    })
     return df_products_processed
 
 
