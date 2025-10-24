@@ -5,15 +5,22 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+import re
 
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 
+# Некоторые константы
+from ozon.scripts.constants import (
+    client_name
+)
 
 # Функции выгрузки данных по API Seller
-from ozon.scripts.uploadDataFromOzon import (getOrders,
-                                             getStockReminders_fbo_v2,
-                                             getStockReminders_fbs)
+from ozon.scripts.uploadDataFromOzon import (
+    getOrders,
+    getStockReminders_fbo_v2,
+    getStockReminders_fbs
+)
 
 
 # Функция выгрузки отчета о заказах
@@ -232,4 +239,81 @@ def get_products_realization_report(headers, year, month):
 
     return df_realization_report
 
-# %%
+
+# Функция перевода дат в часовой пояс UTC (для некоторых методов АПИ)
+def msk_boundary_to_utc(date_str: str, end_of_day: bool = False) -> str:
+    """
+    Принимает:
+    - date_str: 'YYYY-MM-DD' (трактуется как MSK, берёт 00:00:00 если end_of_day=False, 23:59:59 если True)
+    - date_str вида 'YYYY-MM-DDTHH:MM:SS' (трактуется как MSK, время берётся как есть)
+    - date_str вида 'YYYY-MM-DDTHH:MM:SSZ' (в UTC, время берётся как есть — НЕ ДЛЯ КРАЙНИХ ГРАНИЦ!)
+    Возвращает строку UTC: YYYY-MM-DDTHH:MM:SSZ
+    """
+    # Только дата, без времени: трактуем как московские сутки
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
+        time_part = "23:59:59" if end_of_day else "00:00:00"
+        dt_full = f"{date_str} {time_part}"
+        dt = pd.to_datetime(dt_full)
+        dt = dt.tz_localize('Europe/Moscow')
+        dt_utc = dt.tz_convert('UTC')
+        return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Дата и время, без Z
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", date_str):
+        dt = pd.to_datetime(date_str)
+        dt = dt.tz_localize('Europe/Moscow')
+        dt_utc = dt.tz_convert('UTC')
+        return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Дата и время с Z (UTC)
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", date_str):
+        # Уже в UTC — возвращаем как есть, но можем предупредить
+        return date_str
+    else:
+        raise ValueError('Неподдерживаемый формат даты!')
+
+
+# Функция выделения общего артикула размерного ряда
+def get_common_article(df_products: pd.DataFrame) -> pd.Series:
+
+    # Создаем копию для избежания изменений в оригинальном df
+    df_products_processed = df_products.copy()
+    # Переименовываем колонку с артикулом, если называется по-другому
+    df_products_processed = df_products_processed.rename(columns={
+        'Артикул продавца': 'Артикул'
+    })
+
+    if client_name in ['SENS_IP']:
+        # GPT START----
+        # Разделяем с конца через rsplit, берем суффикс
+        last = df_products_processed['Артикул'].str.rsplit('_', n=1, expand=True)
+        # (если нет "_", во второй части будет NaN)
+        if last.shape[1] < 2:
+            last = last.reindex(columns=[0,1], fill_value=None)
+        # Явно приводим второй столбец к строке
+        last[1] = last[1].astype(str).fillna('')
+        # Проверка: есть ли буквы (русские/латинские) во второй части
+        mask = last[1].str.contains(r'[A-Za-zА-Яа-я]', na=False)
+        # Если есть буквы — берем оригинал, иначе — часть до последнего '_'
+        df_products_processed['Артикул размерного ряда'] = (
+            df_products_processed['Артикул']
+            .where(mask, last[0])
+        )
+    elif client_name in ['SENS']:
+        pattern = (
+            r'^(?:'
+            r'([^/\s]+?)(?=[/\s]\d)'             # 1) короткий артикул типа УБ24 перед / или пробелом+число
+            r'|'
+            r'(.+?)(?:(?<=\S)(?=[_\-\s]\d))'      # 2) длинный артикул до разделителя перед размером
+            r')'
+        )
+        df_products_processed['Артикул размерного ряда'] = (
+            df_products_processed['Артикул']
+            .str.extract(pattern, expand=False)   # даст DF из двух колонок
+            .bfill(axis=1)                        # заполняет NaN справа на основе непустой
+            .iloc[:, 0]                           # выбираем полученный артикул
+            .fillna(df_products_processed['Артикул'])  # если не совпало — возвращаем оригинал
+
+        )
+    else:
+        df_products_processed['Артикул размерного ряда'] = df_products_processed['Артикул']
+
+    return df_products_processed['Артикул размерного ряда']
