@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 from datetime import date, datetime, timedelta
+from colorama import Fore, Back, Style, init
 
 import pandas as pd
 import requests
@@ -47,19 +48,41 @@ def generateDates(days_ago = 30):
 
 # GPT START ----
 # Функция создания диапазона дат с указанной разницей
-def generate_dates_new(days_ago=30):
-    # Получаем сегодняшнюю дату и округляем к 23:59:59 предыдущих суток
-    end_date = datetime.now()
-    end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=0) - timedelta(days=1)
+def generate_dates_new(days_ago=30, start_date_str=None, end_date_str=None):
+    """
+    Формирует диапазон дат
+    Приоритет параметров:
+    1. days_ago — если указан, вычисляем диапазон дней (от end_date минус days_ago к end_date), игнорируя start_date_str и end_date_str.
+    2. start_date_str и/или end_date_str — используются, если days_ago не задан (оба параметра могут быть заданы частично).
+       По умолчанию:
+           - end_date_str: сегодняшняя дата, 23:59:59
+           - start_date_str: end_date минус 30 дней, 00:00:00
+    Возвращает кортеж из строк начальной и конечной дат в формате '%Y-%m-%dT%H:%M:%S'.
+    """
+    # 1. Приоритет days_ago: вычисляем оконные даты на основе количества дней назад
+    if days_ago is not None:
+        # Конечная дата: вчера, 23:59:59
+        end_date = datetime.now().replace(hour=23, minute=59, second=59, microsecond=0) - timedelta(days=1)
+        # Начальная дата: end_date минус days_ago дней + 1, время 00:00:00
+        start_date = end_date - timedelta(days=days_ago) + timedelta(days=1)
+        start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # 2. Если хотя бы одна дата задана явно
+        # Конечная дата: end_date_str или по умолчанию сегодня, 23:59:59
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=0)
+        else:
+            end_date = datetime.now().replace(hour=23, minute=59, second=59, microsecond=0)
+        # Начальная дата: start_date_str или по умолчанию end_date минус 30 дней, время 00:00:00
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start_date = end_date - timedelta(days=30)
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Вычисляем начальную дату на 00:00:00
-    start_date = end_date - timedelta(days=days_ago) + timedelta(days=1)
-    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    # Устанавливаем конечную дату на 23:59:59
-    # end_date = start_date + timedelta(days=days_ago) - timedelta(seconds=1)
-
-    # Преобразуем даты в нужный формат
+    # Преобразуем даты в нужный формат для WB API ('%Y-%m-%dT%H:%M:%S', без 'Z')
     start_date_str = start_date.strftime('%Y-%m-%dT%H:%M:%S')
     end_date_str = end_date.strftime('%Y-%m-%dT%H:%M:%S')
 
@@ -724,13 +747,19 @@ def get_supply_orders_WB_fbs(headers):
 if __name__ == '__main__':
 
     # Парсим аргументы командной строки
-    days_ago = cli_days_ago(parser)
+    days_ago, cli_start_date, cli_end_date = cli_days_ago(parser)
 
     # Создаем директории выгрузки, если их нет
     uploaddir_today.mkdir(parents=True, exist_ok=True)
 
     # Генерируем даты (по умолчанию - 30 дней от текущей даты)
-    date_start, date_end = generate_dates_new(days_ago)
+    date_start, date_end = generate_dates_new(
+        days_ago=days_ago,
+        start_date_str=cli_start_date,
+        end_date_str=cli_end_date,
+        # start_date_str = '2025-07-12T23:59:59'
+        # end_date_str = '2025-06-13T00:00:00'
+    )
     # date_end = '2025-07-09T23:59:59'
     # date_start = '2025-06-10T00:00:00'
     logger.info(f"Uploading files for client {client_name} for dates {date_start} - {date_end}")
@@ -757,6 +786,5 @@ if __name__ == '__main__':
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
     logger.info(f"Uploaded files saved in: {uploaddir_today}")
 
-    print(f"\033[45m\033[37mDONE UPLOADING FILES FOR CLIENT {client_name}")
-
+    print(f"{Back.MAGENTA}{Fore.WHITE}DONE UPLOADING FILES FOR CLIENT {client_name}{Style.RESET_ALL}")
 # %%
