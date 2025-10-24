@@ -549,8 +549,8 @@ def get_company_stats(
         'clicks': 'Клики',
         'sum': 'Затраты руб',
         'atbs': 'Добавлений в корзину',
-        'orders': 'Заказы по рекламе шт (из отчета РК)',
-        'sum_price': 'Заказы по рекламе руб (из отчета РК)',
+        'orders': 'Заказы шт (из отчета РК)',
+        'sum_price': 'Заказы руб (из отчета РК)',
         'shks': 'Заказанные товары шт (из отчета РК)',
         'ctr': 'CTR, %',
         'cr': 'CR, %',
@@ -576,9 +576,9 @@ def get_company_stats(
             'CTR, %', 'CR, %', 'CPC','CPM',
             'Затраты руб',
             'Добавлений в корзину',
-            'Заказы по рекламе шт (из отчета РК)',
+            'Заказы шт (из отчета РК)',
             'Заказанные товары шт (из отчета РК)',
-            'Заказы по рекламе руб (из отчета РК)',
+            'Заказы руб (из отчета РК)',
        ]
     ]
     # Перемещаем колонку в начало df
@@ -848,8 +848,8 @@ def get_company_stats_v2(
         'clicks': 'Клики',
         'sum': 'Затраты руб',
         'atbs': 'Добавлений в корзину',
-        'orders': 'Заказы по рекламе шт (из отчета РК)',
-        'sum_price': 'Заказы по рекламе руб (из отчета РК)',
+        'orders': 'Заказы шт (из отчета РК)',
+        'sum_price': 'Заказы руб (из отчета РК)',
         'shks': 'Заказанные товары шт (из отчета РК)',
         'ctr': 'CTR, %',
         'cr': 'CR, %',
@@ -875,9 +875,9 @@ def get_company_stats_v2(
             'CTR, %', 'CR, %', 'CPC','CPM',
             'Затраты руб',
             'Добавлений в корзину',
-            'Заказы по рекламе шт (из отчета РК)',
+            'Заказы шт (из отчета РК)',
             'Заказанные товары шт (из отчета РК)',
-            'Заказы по рекламе руб (из отчета РК)',
+            'Заказы руб (из отчета РК)',
        ]
     ]
     # Перемещаем колонку в начало df
@@ -1426,16 +1426,47 @@ def get_keywords_stats(headers, df_input_companies):
     return df_companies_keywords_stats
 
 
+# Функция расчета показателей по ключевым словам
+def calc_keyword_stats(df_companies_keywords_stats):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_keywords_stats = df_companies_keywords_stats.copy()
+    # Считаем суммарные показатели
+    df_keywords_stats = (
+        df_keywords_stats
+        .groupby(['Номер кампании', 'Ключевая фраза'], as_index=False)
+        # Считаем суммы по кампании
+        .agg(**{
+            'Затраты': ('Затраты', 'sum'),
+            'Клики': ('Клики', 'sum'),
+            'Просмотры': ('Просмотры', 'sum')
+        })
+        # Считаем доп. столбцы
+        .assign(
+            CTR=lambda x: (
+                (x['Клики'] / x['Просмотры'] * 100)
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0)
+                .round(2)
+            )
+        )
+        # Сортировка
+        .sort_values(by=['Номер кампании', 'Затраты'], ascending=[True, False])
+    )
+
+    return df_keywords_stats
+
 # Функция формирования словаря с итоговыми результатами
 def create_result_dictionary(
         df_final_orders,
         df_associated_orders,
-        df_companies_keywords_stats
+        df_companies_keywords_stats,
+        df_keywords_stats,
 ):
     # Добавляем статистику по ключевым словам в словарь с кампаниями
     result_companies_report = {
         'Статистика РК': df_final_orders,
         'Ассоциированные заказы': df_associated_orders,
+        'Ключевые слова (свод)': df_keywords_stats,
         'Ключевые слова': df_companies_keywords_stats
     }
 
@@ -1717,6 +1748,8 @@ if __name__ == '__main__':
         headers,
         df_input_companies
     )
+    # Считаем статистику по ключевым словам с группировкой
+    df_keywords_stats = calc_keyword_stats(df_companies_keywords_stats)
     # Получаем историю затрат (для корректных расходов на кампании)
     # df_costs_history_stats = get_costs_history(headers, date_start, date_end)
     # Считаем расходы на номенклатуры в кампании
@@ -1729,6 +1762,7 @@ if __name__ == '__main__':
         df_final_orders,
         df_associated_orders,
         df_companies_keywords_stats,
+        df_keywords_stats,
     )
     # Создаем директорию, куда будет сохранен отчет
     report_path = create_report_path(date_campaign_report, client_name)
