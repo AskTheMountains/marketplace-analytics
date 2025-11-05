@@ -83,7 +83,7 @@ def get_actions_file_path(arg_path: str | None, default_dir: Path, default_name:
 # Функция чтения файла с акциями "Бустинг"
 def read_action_file(final_actions_path):
     # Добавляем название файла к пути
-    filepath_download_actions = final_actions_path
+    # filepath_download_actions = final_actions_path
     # Считываем файл по акциям в бустинге
     df_actions_from_file = pd.read_excel(
         final_actions_path,
