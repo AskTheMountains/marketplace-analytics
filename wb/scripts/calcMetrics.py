@@ -120,7 +120,7 @@ def calcMetrics(date_upload_files=str(date.today())):
 
     # TODO: Убираем виртуальные склады из списка складов
     if ignore_virtual_warehouses:
-        logger.warning("Ignoring virtual warehouses")
+        # logger.warning("Ignoring virtual warehouses")
         orderware = orderware.loc[~orderware['warehouseName'].str.contains('Виртуальный', na=False), :]
 
     # Считаем суммы по складам
