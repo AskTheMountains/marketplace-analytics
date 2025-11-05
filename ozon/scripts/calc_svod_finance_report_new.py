@@ -3,6 +3,8 @@
 import argparse
 import os
 import re
+import requests
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -21,14 +23,21 @@ from openpyxl.utils import get_column_letter
 from generic_functions import move_columns
 from ozon.scripts.ozon_generic_functions import get_common_article
 # Парсинг аргументов командной строки
-from ozon.scripts.command_args_parser import cli_date_range
+from ozon.scripts.command_args_parser import cli_finance
 # Некоторые константы
-from ozon.scripts.constants import (catalog_finace_svod_columns,
-                                    client_id_performance, client_name,
-                                    client_secret_performance, headers,
-                                    marketplace_dir_name)
+from ozon.scripts.constants import (
+    ozon_seller_api_url,
+    default_path_download_finance_report,
+    catalog_finace_svod_columns,
+    client_id_performance, client_name,
+    client_secret_performance, headers,
+    marketplace_dir_name
+    )
 # Функция выгрузки товаров в поставках
-from ozon.scripts.uploadDataFromOzon import get_supply_orders
+from ozon.scripts.uploadDataFromOzon import (
+    get_supply_orders,
+    get_ozon_product as upload_ozon_product
+)
 # Функция выгрузки данных о рекламных кампаниях
 from ozon.scripts.uploadDataFromOzonPerformance import (
     upload_data_performane,
@@ -41,16 +50,24 @@ parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",
     usage=(
         "python.exe -m ozon.scripts.calc_svod_finance_report_new [start_date] [end_date] "
-        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] [-c N | --client N]"
+        "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD] "
+        "[-c N | --client N] "
+        "[--file PATH_TO_REPORT.xlsx]"
     ),
     epilog=(
         "Примеры:\n\n"
         "  python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20\n\n"
         "  python.exe -m ozon.scripts.calc_svod_finance_report_new --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
-        "  python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20 -c 3"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new 2024-11-13 2024-11-20 -c 3\n\n"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new --file \"Report_Озон_2024-11-13_2024-11-20.xlsx\"\n\n"
+        "  python.exe -m ozon.scripts.calc_svod_finance_report_new --start_date 2024-11-13 --end_date 2024-11-20 --file \"Report_2024-11-13_2024-11-20.xlsx\"\n\n"
+        "Если путь или имя файла содержит пробелы, обязательно заключайте его в кавычки!\n"
+        "(например: --file \"file name with spaces.xlsx\")"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
+
+
 # Функция генерации диапазона дат
 def generate_date_range(date_start, date_end):
     # Если не заданы аргументы командной строки, то генерируем диапазон за предыдущий месяц
@@ -132,18 +149,31 @@ def rename_finance_report_file(finance_report_dir, client_name, date_start, date
     chosen_file.rename(final_path)
     return final_path
 
+# Функция парсинга аргументов командной строки пути к файлу по акциям
+def get_ozon_report_file_path(arg_path: str | None, default_dir: Path, default_name: str | None) -> Path | None:
+    """
+    Возвращает итоговый Path к файлу акций по логике:
+      - Если передан arg_path (через --file), возвращает абсолютный путь или default_dir/относительный путь.
+      - Если не передан arg_path и default_name не задан, возвращает None.
+      - Если не передан arg_path, но задан default_name, возвращает default_dir / default_name.
+    """
+    if arg_path:  # Аргумент командной строки был передан
+        file_path = Path(arg_path)
+        if file_path.is_absolute():
+            # Передан абсолютный путь — используем как есть
+            return file_path
+        else:
+            # Передано имя или относительный путь — склеиваем с default_dir
+            return default_dir / file_path
+    else:
+        # Путь не задан — если имя не указано, возвращаем None
+        if not default_name:
+            return None
+        return default_dir / default_name
+
 # Функция чтения файла с отчетом
 def read_finance_report_file(finance_report_filepath):
-    # Получения формата дат, которые содержатся в имени файла.
-    # date_start_file = datetime.strptime(date_start, '%Y-%m-%d').strftime('%d_%m_%Y')
-    # date_end_file = datetime.strptime(date_end, '%Y-%m-%d').strftime('%d_%m_%Y')
-    # date_start_file = date_start
-    # date_end_file = date_end
-    # Определение пути к файлу с отчетом
-    # report_file = (
-    #     finance_reports_dir
-    #     / f"{client_name}_Отчет_по_начислениям_{date_start_file}_{date_end_file}.xlsx"
-    # )
+
     df_finance_report = pd.read_excel(
         finance_report_filepath,
         sheet_name='Начисления',
@@ -327,7 +357,8 @@ def calc_sku_costs(df_finance_report, groupby_cols = ['SKU', 'Артикул', '
             df_sku_other_costs_stats
         ])
         #.reset_index()
-        .groupby(level=[0, 1, 2]) # 0 - SKU, 1 - Артикул, 2 - Наименование
+        # .groupby(level=[0, 1, 2]) # 0 - SKU, 1 - Артикул, 2 - Наименование
+        .groupby(level=[1])
         .sum()
         .reset_index()
         .rename(columns={
@@ -354,7 +385,7 @@ def calc_sku_costs(df_finance_report, groupby_cols = ['SKU', 'Артикул', '
             'Продажи - Возвраты (шт)',
             'Продажи - Возвраты (руб)'
         ],
-        position='Наименование товара',
+        position='Артикул продавца',
         insert_type='after'
     )
 
@@ -603,7 +634,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
                 df_company = pd.read_csv(company_file_path, sep=';')
             # Если нет, считаем, что расходы по данной кампании были равны 0
             else:
-                df_company = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы'])
+                df_company = pd.DataFrame(columns=['sku', 'Расходы'])
                 # Выводим предупреждение, что файла с расходами по данной кампании нет
                 logger.warning(f"Company file {row['Номер кампании']} has not been found")
             # Удаляем лишнюю колонку, если есть
@@ -623,7 +654,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
         # Считаем затраты на каждый тип начисления на каждый SKU
         df_companies_api_stats = (
             df_companies_api
-            .groupby(['sku', 'Наименование товара', 'Тип начисления'])
+            .groupby(['sku', 'Тип начисления'])
             .agg(
             Итого=('Итого', 'sum')
             )
@@ -639,7 +670,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
         df_companies_api_stats = (
             pd.pivot_table(
                 df_companies_api_stats,
-                index=['sku', 'Наименование товара'],
+                index=['sku'],
                 columns='Тип начисления',
                 values='Итого',
                 aggfunc='sum',
@@ -683,16 +714,18 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
 
 
 # Функция добавления артикулов и наименований товаров к расходам по рекламным кампаниям
-def add_articles_to_companies_costs(result_companies_costs, df_sku_list_all):
+def add_articles_to_companies_costs(result_companies_costs_no_article, df_products_processed):
+    # Создаем копию словаря, куда будем помещать итоговый результат
+    result_companies_costs = result_companies_costs_no_article.copy()
     # Получаем df с результатами расходов SKU по рекламным кампаниям
-    df_result_companies_stats = result_companies_costs['df_companies_api_stats'].copy()
+    df_result_companies_stats = result_companies_costs_no_article['df_companies_api_stats'].copy()
     # Если были расходы по РК, то добавляем к SKU названия артикулов
     if df_result_companies_stats.shape[0] > 0:
         # Мерджим со списком артикулов
         df_companies_stats_with_articles = (
             df_result_companies_stats
             .merge(
-                df_sku_list_all[['SKU', 'Артикул продавца']],
+                df_products_processed[['SKU', 'Артикул продавца']],
                 on='SKU',
                 how='left'
             )
@@ -708,9 +741,12 @@ def add_articles_to_companies_costs(result_companies_costs, df_sku_list_all):
         df_companies_stats_with_articles = df_companies_stats_with_articles.fillna({
             'Артикул продавца': 'Неизвестный артикул'
         })
+        # Удаляем колонку с SKU, т.к. она была нужна только для мерджа
+        df_companies_stats_with_articles = df_companies_stats_with_articles.drop(columns=['SKU'])
     # Если расходов по РК не было, возвращаем исходный пустой df из словаря
     else:
         df_companies_stats_with_articles = df_result_companies_stats.copy()
+
     # Изменяем df в словаре рекламных расходов на тот, что с артикулами
     result_companies_costs['df_companies_api_stats'] = df_companies_stats_with_articles.copy()
 
@@ -723,7 +759,7 @@ def calc_companies_costs(
         date_end,
         date_report,
         df_finance_report,
-        df_sku_list_all,
+        df_products_processed,
         client_id_performance,
         client_secret_performance,
         task_id=None
@@ -772,10 +808,70 @@ def calc_companies_costs(
     # Считаем расходы по рекламным кампаниям
     result_companies_costs_no_article = calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_ids)
     # Добавляем артикул к SKU с рекламными расходами
-    result_companies_costs = add_articles_to_companies_costs(result_companies_costs_no_article, df_sku_list_all)
+    result_companies_costs = add_articles_to_companies_costs(result_companies_costs_no_article, df_products_processed)
 
     return result_companies_costs
 
+
+# Функция товаров в заявках на поставку
+def upload_supplies_items(df_supplies_from_report):
+    # Получаем уникальный список номеров заявок
+    supplies_numbers = (
+        df_supplies_from_report['Номер заявки на поставку']
+        .astype(int)
+        .unique()
+        .tolist()
+    )
+    # Формируем df с уникальным списком номеров заявок
+    df_supplies_numbers = pd.DataFrame({'Номер заявки на поставку': supplies_numbers})
+    # Разбиваем df на равные части по 50 заявок в виде отдельного столбца
+    df_supplies_numbers['chunk'] = df_supplies_numbers.index // 50 + 1
+    # Цикл по каждому чанку
+    for chunk in df_supplies_numbers['chunk'].unique():
+        order_ids = (
+            df_supplies_numbers
+            .loc[df_supplies_numbers['chunk'] == chunk, 'Номер заявки на поставку']
+            .to_list()
+        )
+        # Формируем параметры запроса
+        # params_supplies_numbers = {
+        #     "orders_ids": order_ids[0]
+        # }
+        # # Отправляем запрос
+        # resp_data_supplies = requests.post(
+        #     f"{ozon_seller_api_url}/v3/supply-order/get",
+        #     headers=headers,
+        #     json=params_supplies_numbers
+        # ).json()
+        # Формируем параметры запроса
+        params_supplies_numbers = {
+            'filter':{
+                "orders_number_search": [order_ids[0]],
+                "states": [
+                    "DATA_FILLING",
+                    "READY_TO_SUPPLY",
+                    "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+                    "IN_TRANSIT",
+                    "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+                    "REPORTS_CONFIRMATION_AWAITING",
+                    "REPORT_REJECTED",
+                    "COMPLETED",
+                    "REJECTED_AT_SUPPLY_WAREHOUSE",
+                    "CANCELLED",
+                    "OVERDUE"
+                ]
+            },
+            'last_id': 'CMDE0xcSBgjQhqDABg==',
+            'limit': 100,
+            'sort_by': "ORDER_CREATION"
+
+        }
+        # Отправляем запрос
+        resp_data_supplies = requests.post(
+            f"{ozon_seller_api_url}/v3/supply-order/list",
+            headers=headers,
+            json=params_supplies_numbers
+        ).json()
 
 # Функция расчета расходов по поставкам
 def calc_supplies_costs(df_finance_report):
@@ -826,7 +922,8 @@ def calc_supplies_costs(df_finance_report):
         # Считаем итоговое количество sku в заявке на поставку
         df_supplies_items_total = (
             df_supplies_items
-            .groupby(['SKU', 'Артикул продавца', 'Наименование товара', 'supply_id'])
+            # .groupby(['SKU', 'Артикул продавца', 'Наименование товара', 'supply_id'])
+             .groupby(['Артикул продавца', 'supply_id'])
             .agg(
                 quantity=('quantity', 'sum')
             )
@@ -866,7 +963,7 @@ def calc_supplies_costs(df_finance_report):
             df_supplies_found_total = (
                 pd.pivot_table(
                     df_supplies_found,
-                    index=['SKU', 'Артикул продавца', 'Наименование товара'],
+                    index=['Артикул продавца'],
                     columns='Тип начисления',
                     values='Расходы по поставкам',
                     aggfunc='sum',
@@ -925,28 +1022,59 @@ def read_catalog(client_name):
     return catalog
 
 
+# Функция выгрузки списка товаров Ozon
+def get_ozon_product(headers, to_save=False):
+    # Выгружаем список товаров
+    df_products = upload_ozon_product(headers=headers, to_save=to_save)
+    # Создаем копию
+    df_products_processed = df_products.copy()
+    # Выбираем нужные колонки
+    df_products_processed = (
+        df_products_processed
+        .rename(columns={
+                'Артикул': 'Артикул продавца',
+                'Название товара': 'Наименование товара'
+        })
+        .loc[:, ['SKU', 'Артикул продавца', 'Наименование товара']]
+    )
+    # Переводим артикул в строку
+    df_products_processed['Артикул продавца'] = df_products_processed['Артикул продавца'].astype(str)
+    # Переводим SKU в int64
+    df_products_processed['SKU'] = df_products_processed['SKU'].astype('int64')
+
+    return df_products_processed
+
+
 # Функция создания списка артикулов из расходов, которые уже разбиты по артикулам
 def create_all_sku_df(result_sku_costs, result_supplies_costs, catalog):
     # Получаем df с расходами, которые уже разбиты по SKU и Артикулу
     df_sku_costs = result_sku_costs['df_sku_costs_all'].copy()
     df_supplies_costs = result_supplies_costs['supplies_costs_matched'].copy()
-    catalog_ = catalog.copy()
-    # Из справочной таблицы убираем товары, у которых нет SKU или Артикула
-    catalog_ = catalog_.dropna(subset=['SKU', 'Артикул продавца'])
+    # catalog_ = catalog.copy()
+    # # Из справочной таблицы убираем товары, у которых нет SKU или Артикула
+    # catalog_ = catalog_.dropna(subset=['SKU', 'Артикул продавца'])
     # Формируем лист с датафреймами
-    df_list = [df_sku_costs, df_supplies_costs, catalog_]
+    df_list = [
+        df_sku_costs,
+        df_supplies_costs,
+        # catalog_
+    ]
     # Переводи артикул в каждом df в строку
     for df in df_list:
         if 'Артикул продавца' in df.columns:
             df['Артикул продавца'] = df['Артикул продавца'].astype(str)
     # Выбираем нужные колонки
-    sku_columns = ['SKU', 'Артикул продавца', 'Наименование товара']
+    sku_columns = [
+        # 'SKU',
+        'Артикул продавца',
+        # 'Наименование товара'
+    ]
     # Используем reindex для добавления отсутствующих колонок
     df_list = [df.reindex(columns=sku_columns) for df in df_list]
     # Объединяем в один df и убираем дубликаты
     df_sku_list_all = (
         pd.concat(df_list)
-        .drop_duplicates(subset=['SKU', 'Артикул продавца'])
+        .drop_duplicates(subset=['Артикул продавца'])
         .dropna()
     )
 
@@ -971,6 +1099,44 @@ def merge_sku_costs(result_sku_costs, result_companies_costs, result_supplies_co
     )
 
     return df_sku_costs_all_stats
+
+# Функция объединения затрат, которые удалось распределить sku
+def merge_sku_costs_v2(
+        result_sku_costs,
+        result_companies_costs,
+        result_supplies_costs,
+        df_products_processed
+        ):
+    # Получаем df посчитанных затрат
+    df_sales_returns = result_sku_costs['df_sku_costs_all']
+    df_companies_stats = result_companies_costs['df_companies_api_stats']
+    df_supplies_costs = result_supplies_costs['supplies_costs_matched']
+
+    # Объединяем всё в один df
+    df_sku_costs_all = pd.concat([df_sales_returns, df_supplies_costs, df_companies_stats])
+    # Считаем сумму после union
+    df_sku_costs_all_stats = (
+        df_sku_costs_all
+        # .groupby(['SKU', 'Артикул продавца', 'Наименование товара'])
+        .groupby(['Артикул продавца'])
+        .sum()
+        .reset_index()
+    )
+    # Из списка товаров добавляем SKU и Наименование товара
+    df_sku_costs_all_stats = df_sku_costs_all_stats.merge(
+        df_products_processed[['Артикул продавца', 'SKU', 'Наименование товара']],
+        on='Артикул продавца',
+        how='left'
+    )
+    # Перемещаем колонки в начало df
+    df_sku_costs_all_stats = move_columns(
+        df_sku_costs_all_stats,
+        ['Наименование товара', 'SKU'],
+        position='Артикул продавца'
+    )
+
+    return df_sku_costs_all_stats
+
 
 
 # Функция расчета расходов, которые распределяются в зависимости от количества продаж sku
@@ -1058,7 +1224,7 @@ def add_data_from_catalog(result_all_costs):
     # df_all_costs_with_catalog = df_all_costs_with_catalog[ catalog_columns + [col for col in df_all_costs_with_catalog.columns if col not in catalog_columns]]
     # # Перемещаем колонку с себестоимостью в конец df
     # df_all_costs_with_catalog.insert(len(df_all_costs_with_catalog.columns) - 1, 'Себестоимость', df_all_costs_with_catalog.pop('Себестоимость'))
-    columns_to_move=[col for col in catalog_columns if col!='SKU']
+    columns_to_move=[col for col in catalog_columns if col not in ['SKU', 'Артикул продавца']]
     df_all_costs_with_catalog = move_columns(
         df=df_all_costs_with_catalog,
         columns_to_move=columns_to_move,
@@ -1159,7 +1325,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     # Маржинальность от себестоимости (%)
     df_final_costs['Маржа от себестоимости %'] = (
         df_final_costs['Маржинальность руб']
-        / df_final_costs['Себестоимость * Факт продаж']
+        / abs(df_final_costs['Себестоимость * Факт продаж'])
         * 100
     )
     # Выделяем артикул размера
@@ -1189,12 +1355,12 @@ def calc_final_costs(df_all_costs_with_catalog):
             (-1) * abs(df_final_costs[col]),
             abs(df_final_costs[col])
         )
-    for col in ['Маржа от себестоимости %']:
-        df_final_costs[col] = np.where(
-            df_final_costs['Себестоимость * Факт продаж'] <= 0,
-            (-1) * abs(df_final_costs[col]),
-            abs(df_final_costs[col])
-        )
+    # for col in ['Маржа от себестоимости %']:
+    #     df_final_costs[col] = np.where(
+    #         df_final_costs['Себестоимость * Факт продаж'] <= 0,
+    #         (-1) * abs(df_final_costs[col]),
+    #         abs(df_final_costs[col])
+    #     )
 
     # Меняем inf на nan
     columns_to_replace_inf = [
@@ -1342,14 +1508,14 @@ def save_finance_svod_to_excel(
     )
     # Сохраняем отчет
     with pd.ExcelWriter(filepath_finance_svod) as w:
-        # Даты формирования исходного отчета
-        df_report_dates.to_excel(w, sheet_name='Даты формирования отчета', index=False)
-        # Исходный отчет
-        df_finance_report.to_excel(w, sheet_name='Исходный отчет', index=False)
         # Объединенные расходы с распределением по sku
         df_all_costs.to_excel(w, sheet_name='Итоговая таблица', index=False)
-        # Суммы по всем начислениям
+        # Сводная по начислениям
         df_final_costs_by_operation.to_excel(w, sheet_name='Сводная по начислениям', index=False)
+        # Исходный отчет
+        df_finance_report.to_excel(w, sheet_name='Исходный отчет', index=False)
+        # Даты формирования исходного отчета
+        df_report_dates.to_excel(w, sheet_name='Даты формирования отчета', index=False)
         # Расходы, которые уже были распределены по SKU в исходном отчете
         df_sku_costs_by_operation.to_excel(w, sheet_name='Расходы по SKU', index=False)
         # Расходы по типам начисления, которые распределялись в зависимости от продаж SKU
@@ -1424,14 +1590,29 @@ def format_excel(
         )
         final_ws[f"{col_map['% Затрат на рекламу']}{row}"].value = formula_percent
 
+        # Столбец с себестоимостью
+        cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
+
+        # --- Себестоимость * Факт продаж (IFERROR — пропускать ошибки)
+        cell_fact_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        formula_sebestoimost_fact = (
+            f'=IFERROR(IF(OR({cell_sebestoimost}=0, {cell_sebestoimost}=""), "", (-1)* ABS({cell_sebestoimost}*{cell_fact_qty})), "")'
+        )
+        final_ws[f"{col_map['Себестоимость * Факт продаж']}{row}"].value = formula_sebestoimost_fact
+
         # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат (IFERROR — пропускать ошибки)
         base_sales = f"{col_map['Продажи - Возвраты (руб)']}{row}"
         cost_sum = '+'.join(f"{col_map[col]}{row}" for col in cost_columns)
-        cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
         margin_formula = (
             f'=IFERROR(IF(OR({cell_sebestoimost}=0,{cell_sebestoimost}=""),"",{base_sales}+{cost_sum}), "")'
         )
         final_ws[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
+        # sum_args = [base_sales] + [f"{col_map[col]}{row}" for col in cost_columns]
+        # cost_sum_str = ",".join(sum_args)
+        # margin_formula = (
+        #     f'=IFERROR(IF(OR({cell_sebestoimost}=0, {cell_sebestoimost}=""), "", SUM({cost_sum_str})), "")'
+        # )
+        # final_ws[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
 
         # --- "Маржинальность %" (через IFERROR)
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
@@ -1453,7 +1634,7 @@ def format_excel(
         cell_cost_fact = f"{col_map['Себестоимость * Факт продаж']}{row}"
 
         formula_margin_from_cost = (
-            f'=IFERROR(IF({cell_cost_fact}<=0, -1*ABS({cell_marg_rub}/{cell_cost_fact}*100), ABS({cell_marg_rub}/{cell_cost_fact}*100)), "")'
+            f'=IFERROR({cell_marg_rub} / ABS({cell_cost_fact}) * 100, "")'
         )
         final_ws[f"{col_map['Маржа от себестоимости %']}{row}"].value = formula_margin_from_cost
 
@@ -1536,24 +1717,37 @@ def format_excel(
 # %% Вызов всех функций
 if __name__ == "__main__":
 
+    # Имя файла с отчетом
+    # report_file_name = None
+    report_file_name = "Отчет по начислениям_01.10.2025-31.10.2025 (1).xlsx"
+
     # Парсим аргументы командной строки
-    dates_cli = cli_date_range(parser)
+    finance_cli = cli_finance(parser)
 
     # Получаем даты из командной строки
-    date_start = dates_cli['start_date']
-    date_end = dates_cli['end_date']
+    date_start = finance_cli['start_date']
+    date_end = finance_cli['end_date']
+
+    # Получаем имя файла отчета по начислениям Ozon из командной строки
+    report_file_path = finance_cli['finance_report_file_path']
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        # date_start,
-        # date_end,
-        date_start = '2025-09-01',
-        date_end='2025-09-30'
+        date_start,
+        date_end,
+        # date_start = '2025-09-01',
+        # date_end='2025-09-30'
     )
+
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_current_report_dir(client_name, date_start, date_end)
     # Ищем файл с отчетом
-    finance_report_filepath = rename_finance_report_file(current_report_dir, client_name, date_start, date_end)
+    # finance_report_filepath = rename_finance_report_file(current_report_dir, client_name, date_start, date_end)
+    finance_report_filepath = get_ozon_report_file_path(
+        report_file_path,
+        default_path_download_finance_report,
+        report_file_name
+    )
     # Считывание файла с фин. отчетом
     df_finance_report = read_finance_report_file(finance_report_filepath)
     # Выгрузка отчета о реализации продаж, возвратов и баллов Озон
@@ -1562,14 +1756,14 @@ if __name__ == "__main__":
     result_sku_costs = calc_sku_costs(df_finance_report)
     # Расчет расходов по поставкам с разбивкой на SKU
     result_supplies_costs = calc_supplies_costs(df_finance_report)
-    # Считываем справочную таблицу
-    catalog = read_catalog(client_name)
+    # Выгружаем список товаров (текущий)
+    df_products_processed = get_ozon_product(headers, to_save=False)
     # Формируем список SKU с артикулами из расходов, которые уже разбиты по SKU
-    df_sku_list_all = create_all_sku_df(
-        result_sku_costs,
-        result_supplies_costs,
-        catalog
-    )
+    # df_sku_list_all = create_all_sku_df(
+    #     result_sku_costs,
+    #     result_supplies_costs,
+    #     df_products_processed
+    # )
     # Расчет расходов по рекламным кампаниям с привязкой к SKU
     # task_id = 'bb511716-e864-443d-94c7-66b326c042eb'
     result_companies_costs = calc_companies_costs(
@@ -1577,16 +1771,17 @@ if __name__ == "__main__":
         date_end,
         date_report,
         df_finance_report,
-        df_sku_list_all,
+        df_products_processed,
         client_id_performance,
         client_secret_performance,
         # task_id=task_id
     )
     # Объединение расходов по SKU
-    df_sku_costs_all_stats = merge_sku_costs(
+    df_sku_costs_all_stats = merge_sku_costs_v2(
         result_sku_costs,
         result_companies_costs,
-        result_supplies_costs
+        result_supplies_costs,
+        df_products_processed
     )
     # Расчет расходов по типам начислений, которые не удалось привязать к SKU
     result_all_costs = calc_other_costs(
@@ -1597,6 +1792,8 @@ if __name__ == "__main__":
         result_supplies_costs
     )
 
+    # Считываем справочную таблицу
+    # catalog = read_catalog(client_name)
     # Добавляем данные из справочной таблицы
     df_all_costs_with_catalog = add_data_from_catalog(result_all_costs)
     # Расчет колонки с итоговыми расходами
