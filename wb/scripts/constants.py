@@ -225,9 +225,9 @@ if client_name in ['LABYT', 'Meste']:
 
 # Коэффициент себестоимости для акций
 if client_name in ['KU_And_KU', 'Soyuz']:
-    net_cost_koef = 0.4
+    net_cost_koef = 0.48
 else:
-    net_cost_koef = 0.4
+    net_cost_koef = 0.48
 
 # Колонки, которые берем из справочной таблицы для свода по акциям
 if client_name in ['SENS', 'SENS_IP', 'TRIBE', 'Orsk_Combinat']:
@@ -347,32 +347,30 @@ if client_name in ['LABYT', 'Meste']:
 #     catalog_finace_svod_columns = ['Артикул WB', 'Артикул поставщика', 'Размер', 'Наименование товара', 'Категория', 'Статус', 'Продается по FBO', 'РРЦ', 'Себестоимость']
 
 # ID Рекламных кампаний для отчета РК
-if client_name == 'Orsk_Combinat':
-    promotion_companies = [
-        [28737550],
-        [28698865],
-        [28673522],
-        [28540020],
-        [28313818],
-        [28275778],
-        [28181228],
-        [28121902],
-        [28096488],
+PROMOTION_COMPANIES = {
+    'Orsk_Combinat': [
+        28737550,
+        28698865,
+        28673522,
+        28540020,
+        28313818,
+        28275778,
+        28181228,
+        28121902,
+        28096488,
+    ],
+    'Neva_Metall': [
+        26532864,
+        26124451,
+        26294575,
+        26294575,
+    ],
+    'LABYT': [
+        29127576,
+        29313439,
+    ],
+    'Meste': [
+        29935477,
+        29494624
     ]
-elif client_name == 'Neva_Metall':
-    promotion_companies = [
-        [26532864],
-        [26124451],
-        [26294575],
-        [26294575],
-    ]
-elif client_name == 'LABYT':
-    promotion_companies = [
-        [29127576],
-        # [29313439],
-    ]
-elif client_name == 'Meste':
-    promotion_companies = [
-        [29494578],
-        [29494624]
-    ]
+}
