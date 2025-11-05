@@ -37,11 +37,19 @@ from application.ozon_reports import (
     OzonSalesOrdersReport,
     OzonSupplyPlanningReport,
     OzonUploadDataReport,
-    OzonActionsReport
+    OzonActionsReport,
+    OzonCampaignsReport,
+    OzonOrdersSvodReport,
+    OzonFinanceReport
     )
 from application.wb_reports import (
+    WBUploadDataReport,
     WBSalesOrdersReport,
-    WBUploadDataReport
+    WBSupplyPlanningReport,
+    WBActionsReport,
+    WBCampaignsReport,
+    WBOrdersSvodReport,
+    WBFinanceReport,
 )
 
 # Список отчетов
@@ -51,11 +59,19 @@ REPORTS_REGISTRY = {
         OzonSupplyPlanningReport,
         OzonActionsReport,
         OzonSalesOrdersReport,
+        OzonOrdersSvodReport,
+        OzonCampaignsReport,
+        OzonFinanceReport,
         # Другие классы Ozon-отчетов...
     ],
     "WB": [
         WBUploadDataReport,
-        WBSalesOrdersReport
+        WBSupplyPlanningReport,
+        WBActionsReport,
+        WBSalesOrdersReport,
+        WBOrdersSvodReport,
+        WBCampaignsReport,
+        WBFinanceReport
     ],
 }
 
@@ -165,7 +181,29 @@ class ClientWorkspace(QWidget):
         self.update_buttons_and_labels()
 
     def init_ui(self):
+
         layout = QVBoxLayout()
+
+        # --- Добавляем кнопку "Темная тема" ---
+        self.btn_theme = QPushButton("🌙")
+        self.btn_theme.setCheckable(True)
+        self.btn_theme.toggled.connect(self.switch_theme)
+        layout.addWidget(self.btn_theme)
+        # 2. Сделаем кнопку почти квадратной
+        self.btn_theme.setFixedSize(36, 36)  # Размер в пикселях (регулируй по желанию)
+        self.btn_theme.setStyleSheet("""
+            QPushButton {
+                font-size: 10px;
+                border-radius: 5px;
+                background: #2b2b2b;
+                color: #ffe066;
+            }
+            QPushButton:checked {
+                background: #393939;
+                color: #fff;
+            }
+        """
+        )
         nameLabel = QLabel("<b>Клиент:</b>")
         layout.addWidget(nameLabel)
 
@@ -174,6 +212,7 @@ class ClientWorkspace(QWidget):
         self.clientCombo.setCurrentIndex(self.client_idx)
         self.clientCombo.currentIndexChanged.connect(self.change_client)
         layout.addWidget(self.clientCombo)
+
 
         self.report_groups_widgets = {}
         btn_layout = QHBoxLayout()
@@ -241,6 +280,18 @@ class ClientWorkspace(QWidget):
         spacer = QSpacerItem(5, 50, QSizePolicy.Minimum, QSizePolicy.Expanding)
         layout.addSpacerItem(spacer)
         self.setLayout(layout)
+
+    def switch_theme(self, checked):
+        app = QApplication.instance()
+        if checked:
+            with open("application/themes/dark_theme.qss", "r", encoding="utf-8") as f:
+                app.setStyleSheet(f.read())
+            self.btn_theme.setText("🌞")
+            self.btn_theme.setToolTip("Переключить на светлую тему")
+        else:
+            app.setStyleSheet("")
+            self.btn_theme.setText("🌙")
+            self.btn_theme.setToolTip("Переключить на тёмную тему")
 
     def get_current_client_name(self):
         return self.clients[self.client_idx]
@@ -324,7 +375,7 @@ class ClientWorkspace(QWidget):
             QMessageBox.warning(self, "Папка не найдена", f"Папка отчётов не существует:\n{str(path)}")
             return
 
-        import platform, subprocess
+
         system = platform.system()
         if system == "Windows":
             subprocess.run(["explorer", str(path)])
@@ -344,9 +395,11 @@ class ClientWorkspace(QWidget):
 
     def open_log_window(self, client_idx, report_obj):
         key = (client_idx, report_obj)
-        # Проверка и повторное открытие окна — по желанию
+        client_name = self.settings["client_name"][client_idx]
+        report_name = getattr(report_obj, 'report_name', str(report_obj))
+        # Устанавливаем заголовок окна
         dlg = QDialog(self)
-        dlg.setWindowTitle("Логи отчёта")
+        dlg.setWindowTitle(f"{client_name}: {report_name}")
         layout = QVBoxLayout(dlg)
         txt = QTextEdit()
         txt.setReadOnly(True)
@@ -359,15 +412,12 @@ class ClientWorkspace(QWidget):
         self.log_windows[key] = dlg
         dlg.txt = txt
 
-        # ... теперь обновлять QTextEdit при новых строках :)
         def live_update_log():
             content = self.report_logs.get(key, "")
             txt.setPlainText(content)
             txt.verticalScrollBar().setValue(txt.verticalScrollBar().maximum())
-        # Храним обновлялку на будущее
-        dlg.live_update_log = live_update_log
 
-        # Первый вызов сразу при открытии
+        dlg.live_update_log = live_update_log
         live_update_log()
 
     def toggle_report_panel(self, report_obj, panel_widget):
@@ -466,8 +516,10 @@ class ClientWorkspace(QWidget):
             self.report_statuses[self._report_key] = f"<b>Формируется{dots}</b>"
 
     def run_report(self, report_obj, key, status_label, progress_bar, btn_run):
+
         if not report_obj:
             return
+
         client_number = self.client_idx
         cmds = report_obj.build_cmd(client_number)
         if isinstance(cmds[0], str):
@@ -475,19 +527,24 @@ class ClientWorkspace(QWidget):
         self.report_thread = ReportThread(cmds)
         # Проверка обязательных параметров
         if not report_obj.is_params_ready():
+            # Параметры не заполнены — возврат с предупреждением
             if self.dots_timer:
                 self.dots_timer.stop()
                 self.dots_timer = None
             progress_bar.setVisible(False)
-            status_label.setText("<span style='color:#b30000; font-weight:bold;'>❗️ Заполните все обязательные параметры!</span>")
+            msg = "<span style='color:#b30000; font-weight:bold;'>❗️ Заполните все обязательные параметры!</span>"
+            status_label.setText(msg)
             btn_run.setEnabled(True)
-            self.report_statuses[key] = "<span style='color:#b30000; font-weight:bold;'>❗️ Заполните все обязательные параметры!</span>"
+            self.report_statuses[key] = msg
             return
-        status_label.setText("<b>Формируется</b>")
+
+        # Все параметры ок — запуск формирования отчёта
+        msg = "<b>Формируется</b>"
+        status_label.setText(msg)
         status_label.setStyleSheet("font-weight: bold;")
         progress_bar.setVisible(True)
         btn_run.setEnabled(False)
-        self.report_statuses[key] = "<b>Формируется</b>"
+        self.report_statuses[key] = msg
 
         # Остановить предыдущий таймер, если он был
         if self.dots_timer:
@@ -518,10 +575,16 @@ class ClientWorkspace(QWidget):
         if hasattr(self, '_run_btn'):
             self._run_btn.setEnabled(True)
         if hasattr(self, '_status_label') and hasattr(self, '_report_key'):
+            # Ловим WARNING в логах
+            contains_warning = "WARNING" in log_text
+            # Проверяем успех и уровень лога
             if success:
-                text = "<span style='color:#157f3b; font-weight:bold;'>✅ Готово!</span>"
+                if contains_warning:
+                    text = "<span style='color:#e67e22; font-weight:bold;'>⚠️ Отчет сформирован с предупреждениями!</span>"
+                else:
+                    text = "<span style='color:#157f3b; font-weight:bold;'>✅ Готово!</span>"
             else:
-                text = f"<span style='color:#b30000; font-weight:bold;'>❌ Ошибка: {msg}</span>"
+                text = f"<span style='color:#b30000; font-weight:bold;'>❌ Ошибка формирования отчета, см. логи</span>"
             self._status_label.setText(text)
             self.report_statuses[self._report_key] = text
 
@@ -539,7 +602,7 @@ class ClientWorkspace(QWidget):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Отчет по маркетплейсам (табы)")
+        self.setWindowTitle("Отчеты по маркетплейсам")
         self.settings = load_settings()
         self.clients = get_clients_list(self.settings)
         self.tab_widget = QTabWidget()
