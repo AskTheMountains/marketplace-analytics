@@ -1946,7 +1946,9 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Возмещение издержек по перевозке',
         'Добровольная компенсация при возврате',
         'Компенсация ущерба',
-        'Логистика сторно'
+        'Логистика сторно',
+        'Вознаграждение WB без НДС',
+        'НДС с вознаграждения WB'
     ]
     # Изменяем знак некоторых расходов с + на -
     for col in change_sign_columns:
@@ -2048,7 +2050,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     # Маржинальность от себестоимости (%)
     df_final_costs['Маржа от себестоимости %'] = (
         df_final_costs['Маржинальность руб']
-        / df_final_costs['Себестоимость * Факт продаж']
+        / abs(df_final_costs['Себестоимость * Факт продаж'])
         * 100
     )
     # Считаем маржинальность по артикулу
@@ -2073,12 +2075,12 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
             (-1) * abs(df_final_costs[col]),
             abs(df_final_costs[col])
         )
-    for col in ['Маржа от себестоимости %']:
-        df_final_costs[col] = np.where(
-            df_final_costs['Себестоимость * Факт продаж'] <= 0,
-            (-1) * abs(df_final_costs[col]),
-            abs(df_final_costs[col])
-        )
+    # for col in ['Маржа от себестоимости %']:
+    #     df_final_costs[col] = np.where(
+    #         df_final_costs['Себестоимость * Факт продаж'] <= 0,
+    #         (-1) * abs(df_final_costs[col]),
+    #         abs(df_final_costs[col])
+    #     )
 
     # Меняем inf на nan в маржинальностях
     marg_columns = [
@@ -2226,8 +2228,8 @@ def save_excel(
         df_sku_costs_by_operation.to_excel(w, sheet_name='Расходы по SKU', index=False)
         df_other_costs_by_operation.to_excel(w, sheet_name='Прочие расходы', index=False)
         df_companies_costs.to_excel(w, sheet_name='Расходы по РК', index=False)
-        df_paid_acceptance.to_excel(w, sheet_name='Отчет пл. приемка', index=False)
-        df_paid_storage.to_excel(w, sheet_name='Отчет пл. хранение', index=False)
+        # df_paid_acceptance.to_excel(w, sheet_name='Отчет пл. приемка', index=False)
+        # df_paid_storage.to_excel(w, sheet_name='Отчет пл. хранение', index=False)
 
     return filepath_finance_report
 
@@ -2351,7 +2353,7 @@ def format_excel(
         cell_cost_fact = f"{col_map['Себестоимость * Факт продаж']}{row}"
 
         formula_margin_from_cost = (
-            f'=IFERROR(IF({cell_cost_fact}<=0, -1*ABS({cell_marg_rub}/{cell_cost_fact}*100), ABS({cell_marg_rub}/{cell_cost_fact}*100)), "")'
+            f'=IFERROR({cell_marg_rub} / ABS({cell_cost_fact}) * 100, "")'
         )
         final_ws[f"{col_map['Маржа от себестоимости %']}{row}"].value = formula_margin_from_cost
 
@@ -2441,7 +2443,7 @@ if __name__ == '__main__':
         # date_start,
         # date_end,
         date_start = '2025-10-01',
-        date_end='2025-10-19'
+        date_end='2025-10-31'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
