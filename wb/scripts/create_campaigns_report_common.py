@@ -2,6 +2,7 @@
 import argparse
 import copy
 import time
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -20,30 +21,52 @@ pd.options.mode.chained_assignment = None  # default='warn'
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
 # Парсинг аргументов командной строки
-from wb.scripts.command_args_parser import cli_dates
+from wb.scripts.command_args_parser import cli_companies
 # Файл с настройками и номером клиента
-from wb.scripts.constants import client_name, headers, promotion_companies
+from wb.scripts.constants import client_name, headers, PROMOTION_COMPANIES
 # Функции выгрузки данных
 from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
 
 parser = argparse.ArgumentParser(
     description="Create promotion report (WB)",
     usage=(
-        "python.exe -m wb.scripts.create_rk_svod [start_date] [end_date] "
+        "python.exe -m wb.scripts.create_campaigns_report [start_date] [end_date] "
         "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD] "
-        "[-c N | --client N]"
+        "[-c N | --client N] "
+        "[--promotion_companies \"ID1, ID2, ...\"]"
     ),
     epilog=(
         "Примеры:\n\n"
-        "  python.exe -m wb.scripts.create_rk_svod 2025-08-27 2025-09-02\n\n"
-        "  python.exe -m wb.scripts.create_rk_svod --start_date 2025-08-27 --end_date 2025-09-02 --client 2\n\n"
-        "  python.exe -m wb.scripts.create_rk_svod --reference_date 2025-09-01 -c 3"
+        "  python.exe -m wb.scripts.create_campaigns_report 2024-11-13 2024-11-20\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --reference_date 2024-11-21 -c 3\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --promotion_companies \"13687629, 14962180, 16997671\"\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --promotion_companies \"13687629 14962180 16997671\"\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --promotion_companies \"13687629;14962180;16997671\"\n\n"
+        "  python.exe -m wb.scripts.create_campaigns_report --promotion_companies \"13687629\\n14962180\\n16997671\"\n\n"
+        "Можно комбинировать любые разделители — запятая, пробел, точка с запятой, перевод строки.\n"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
 
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
+
+
+# Функция парсинга списка компаний из аргументов командной строки
+def parse_cli_companies(cli_companies):
+    """
+    Принимает строку из аргумента командной строки.
+    Возвращает список int ID кампаний.
+    Разделители: запятая, точка с запятой, пробел, перевод строки и любые их комбинации.
+    """
+    if not cli_companies:
+        return []
+    # Делим по всем: запятая, точка с запятой, пробел, \n, \r
+    parts = re.split(r"[,\s;]+", cli_companies.strip())
+    cli_companies_parsed = [int(s) for s in parts if s.strip().isdigit()]
+
+    return cli_companies_parsed
 
 
 # Создание директории для выгрузки статистики РК за конкретные даты
@@ -132,12 +155,24 @@ def get_start_end_date(df_date_range, type_dates='companies'):
     return date_start, date_end
 
 # Функция создания списка РК с датами
-def create_input_companies(promotion_companies, df_date_range):
-    # Создаем копию списка кампаний из констант
-    input_companies = copy.deepcopy(promotion_companies)
-    # Получаем даты для отчета РК
+def create_input_companies(
+        client_name,
+        df_date_range,
+        cli_companies_parsed=[],
+    ):
+    # Если передан список из CLI, используем его
+    if cli_companies_parsed:
+        input_companies = [[int(company)] for company in cli_companies_parsed]
+    else:
+        # Берём по client_name из словаря
+        companies = PROMOTION_COMPANIES.get(client_name, [])
+        if not companies:
+            raise ValueError(f"Список кампаний пуст для клиента {client_name}!")
+        input_companies = [[int(company)] for company in companies]
+
+    # Получаем даты для отчёта РК
     date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='companies')
-    # Добавляем даты к списку РК
+    # Добавляем даты к каждой кампании
     for company in input_companies:
         company.extend([date_start_performance, date_end_performance])
 
@@ -1570,155 +1605,33 @@ def save_and_format_excel(
     # GPT END----
 
 
-# Функция получения истории затрат
-# def get_costs_history(headers, date_start, date_end):
-#     # Разбиваем диапазон дат на периоды по 1 месяцу каждый
-
-#     # GPT START ----
-#     # Преобразование строковых дат в datetime
-#     dt_start = pd.to_datetime(date_start).tz_localize(None)
-#     dt_end = pd.to_datetime(date_end).tz_localize(None)
-
-#     # Создание списка интервалов
-#     intervals = []
-
-#     # Первый интервал от начальной даты до конца месяца
-#     first_month_end = (dt_start + pd.DateOffset(months=1)).replace(day=1) - pd.Timedelta(seconds=1)
-#     if first_month_end > dt_end:
-#         first_month_end = dt_end
-
-#     intervals.append({
-#         'date_start': dt_start.strftime('%Y-%m-%d'),
-#         'date_end': first_month_end.strftime('%Y-%m-%d'),
-#         'dt_start': dt_start,
-#         'dt_end': first_month_end
-#     })
-
-#     # Следующий интервал от начала следующего месяца до конца месяца
-#     current_start = first_month_end + pd.Timedelta(seconds=1)
-#     while current_start <= dt_end:
-#         monthly_start = current_start.replace(day=1)
-#         monthly_end = (monthly_start + pd.DateOffset(months=1)).replace(day=1) - pd.Timedelta(seconds=1)
-
-#         if monthly_end > dt_end:
-#             monthly_end = dt_end
-
-#         intervals.append({
-#             'date_start': monthly_start.strftime('%Y-%m-%d'),
-#             'date_end': monthly_end.strftime('%Y-%m-%d'),
-#             'dt_start': monthly_start,
-#             'dt_end': monthly_end
-#         })
-
-#         # Переход к следующему месяцу
-#         current_start = monthly_start + pd.DateOffset(months=1)
-
-#     # Создание датафрейма
-#     date_range_df = pd.DataFrame(intervals)
-
-#     # df, куда будем помещать результаты истории затрат
-#     df_history_costs = pd.DataFrame()
-
-#     # Сколько всего нужно выгрузить интервалов
-#     total_intervals = date_range_df.shape[0]
-
-#     # Делаем запрос для каждого интервала
-#     for i in range(date_range_df.shape[0]):
-#         logger.info(f"Uploading history costs for dates "
-#                     f"{date_range_df['date_start'][i]} - {date_range_df['date_end'][i]}"
-#                     )
-#         # Параметры запроса
-#         params_history_costs = {
-#             'from': date_range_df['date_start'][i],
-#             'to': date_range_df['date_end'][i]
-#         }
-#         # Делаем запрос
-#         result_history_costs = requests.get('https://advert-api.wildberries.ru/adv/v1/upd',
-#                                             headers=headers,
-#                                             params=params_history_costs).json()
-#         # Получаем результаты
-#         tmp_df_history_costs = pd.DataFrame(result_history_costs)
-#         # Добавляем в резульаты даты выгрузки
-#         tmp_df_history_costs = tmp_df_history_costs.assign(
-#             date_start = date_range_df['date_start'][i],
-#             date_end = date_range_df['date_end'][i]
-#         )
-
-#         # Объединяем с предыдущим проходом цикла
-#         df_history_costs = pd.concat([df_history_costs, tmp_df_history_costs])
-
-#         # Ждем 1 минуту перед следующим запросом, если это не последний интервал
-#         if (i + 1) != total_intervals:
-#             logger.info("Wating 1 minute before uploading next interval")
-#             time.sleep(60)
-#         else:
-#             logger.info("Done uploading history costs")
-
-#     # Сбрасываем index после concat
-#     df_history_costs = df_history_costs.reset_index(drop=True)
-
-#     # Считаем расходы на каждую из кампаний
-#     df_history_costs_stats = (
-#         df_history_costs
-#         .groupby(['advertId'])
-#         #.groupby(['updNum', 'advertId'])
-#         .agg(
-#             Расходы=('updSum', 'sum')
-#         )
-#         .reset_index()
-#         .rename(columns={
-#             'updNum': 'Номер документа',
-#             'advertId': 'ID Кампании'
-#         })
-#     )
-
-#     return df_history_costs_stats
-
-# # Функция разбивки рекламных расходов по артикулам
-# def calc_costs_by_sku(result_companies_info, df_costs_history_stats):
-#     # Получаем список номенклатур в кампаниях
-#     df_companies_nms_all = result_companies_info['df_companies_nms_all'].copy()
-#     # Убираем колонку с количеством артикулов в кампании, чтобы посчитать её заново
-#     df_companies_nms_all = df_companies_nms_all.loc[:, ~df_companies_nms_all.columns.isin(['Количество артикулов в кампании'])]
-#     # Получаем количество артикулов в кампании
-#     df_companies_nms_all['Количество артикулов в кампании'] = df_companies_nms_all.groupby('advertId').transform('size')
-
-#     # Мерджим список номенклатур с корректными расходами на кампанию
-#     df_companies_sku = df_costs_history_stats.merge(df_companies_nms_all,
-#                                                     on='advertId',
-#                                                     how='left')
-
-#     # Разбиваем расходы по артикулам, если их было несколько в одной кампании
-#     df_companies_sku['Разбивка расходов на кампанию'] = df_companies_sku['Расходы'] / df_companies_sku['Количество артикулов в кампании']
-
-#     # Считаем расходов по каждому артикулу
-#     df_companies_sku_stats = (
-#         df_companies_sku
-#         .groupby(['Артикул WB'])
-#         .agg(
-#             Расходы_на_продвижение=('Разбивка расходов на кампанию', 'sum')
-#             )
-#         .reset_index()
-#     )
-
-#     return df_companies_sku_stats
-
-
 # %% Вызов всех функций
 if __name__ == '__main__':
-    # Парсим аргументы командной строки
-    dates_cli = cli_dates(parser)
+
+   # Парсим аргументы командной строки
+    params_companies = cli_companies(parser)
+
+    # Получаем даты из аргументов командной строки
+    date_start_cli = params_companies["start_date"]
+    date_end_cli = params_companies["end_date"]
+
+    # Получаем список кампаний из аргументов командной строки
+    cli_companies = params_companies["promotion_companies"]
+
+    # Парсим список кампаний командной строки
+    cli_companies_parsed = parse_cli_companies(cli_companies)
+
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        start_date=dates_cli['start_date'],
-        end_date=dates_cli['end_date'],
+        start_date=date_start_cli,
+        end_date=date_end_cli,
         # start_date='2025-09-01',
         # end_date='2025-09-23'
     )
     # Список кампаний и даты для каждой кампании,
     # за которые нужно сформировать отчет
-    input_companies = create_input_companies(promotion_companies, df_date_range)
+    input_companies = create_input_companies(client_name, df_date_range, cli_companies_parsed)
     # Дата формирования отчета
     date_campaign_report = str(date.today())
     # Создаем df с нужным списком кампаний и датами
