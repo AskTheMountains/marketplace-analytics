@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import re
 from loguru import logger
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, Side
@@ -19,14 +20,17 @@ BASE_DIR = Path(__file__).parent.parent
 
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
-from ozon.scripts.ozon_generic_functions import msk_boundary_to_utc
-from ozon.scripts.command_args_parser import cli_dates
+from ozon.scripts.ozon_generic_functions import (
+    get_orders,
+    msk_boundary_to_utc
+)
+from ozon.scripts.command_args_parser import cli_companies
 # Файл с настройками и номером клиента
 # from options import settings, client_number, headers
 # Некоторые константы
 from ozon.scripts.constants import (client_id_performance, client_name,
                                     client_secret_performance, headers,
-                                    promotion_companies)
+                                    PROMOTION_COMPANIES)
 # Функции выгрузки данных по API Seller
 from ozon.scripts.uploadDataFromOzon import (get_ozon_product, getOrders,
                                              getStockReminders_fbo_v2,
@@ -41,16 +45,39 @@ parser = argparse.ArgumentParser(
     usage=(
         "python.exe -m ozon.scripts.create_campaigns_report [start_date] [end_date] "
         "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD] "
-        "[-c N | --client N]"
+        "[-c N | --client N] "
+        "[--promotion_companies \"ID1, ID2, ...\"]"
     ),
     epilog=(
         "Примеры:\n\n"
         "  python.exe -m ozon.scripts.create_campaigns_report 2024-11-13 2024-11-20\n\n"
         "  python.exe -m ozon.scripts.create_campaigns_report --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
-        "  python.exe -m ozon.scripts.create_campaigns_report --reference_date 2024-11-21 -c 3"
+        "  python.exe -m ozon.scripts.create_campaigns_report --reference_date 2024-11-21 -c 3\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --promotion_companies \"13687629, 14962180, 16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --promotion_companies \"13687629 14962180 16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --promotion_companies \"13687629;14962180;16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_campaigns_report --promotion_companies \"13687629\\n14962180\\n16997671\"\n\n"
+        "Можно комбинировать любые разделители — запятая, пробел, точка с запятой, перевод строки.\n"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
+
+
+# Функция парсинга списка компаний из аргументов командной строки
+def parse_cli_companies(cli_companies):
+    """
+    Принимает строку из аргумента командной строки.
+    Возвращает список int ID кампаний.
+    Разделители: запятая, точка с запятой, пробел, перевод строки и любые их комбинации.
+    """
+    if not cli_companies:
+        return []
+    # Делим по всем: запятая, точка с запятой, пробел, \n, \r
+    parts = re.split(r"[,\s;]+", cli_companies.strip())
+    cli_companies_parsed = [int(s) for s in parts if s.strip().isdigit()]
+
+    return cli_companies_parsed
+
 
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
@@ -142,12 +169,24 @@ def get_start_end_date(df_date_range, type_dates='companies'):
 
 
 # Функция создания списка РК с датами
-def create_input_companies(promotion_companies, df_date_range):
-    # Создаем копию списка кампаний из констант
-    input_companies = copy.deepcopy(promotion_companies)
-    # Получаем даты для отчета РК
+def create_input_companies(
+        client_name,
+        df_date_range,
+        cli_companies_parsed=[]
+    ):
+    # Если передан список из CLI, используем его
+    if cli_companies_parsed:
+        input_companies = [[str(company)] for company in cli_companies_parsed]
+    else:
+        # Берём по client_name из словаря
+        companies = PROMOTION_COMPANIES.get(client_name, [])
+        if not companies:
+            raise ValueError(f"Список кампаний пуст для клиента {client_name}!")
+        input_companies = [[str(company)] for company in companies]
+
+    # Получаем даты для отчёта РК
     date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='companies')
-    # Добавляем даты к списку РК
+    # Добавляем даты к каждой кампании
     for company in input_companies:
         company.extend([date_start_performance, date_end_performance])
 
@@ -541,6 +580,7 @@ def parse_companies_files(
                     df_company = df_company.rename(columns={
                         'Наименование': 'Наименование товара',
                         'sku': 'SKU',
+                        'Ozon ID продвигаемого товара': 'SKU',
                         'Цена товара, ₽': 'Цена товара, руб',
                         'Средняя стоимость клика, ₽': 'Ср. цена клика, руб',
                         'Расход, ₽, с НДС': 'Расход по кампаниям с НДС, руб',
@@ -906,44 +946,45 @@ def get_min_max_dates(df_input_companies_parsed):
 
 
 # Функция выгрузки отчета о заказах
-def get_orders(headers, date_start, date_end):
-    # Выгружаем отчет об отправлениях fbo и fbs
-    df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
-    df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
-    # Убираем лишние колонки из отчета fbo
-    df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
+# def get_orders(headers, date_start, date_end):
+#     # Выгружаем отчет об отправлениях fbo и fbs
+#     df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
+#     df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
+#     # Убираем лишние колонки из отчета fbo
+#     df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
 
-    # Объединяем два отчета в один
-    common_columns = ['Артикул', 'Наименование товара', 'OZON id', 'Принят в обработку', 'Сумма отправления']
+#     # Объединяем два отчета в один
+#     common_columns = ['Артикул', 'Название товара', 'OZON id', 'Принят в обработку', 'Сумма отправления']
 
-    # GPT START----
-    dfs = []
-    for df in [df_orders_fbo, df_orders_fbs]:
-        if df is not None and not df.empty:
-            # Берем только те common_columns, которые реально есть
-            cols = [col for col in common_columns if col in df.columns]
-            dfs.append(df.loc[:, cols])
+#     # GPT START----
+#     dfs = []
+#     for df in [df_orders_fbo, df_orders_fbs]:
+#         if df is not None and not df.empty:
+#             # Берем только те common_columns, которые реально есть
+#             cols = [col for col in common_columns if col in df.columns]
+#             dfs.append(df.loc[:, cols])
 
-    if dfs:
-        df_orders_all = pd.concat(dfs, ignore_index=True)
-    else:
-        # Если оба датафрейма пустые — создаём пустой датафрейм с нужными колонками
-        df_orders_all = pd.DataFrame(columns=common_columns)
-    # GPT END----
+#     if dfs:
+#         df_orders_all = pd.concat(dfs, ignore_index=True)
+#     else:
+#         # Если оба датафрейма пустые — создаём пустой датафрейм с нужными колонками
+#         df_orders_all = pd.DataFrame(columns=common_columns)
+#     # GPT END----
 
-    # Переводим колонку с датой заказа в datetime
-    df_orders_all['datetime_orders'] = pd.to_datetime(df_orders_all['Принят в обработку'])
-    # Указываем, какие колонки считаем за заказы в штуках и рублях
-    df_orders_all['Заказы шт'] = 1
-    df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
-    # Переименовываем колонку с Ozon ID
-    df_orders_all = df_orders_all.rename(columns={
-        'OZON id': 'Ozon Product ID'
-    })
-    # Переводим столбец с артикулом в строку
-    df_orders_all['Артикул'] = df_orders_all['Артикул'].astype(str)
+#     # Переводим колонку с датой заказа в datetime
+#     df_orders_all['datetime_orders'] = pd.to_datetime(df_orders_all['Принят в обработку'])
+#     # Указываем, какие колонки считаем за заказы в штуках и рублях
+#     df_orders_all['Заказы шт'] = 1
+#     df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
+#     # Переименовываем колонку с Ozon ID
+#     df_orders_all = df_orders_all.rename(columns={
+#         'OZON id': 'Ozon Product ID',
+#         'Название товара': 'Наименование товара'
+#     })
+#     # Переводим столбец с артикулом в строку
+#     df_orders_all['Артикул'] = df_orders_all['Артикул'].astype(str)
 
-    return df_orders_all
+#     return df_orders_all
 
 
 # Функция добавления информации о товарах в заказы
@@ -2235,18 +2276,32 @@ def create_campaigns_report(
 if __name__ == '__main__':
 
    # Парсим аргументы командной строки
-    dates_cli = cli_dates(parser)
+    params_companies = cli_companies(parser)
+
+    # Получаем даты из аргументов командной строки
+    date_start_cli = params_companies["start_date"]
+    date_end_cli = params_companies["end_date"]
+
+    # Получаем список кампаний из аргументов командной строки
+    cli_companies = params_companies["promotion_companies"]
+
+    # Парсим список кампаний командной строки
+    cli_companies_parsed = parse_cli_companies(cli_companies)
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(
-        reference_date=dates_cli["reference_date"],
-        start_date=dates_cli["start_date"],
-        end_date=dates_cli["end_date"],
-        # start_date='2025-09-01',
-        # end_date='2025-09-30'
+        # reference_date=dates_cli["reference_date"],
+        start_date=date_start_cli,
+        end_date=date_end_cli,
+        # start_date='2025-10-01',
+        # end_date='2025-10-27'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
-    input_companies = create_input_companies(promotion_companies, df_date_range)
+    input_companies = create_input_companies(
+        client_name,
+        df_date_range,
+        cli_companies_parsed,
+    )
     # Дата, за которую формируется (или формировался) отчет
     date_campaign_report = str(date.today())
     # date_campaign_report = '2025-05-16'
