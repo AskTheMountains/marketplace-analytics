@@ -1,6 +1,8 @@
 
 # %% Определение всех функций
+import re
 import argparse
+import copy
 import warnings
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,11 +25,11 @@ BASE_DIR = Path(__file__).parent.parent
 
 
 # Парсинг аргументов командной строки
-from ozon.scripts.command_args_parser import cli_dates
+from ozon.scripts.command_args_parser import cli_companies
 # Некоторые константы
 from ozon.scripts.constants import (client_id_performance, client_name,
                                     client_secret_performance, headers,
-                                    promotion_companies)
+                                    PROMOTION_COMPANIES)
 # Функция формирования статистики РК
 from ozon.scripts.create_campaigns_report import \
     create_campaigns_report as upload_campaigns_report
@@ -41,20 +43,42 @@ from ozon.scripts.uploadDataFromOzon import get_ozon_product
 
 
 parser = argparse.ArgumentParser(
-    description="Create cabinet svod report (Ozon)",
+    description="Create promotion report (Ozon)",
     usage=(
         "python.exe -m ozon.scripts.create_client_cabinet_svod [start_date] [end_date] "
         "[--start_date YYYY-MM-DD --end_date YYYY-MM-DD --reference_date YYYY-MM-DD] "
-        "[-c N | --client N]"
+        "[-c N | --client N] "
+        "[--promotion_companies \"ID1, ID2, ...\"]"
     ),
     epilog=(
         "Примеры:\n\n"
         "  python.exe -m ozon.scripts.create_client_cabinet_svod 2024-11-13 2024-11-20\n\n"
         "  python.exe -m ozon.scripts.create_client_cabinet_svod --start_date 2024-11-13 --end_date 2024-11-20 --client 2\n\n"
-        "  python.exe -m ozon.scripts.create_client_cabinet_svod --reference_date 2024-11-21 -c 3"
+        "  python.exe -m ozon.scripts.create_client_cabinet_svod --reference_date 2024-11-21 -c 3\n\n"
+        "  python.exe -m ozon.scripts.create_client_cabinet_svod --promotion_companies \"13687629, 14962180, 16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_client_cabinet_svod --promotion_companies \"13687629 14962180 16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_client_cabinet_svod --promotion_companies \"13687629;14962180;16997671\"\n\n"
+        "  python.exe -m ozon.scripts.create_client_cabinet_svod --promotion_companies \"13687629\\n14962180\\n16997671\"\n\n"
+        "Можно комбинировать любые разделители — запятая, пробел, точка с запятой, перевод строки.\n"
     ),
     formatter_class=ParagraphRichHelpFormatter
 )
+
+
+# Функция парсинга списка компаний из аргументов командной строки
+def parse_cli_companies(cli_companies):
+    """
+    Принимает строку из аргумента командной строки.
+    Возвращает список int ID кампаний.
+    Разделители: запятая, точка с запятой, пробел, перевод строки и любые их комбинации.
+    """
+    if not cli_companies:
+        return []
+    # Делим по всем: запятая, точка с запятой, пробел, \n, \r
+    parts = re.split(r"[,\s;]+", cli_companies.strip())
+    cli_companies_parsed = [int(s) for s in parts if s.strip().isdigit()]
+
+    return cli_companies_parsed
 
 
 # Функция создания директории, куда будет помещен итоговый отчет
@@ -213,21 +237,36 @@ def process_product_list(df_products):
 
     return df_products_processed
 
+
 # Функция создания списка РК с датами
-def create_input_companies(promotion_companies, df_dates):
-    # Создаем копию списка кампаний из констант
-    input_companies = promotion_companies
-    # Получаем даты для отчета РК
-    date_start_performance, date_end_performance = get_start_end_date(df_dates, type_dates='companies')
-    # Добавляем даты к списку РК
+def create_input_companies(
+        client_name,
+        df_date_range,
+        cli_companies_parsed=[]
+    ):
+    # Если передан список из CLI, используем его
+    if cli_companies_parsed:
+        input_companies = [[str(company)] for company in cli_companies_parsed]
+    else:
+        # Берём по client_name из словаря
+        companies = PROMOTION_COMPANIES.get(client_name, [])
+        if not companies:
+            raise ValueError(f"Список кампаний пуст для клиента {client_name}!")
+        input_companies = [[str(company)] for company in companies]
+
+    # Получаем даты для отчёта РК
+    date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='companies')
+    # Добавляем даты к каждой кампании
     for company in input_companies:
         company.extend([date_start_performance, date_end_performance])
 
     return input_companies
 
 
+
 # Функция выгрузки отчета по РК
 def create_campaigns_report(
+        input_companies,
         df_dates,
         upload_path_statistic,
         client_name,
@@ -239,12 +278,6 @@ def create_campaigns_report(
         delete_files=False,
 
     ):
-
-    # Формируем список РК для отдельных клиентов
-    input_companies = create_input_companies(
-        promotion_companies,
-        df_dates
-    )
     # Формируем отчет РК
     df_campaigns_report = upload_campaigns_report(
         client_name,
@@ -804,8 +837,19 @@ def save_and_format_excel(
 
 # %% Вызов всех функций
 if __name__ == '__main__':
-    # Парсим аргументы командной строки
-    dates_cli = cli_dates(parser)
+
+   # Парсим аргументы командной строки
+    params_companies = cli_companies(parser)
+
+    # Получаем даты из аргументов командной строки
+    date_start_cli = params_companies["start_date"]
+    date_end_cli = params_companies["end_date"]
+
+    # Получаем список кампаний из аргументов командной строки
+    cli_companies = params_companies["promotion_companies"]
+
+    # Парсим список кампаний командной строки
+    cli_companies_parsed = parse_cli_companies(cli_companies)
 
     # Дата, за который считался (или считается) отчет
     date_report=str(date.today())
@@ -815,9 +859,9 @@ if __name__ == '__main__':
     upload_path_statistic = create_upload_statistic_dir(client_name, date_report)
     # Генерируем даты начала и окончания периода выгрузки
     df_dates= generate_dates(
-        reference_date=dates_cli["reference_date"],
-        start_date=dates_cli["start_date"],
-        end_date=dates_cli["end_date"],
+        # reference_date=dates_cli["reference_date"],
+        start_date=date_start_cli,
+        end_date=date_end_cli,
         # start_date='2025-09-01',
         # end_date='2025-09-30'
     )
@@ -831,10 +875,12 @@ if __name__ == '__main__':
     # Генерируем диапазон дат с частотой одного дня
     df_date_range = generate_date_range(df_dates)
 
-    # Получаем список товаров АПИ
-    df_products = get_ozon_product(headers, to_save=False)
-    # Обрабатываем список товаров
-    df_products_processed = process_product_list(df_products)
+    # Формируем список РК
+    input_companies = create_input_companies(
+        client_name,
+        df_dates,
+        cli_companies_parsed,
+    )
     # Получаем отчет РК
     df_campaigns_report = create_campaigns_report(
         df_dates,
@@ -849,6 +895,12 @@ if __name__ == '__main__':
     )
     # Обрабатываем отчет РК
     df_campaigns_report_processed = process_campaigns_report(df_campaigns_report)
+
+    # Получаем список товаров АПИ
+    df_products = get_ozon_product(headers, to_save=False)
+    # Обрабатываем список товаров
+    df_products_processed = process_product_list(df_products)
+
     # Получаем заказы
     df_orders = get_orders_for_svod(df_dates, headers)
     # Получаем остатки
