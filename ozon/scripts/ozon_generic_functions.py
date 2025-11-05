@@ -32,7 +32,7 @@ def get_orders(headers, date_start, date_end):
     df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
 
     # Объединяем два отчета в один
-    common_columns = ['Артикул', 'Наименование товара', 'OZON id', 'Статус', 'Принят в обработку', 'Сумма отправления']
+    common_columns = ['Артикул', 'Название товара', 'OZON id', 'Статус', 'Принят в обработку', 'Сумма отправления']
 
     # GPT START----
     dfs = []
@@ -56,7 +56,8 @@ def get_orders(headers, date_start, date_end):
     df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
     # Переименовываем колонку с Ozon ID
     df_orders_all = df_orders_all.rename(columns={
-        'OZON id': 'Ozon Product ID'
+        'OZON id': 'Ozon Product ID',
+        'Название товара': 'Наименование товара',
     })
     # Переводим столбец с артикулом в строку
     df_orders_all['Артикул'] = df_orders_all['Артикул'].astype(str)
