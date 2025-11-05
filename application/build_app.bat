@@ -14,7 +14,7 @@ echo Корень проекта: %ROOT%
 REM === Параметры сборки ===
 set MAIN_SCRIPT=application\main_window.py
 set ICON=application\icon.ico
-set NAME=my_app
+set NAME=Отчеты (маркетплейсы)
 set PYTHONPATH=%ROOT%
 
 REM === Сборка exe в корень проекта ===
