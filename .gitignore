@@ -175,3 +175,4 @@ mkdocs.yml
 docs/
 docs-mkdocs/
 # application/
+/logs
