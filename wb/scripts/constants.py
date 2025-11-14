@@ -15,7 +15,7 @@ headers = {
 # Путь к текущему скрипту
 script_path = Path(__file__).resolve()
 # Путь к директории с маркетплейсом
-marketplace_dir_name = script_path.parents[1]  # ozon или wb
+marketplace_dir_path = script_path.parents[1]  # ozon или wb
 
 # Имя клиента
 client_name = settings['client_name'][client_number]
@@ -334,7 +334,7 @@ else:
 
 # Нужные колонки для свода по фин. отчету
 if client_name in ['SENS', 'SENS_IP', 'TRIBE']:
-    catalog_finace_svod_columns = ['Артикул поставщика', 'Основной артикул', 'Себестоимость', 'Цвет', 'Сезон', 'Статус']
+    catalog_finace_svod_columns = ['Артикул продавца', 'Размер', 'Статус', 'Себестоимость']
 if client_name in ['IP_Yushkova', 'Orsk_Combinat']:
     catalog_finace_svod_columns = ['Артикул продавца', 'Размер', 'Себестоимость']
 if client_name in ['Neva_Metall']:

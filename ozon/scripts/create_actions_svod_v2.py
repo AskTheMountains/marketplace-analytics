@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -21,7 +22,7 @@ from ozon.scripts.command_args_parser import cli_actions
 # Файл с некоторыми константами
 from ozon.scripts.constants import (
     catalog_action_columns, client_name,
-    headers, headers_wb, marketplace_dir_name,
+    headers, headers_wb, marketplace_dir_path,
     net_cost_koef, svod_actions_cols, default_path_download_actions
 )
 # Функция форматирования excel с планом акций, отдельный скрипт
@@ -279,7 +280,7 @@ def add_data_from_actions_file(
 def read_dates_file(date_report_created):
     # Задаем путь к файлу
     path_dates_file = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}/UploadFiles/UploadFiles_{date_report_created}"
         / f"{date_report_created}_dates_from_to.csv"
@@ -634,7 +635,7 @@ def get_prices(catalog, headers):
 def get_catalog(date_report_created, headers):
     # Имя файла со списком товаров
     products_file_name = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / "UploadFiles"
@@ -948,7 +949,7 @@ def add_data_from_wb(headers_wb, catalog_processed):
 def get_catalog_reference_columns(catalog_ozon_wb):
     # Путь к справочной таблице
     reference_table_path = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / f"catalog"
@@ -989,7 +990,7 @@ def get_catalog_reference_columns(catalog_ozon_wb):
 def add_columns_from_metrics(catalog_with_reference, date_report_created):
     # Путь к файлу с метриками
     metrics_file_name = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / f"Metrics"
@@ -1016,7 +1017,7 @@ def add_reminders_prev_day(catalog, date_report_created):
     date_prev_day = datetime.strftime(date_report_created_ - timedelta(days=1), '%Y-%m-%d')
     # Путь до файла с метриками за предыдущий день
     path_metrics = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / f"Metrics"
@@ -1255,7 +1256,7 @@ def save_excel(
     })
     # Задаем путь, где хранятся отчеты по акциям
     path_actions_svod =  (
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients"
             / client_name
             / "Actions"

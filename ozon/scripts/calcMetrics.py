@@ -1,10 +1,13 @@
+# %% Определение всех функций
 import argparse
 import warnings
 from datetime import date
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# # from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -12,10 +15,10 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('future.no_silent_downcasting', True)
 # Файл с константами
-from ozon.scripts.constants import client_name, marketplace_dir_name
+from ozon.scripts.constants import client_name, marketplace_dir_path
 
 # Создаем директорию, куда будут сохраняться метрики
-metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
+metricsdir = marketplace_dir_path / "Clients" / client_name / "Metrics"
 metricsdir.mkdir(parents=True, exist_ok=True)
 
 from ozon.scripts.command_args_parser import cli_reference_date
@@ -42,7 +45,7 @@ parser = argparse.ArgumentParser(
 def calcMetrics(date_upload_files = str(date.today())):
     # Директории с загруженными файлами из апи
     uploaddir = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "UploadFiles"
@@ -194,7 +197,9 @@ def calcMetrics(date_upload_files = str(date.today())):
     # os.remove('orderware.xlsx')
     logger.info('Done')
 
-
+# %% Вызов всех функций
 if __name__ == '__main__':
     date_upload_files = cli_reference_date(parser)
     calcMetrics(date_upload_files)
+
+# %%

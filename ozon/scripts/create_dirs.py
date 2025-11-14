@@ -1,13 +1,14 @@
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 
 # Файл с некоторыми константами
-from ozon.scripts.constants import client_name, marketplace_dir_name
+from ozon.scripts.constants import client_name, marketplace_dir_path
 
 
 # Функция создания директорий (для новых клиентов)
 def create_dirs():
     # Директория для клиента
-    client_dir = marketplace_dir_name / "Clients" / client_name
+    client_dir = marketplace_dir_path / "Clients" / client_name
     # Список директорий для создания
     dir_names = [
         "UploadFiles",

@@ -11,7 +11,8 @@ import csv
 import numpy as np
 from openpyxl import Workbook
 import re
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 import getopt
 import sys
 pd.options.mode.chained_assignment = None
@@ -25,7 +26,7 @@ from wb.scripts.constants import(
     headers,
     client_number,
     client_name,
-    marketplace_dir_name,
+    marketplace_dir_path,
     catalog_action_columns,
     svod_actions_cols,
     net_cost_koef
@@ -35,7 +36,7 @@ from wb.scripts.constants import(
 # Функция чтения дат формирования отчета
 def read_dates_file(date_report_created):
     report_dates = pd.read_csv(
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "UploadFiles"
@@ -307,7 +308,7 @@ def unpack_sizes(df_products_actions_all, df_products):
 # Функция чтения и обработки справочной таблицы
 def read_catalog():
     # Чтение справочной таблицы
-    catalog = pd.read_excel(marketplace_dir_name / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(marketplace_dir_path / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
     # Удаляем товары, где не указан размер
     catalog_ = catalog.dropna(subset=['Размер'])
     # Если каких-то колонок не хватает, искуственно создаем их, чтобы не было ошибок
@@ -338,7 +339,7 @@ def add_columns_from_metrics(df_products):
     df_products_ = df_products.copy()
     # Считываем файл с метриками за указанную дату
     metrics = pd.read_excel(
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients"
             / client_name
             / f"Metrics/{date_report_created}_МетрикиИтоги.xlsx",
@@ -503,7 +504,7 @@ def save_excel(
     ):
     # Задаем имя файла для сохранения
     filepath_actions_svod = (
-        marketplace_dir_name / "Clients" / client_name / "Actions"
+        marketplace_dir_path / "Clients" / client_name / "Actions"
         / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
     )
     # Сохраняем файл по акциям

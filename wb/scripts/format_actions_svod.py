@@ -3,13 +3,14 @@ from datetime import datetime, timedelta
 import numpy as np
 import openpyxl
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl import formatting
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.utils import get_column_letter
 
-from wb.scripts.constants import marketplace_dir_name, net_cost_koef
+from wb.scripts.constants import marketplace_dir_path, net_cost_koef
 
 
 def format_excel_actions(
@@ -19,7 +20,7 @@ def format_excel_actions(
 ):
     # Задаем имя файла для сохранения
     filepath_actions_svod = (
-        marketplace_dir_name / "Clients" / client_name / "Actions"
+        marketplace_dir_path / "Clients" / client_name / "Actions"
         / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
     )
     # Переводим дату создания свода из строки в дату

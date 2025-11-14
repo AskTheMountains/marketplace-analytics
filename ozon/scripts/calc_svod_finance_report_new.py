@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 import openpyxl
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -31,7 +32,7 @@ from ozon.scripts.constants import (
     catalog_finace_svod_columns,
     client_id_performance, client_name,
     client_secret_performance, headers,
-    marketplace_dir_name
+    marketplace_dir_path
     )
 # Функция выгрузки товаров в поставках
 from ozon.scripts.uploadDataFromOzon import (
@@ -44,7 +45,7 @@ from ozon.scripts.uploadDataFromOzonPerformance import (
     getCompanyStatistics
 )
 # Функция выгрузки отчета о релизации товаров
-from ozon.scripts.uploadFinanceReports import get_products_realization_report
+from ozon.scripts.get_realization import get_products_realization_report
 
 parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",
@@ -95,7 +96,7 @@ def create_current_report_dir(client_name, date_start, date_end):
     )
     # Формируем путь к директории
     finance_reports_dir = (
-        marketplace_dir_name
+        marketplace_dir_path
         / 'Clients'
         / client_name
         / 'FinanceReports'
@@ -999,7 +1000,7 @@ def calc_supplies_costs(df_finance_report):
 def read_catalog(client_name):
     # Задаем путь к справочной таблице
     path_catalog = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "catalog"
@@ -1190,7 +1191,7 @@ def calc_other_costs(df_finance_report, df_sku_costs_all_stats, result_sku_costs
 def add_data_from_catalog(result_all_costs):
     # Задаем путь к справочной таблице
     path_catalog = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "catalog"
@@ -1241,10 +1242,13 @@ def calc_final_costs(df_all_costs_with_catalog):
     df_final_costs = df_all_costs_with_catalog.copy()
 
     # Колонка, от которой считаем долю маржинальности
-    marg_sales_column = df_final_costs['Продажи - Возвраты (руб)']
+    marg_sales = 'Продажи - Возвраты (руб)'
+    marg_amount = 'Продажи - Возвраты (шт)'
+    marg_sales_column = df_final_costs[marg_sales]
+
 
     # Считаем себестоимость
-    df_final_costs['Себестоимость * Факт продаж'] = (-1) * abs(df_final_costs['Себестоимость'] * df_final_costs['Продажи - Возвраты (шт)'])
+    df_final_costs['Себестоимость * Факт продаж'] = (-1) * abs(df_final_costs['Себестоимость'] * df_final_costs[marg_amount])
 
     # Считаем все расходы на рекламные кампании
     # Определяем колонки, которые будут включены в затраты на рекламу
@@ -1334,7 +1338,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     sales_rub_mean_by_article = (
         df_final_costs
         .groupby(['Артикул размерного ряда'])
-        ['Продажи - Возвраты (руб)'].transform('mean')
+        [marg_sales].transform('mean')
     )
     marg_rub_mean_by_article = (
         df_final_costs
@@ -1573,6 +1577,10 @@ def format_excel(
     start_row = 2
     end_row = final_ws.max_row
 
+    # Колонка, от которой считаем маржинальность
+    marg_sales = 'Продажи - Возвраты (руб)'
+    marg_amount = 'Продажи - Возвраты (шт)'
+
     for row in range(start_row, end_row + 1):
         # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
         if existing_promotion_columns:
@@ -1584,7 +1592,7 @@ def format_excel(
 
         # --- "% Затрат на рекламу" (через IFERROR, чтобы не было #ЗНАЧ!)
         cell_promo = f"{col_map['Затраты на рекламу (руб)']}{row}"
-        cell_sales_minus_returns = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        cell_sales_minus_returns = f"{col_map[marg_sales]}{row}"
         formula_percent = (
             f'=IFERROR(ABS({cell_promo}/{cell_sales_minus_returns}*100), "")'
         )
@@ -1594,14 +1602,14 @@ def format_excel(
         cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
 
         # --- Себестоимость * Факт продаж (IFERROR — пропускать ошибки)
-        cell_fact_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        cell_fact_qty = f"{col_map[marg_amount]}{row}"
         formula_sebestoimost_fact = (
             f'=IFERROR(IF(OR({cell_sebestoimost}=0, {cell_sebestoimost}=""), "", (-1)* ABS({cell_sebestoimost}*{cell_fact_qty})), "")'
         )
         final_ws[f"{col_map['Себестоимость * Факт продаж']}{row}"].value = formula_sebestoimost_fact
 
         # --- "Маржинальность руб": продажи-возвраты минус сумма всех затрат (IFERROR — пропускать ошибки)
-        base_sales = f"{col_map['Продажи - Возвраты (руб)']}{row}"
+        base_sales = f"{col_map[marg_sales]}{row}"
         cost_sum = '+'.join(f"{col_map[col]}{row}" for col in cost_columns)
         margin_formula = (
             f'=IFERROR(IF(OR({cell_sebestoimost}=0,{cell_sebestoimost}=""),"",{base_sales}+{cost_sum}), "")'
@@ -1616,14 +1624,14 @@ def format_excel(
 
         # --- "Маржинальность %" (через IFERROR)
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-        cell_sales = f"{col_map['Продажи руб']}{row}"
+        cell_sales = f"{col_map[marg_sales]}{row}"
         formula_percent_margin = (
             f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
         )
         final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
         # --- "Маржинальность на ед. товара руб" (через IFERROR)
-        cell_qty = f"{col_map['Продажи - Возвраты (шт)']}{row}"
+        cell_qty = f"{col_map[marg_amount]}{row}"
         formula_na_ed = (
             f'=IFERROR(ABS({cell_marg_rub}/{cell_qty})*SIGN({cell_marg_rub}), "")'
         )

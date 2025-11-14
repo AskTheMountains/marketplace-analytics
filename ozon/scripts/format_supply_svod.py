@@ -3,7 +3,8 @@ import shutil
 import numpy as np
 import openpyxl
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import formatting
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter

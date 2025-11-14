@@ -1,16 +1,17 @@
 import shutil
 import os
 
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 
 # Файл с некоторыми константами
-from wb.scripts.constants import marketplace_dir_name, client_name
+from wb.scripts.constants import marketplace_dir_path, client_name
 
 
 # Функция создания директорий (для новых клиентов)
 def create_dirs():
     # Директория для клиента
-    client_dir = marketplace_dir_name / "Clients" / client_name
+    client_dir = marketplace_dir_path / "Clients" / client_name
     # Список директорий для создания
     dir_names = [
         'UploadFiles',

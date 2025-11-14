@@ -8,7 +8,8 @@ import os
 import csv
 import numpy as np
 import re
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 import getopt
 import sys
 from ast import literal_eval

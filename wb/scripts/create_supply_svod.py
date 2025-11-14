@@ -6,7 +6,8 @@ from itertools import product
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -16,7 +17,7 @@ from wb.scripts.command_args_parser import cli_reference_date
 # Некоторые константы
 from wb.scripts.constants import (cargo_type, catalog_supply_columns,
                                   client_name, is_heavy_cargo,
-                                  marketplace_dir_name, shop_type,
+                                  marketplace_dir_path, shop_type,
                                   svod_clusters_columns, svod_total_columns)
 
 # Добавляем описание скрипта в парсер аргументов
@@ -35,11 +36,11 @@ parser = argparse.ArgumentParser(
 )
 
 # Директории с загруженными файлами из апи
-uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
+uploaddir = marketplace_dir_path / "Clients" / client_name / "UploadFiles"
 uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 
 # Директория с метриками
-metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
+metricsdir = marketplace_dir_path / "Clients" / client_name / "Metrics"
 
 # Функция чтения дат фомрирования отчета
 def read_dates_file(date_metrics):
@@ -125,7 +126,7 @@ def read_clusters_mapping(cargo_type):
         cluster_sheet_name = 'Короба'
     # Считываем df с группировкой складов
     clusters_mapping_df = pd.read_excel(
-        marketplace_dir_name / "scripts" / "wb_warehouses_mapping.xlsx",
+        marketplace_dir_path / "scripts" / "wb_warehouses_mapping.xlsx",
         sheet_name=cluster_sheet_name
     )
     # Удаляем дубликаты на всякий случай
@@ -301,7 +302,7 @@ def add_demand_for_cluster_columns(metrics_df_by_cluster,
 def read_catalog():
     # Чтение справочной таблицы
     catalog = pd.read_excel(
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / "catalog"
@@ -440,7 +441,7 @@ def save_sheets_to_excel(
     ):
     # Директория для сохранения с именем файла
     path_supply_svod = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "SupplySvod"
@@ -477,7 +478,7 @@ def format_excel(
         svod_excel_clusters
     ):
     # Директория хранения отчетов по расчету поставок
-    path_supply_svod = marketplace_dir_name / "Clients" / client_name / "SupplySvod"
+    path_supply_svod = marketplace_dir_path / "Clients" / client_name / "SupplySvod"
 
     # Создаем файл excel, в котором будет производиться форматирование
     format_supply_svod.copy_supply_svod_file(

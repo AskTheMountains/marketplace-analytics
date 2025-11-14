@@ -7,11 +7,12 @@ from zipfile import ZipFile
 
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 
 from ozon.scripts.constants import (client_id_performance, client_name,
                                     client_secret_performance,
-                                    marketplace_dir_name,
+                                    marketplace_dir_path,
                                     ozon_performance_api_url)
 
 # Файл с настройками и номером клиента
@@ -192,7 +193,7 @@ def getCompanyStatistics(
                 if 'error' in resp_data_company_stats.keys():
                     # Получаем текст ошибки
                     error_message = resp_data_company_stats['error']
-                    logger.info(f"{error_message}")
+                    logger.warning(f"Ошибка выгрузки статистики: {error_message}")
                     # Делаем паузу перед следующей отправкой запроса на генерацию
                     time.sleep(5)
                 # Если ошибки нет, то ставим флаг того, что запрос прошел и идем дальше
@@ -512,7 +513,7 @@ def upload_data_performane(
 # %% Вызов всех функций
 if __name__ == "__main__":
     # Создаем директорию для файлов выгрузки по API Performance
-    uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFilesPerformance"
+    uploaddir = marketplace_dir_path / "Clients" / client_name / "UploadFilesPerformance"
     uploaddir.mkdir(parents=True, exist_ok=True)
 
     # Создаем директорию для выгрузки за сегодняшний день

@@ -10,7 +10,8 @@ import numpy as np
 import openpyxl
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
@@ -23,7 +24,7 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
-from wb.scripts.constants import client_name, headers, marketplace_dir_name
+from wb.scripts.constants import client_name, headers, marketplace_dir_path
 from wb.scripts.wb_generic_functions import get_company_stats_v2
 from wb.scripts.wb_generic_functions import upload_realization_report
 from wb.scripts.calc_svod_finance_report_WB_v2 import (  # filter_report_dates

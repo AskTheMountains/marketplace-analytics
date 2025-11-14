@@ -6,7 +6,8 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -30,7 +31,7 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_date_range
 # Некоторые константы
-from wb.scripts.constants import client_name, headers, marketplace_dir_name
+from wb.scripts.constants import client_name, headers, marketplace_dir_path
 # Функции выгрузки данных по API WB
 from wb.scripts.uploadDataFromWB import getOrdersWB as get_orders
 from wb.scripts.uploadDataFromWB import getWBProduct
@@ -110,7 +111,7 @@ def generate_date_range(df_dates):
 # Функция создания директории, куда будет помещен итоговый отчет
 def create_orders_svod_dir(client_name, date_report=str(date.today())):
     orders_svod_path = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "OrdersSvod"

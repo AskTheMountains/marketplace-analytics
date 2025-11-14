@@ -4,7 +4,8 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -13,7 +14,7 @@ from wb.scripts.command_args_parser import cli_reference_date
 # Файл с константами
 from wb.scripts.constants import (cargo_type, client_name,
                                   ignore_virtual_warehouses,
-                                  marketplace_dir_name)
+                                  marketplace_dir_path)
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -35,7 +36,7 @@ parser = argparse.ArgumentParser(
 
 def calcMetrics(date_upload_files=str(date.today())):
     # Директории с загруженными файлами из апи
-    uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles" / f"UploadFiles_{date_upload_files}"
+    uploaddir = marketplace_dir_path / "Clients" / client_name / "UploadFiles" / f"UploadFiles_{date_upload_files}"
     dates_from_to = pd.read_csv(uploaddir / f"{date_upload_files}_dates_from_to.csv", sep=';')
     logger.info(f"Calculation metrics for client {client_name} for dates {dates_from_to['date_start'][0]} - {dates_from_to['date_end'][0]}")
     # Загрузка данных из CSV файлов
@@ -187,7 +188,7 @@ def calcMetrics(date_upload_files=str(date.today())):
         wb_warehouses_sheet_name = 'Короба'
     # Считываем таблицу группировки складов WB
     wb_warehouses_mapping = pd.read_excel(
-        f"{marketplace_dir_name}/scripts/wb_warehouses_mapping.xlsx",
+        f"{marketplace_dir_path}/scripts/wb_warehouses_mapping.xlsx",
         sheet_name = wb_warehouses_sheet_name
     )
     # На всякий случай удаляем дубликаты
@@ -263,7 +264,7 @@ def calcMetrics(date_upload_files=str(date.today())):
 
 
 if __name__ == '__main__':
-    metricsdir = marketplace_dir_name / "Clients" / client_name / "Metrics"
+    metricsdir = marketplace_dir_path / "Clients" / client_name / "Metrics"
     if not metricsdir.exists():
         metricsdir.mkdir(parents=True, exist_ok=True)
     date_upload_files = cli_reference_date(parser)

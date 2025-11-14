@@ -4,13 +4,14 @@ from datetime import datetime
 import numpy as np
 import openpyxl
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import formatting
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.utils import get_column_letter
 
-from ozon.scripts.constants import marketplace_dir_name, net_cost_koef
+from ozon.scripts.constants import marketplace_dir_path, net_cost_koef
 
 # from options import settings, client_number
 # date_report_created = '2024-10-22'
@@ -21,14 +22,14 @@ def copy_actions_file(client_name, date_report_created, boostings_file=False):
     # Имя файла с акциями
     if boostings_file:
         file_name_actions = (
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients" / client_name / "Actions"
             / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon.xlsx"
         )
         file_name_actions_formatted = f"{file_name_actions}_formatted.xlsx"
     else:
         file_name_actions = (
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients" / client_name / "Actions"
             / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon.xlsx"
         )
@@ -51,13 +52,13 @@ def format_excel_actions(
     # Имя файла с акциями
     if final_actions_path is not None:
         file_name_actions = (
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients" / client_name / "Actions"
             / f"{date_report_created}_Таблица_по_акциям_{client_name}_с_Бустингами_Ozon"
         )
     else:
         file_name_actions = (
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients" / client_name / "Actions"
             / f"{date_report_created}_Таблица_по_акциям_{client_name}_Ozon"
         )

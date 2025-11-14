@@ -6,7 +6,8 @@ from datetime import date,datetime,timedelta
 import os
 import glob
 import re
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 import openpyxl
 from openpyxl.styles import Border, Side
 from openpyxl.utils import get_column_letter

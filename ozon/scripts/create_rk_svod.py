@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import re
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
@@ -129,19 +130,19 @@ def generate_dates(reference_date: str = None, start_date: str = None, end_date:
             today = datetime.strptime(reference_date, "%Y-%m-%d")
 
         # Логика в зависимости от дня недели
-        if today.weekday() == 0:
-            # Если сегодня понедельник (weekday() == 0)
-            # Понедельник предыдущей недели:
-            start_dt = today - timedelta(days=7)
-            start_dt = start_dt - timedelta(days=start_dt.weekday())
-            # Воскресенье предыдущей недели:
-            end_dt = start_dt + timedelta(days=6)
-        else:
-            # Если не понедельник:
-            # Понедельник текущей недели:
-            start_dt = today - timedelta(days=today.weekday())
-            # Вчерашний день:
-            end_dt = today - timedelta(days=1)
+        # if today.weekday() == 0:
+        # Если сегодня понедельник (weekday() == 0)
+        # Понедельник предыдущей недели:
+        start_dt = today - timedelta(days=7)
+        start_dt = start_dt - timedelta(days=start_dt.weekday())
+        # Воскресенье предыдущей недели:
+        end_dt = start_dt + timedelta(days=6)
+        # else:
+        # # Если не понедельник:
+        # # Понедельник текущей недели:
+        # start_dt = today - timedelta(days=today.weekday())
+        # # Вчерашний день:
+        # end_dt = today - timedelta(days=1)
 
     start_date_str = start_dt.strftime('%Y-%m-%d')
     end_date_str = end_dt.strftime('%Y-%m-%d')
@@ -678,8 +679,8 @@ if __name__ == '__main__':
         # reference_date=dates_cli["reference_date"],
         start_date=date_start_cli,
         end_date=date_end_cli,
-        # start_date='2025-09-01',
-        # end_date='2025-09-28'
+        # start_date='2025-10-27',
+        # end_date='2025-11-06'
     )
     # Выбираем начальную и конечную дату
     date_start_print = df_dates['date_start'].iloc[0]
@@ -705,7 +706,7 @@ if __name__ == '__main__':
         headers,
         client_id_performance,
         client_secret_performance,
-        # task_id='',
+        # task_id='067b8050-ef02-460e-be6f-866f6d4da749',
         to_save=True,
         delete_files=False
     )

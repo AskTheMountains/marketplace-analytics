@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import re
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
@@ -127,19 +128,19 @@ def generate_dates(
             today = datetime.strptime(reference_date, "%Y-%m-%d")
 
         # Логика в зависимости от дня недели
-        if today.weekday() == 0:
-            # Если сегодня понедельник (weekday() == 0)
-            # Понедельник предыдущей недели:
-            start_dt = today - timedelta(days=7)
-            start_dt = start_dt - timedelta(days=start_dt.weekday())
-            # Воскресенье предыдущей недели:
-            end_dt = start_dt + timedelta(days=6)
-        else:
-            # Если не понедельник:
-            # Понедельник текущей недели:
-            start_dt = today - timedelta(days=today.weekday())
-            # Вчерашний день:
-            end_dt = today - timedelta(days=1)
+        # if today.weekday() == 0:
+        # Если сегодня понедельник (weekday() == 0)
+        # Понедельник предыдущей недели:
+        start_dt = today - timedelta(days=7)
+        start_dt = start_dt - timedelta(days=start_dt.weekday())
+        # Воскресенье предыдущей недели:
+        end_dt = start_dt + timedelta(days=6)
+        # else:
+        # # Если не понедельник:
+        # # Понедельник текущей недели:
+        # start_dt = today - timedelta(days=today.weekday())
+        # # Вчерашний день:
+        # end_dt = today - timedelta(days=1)
 
     start_date_str = start_dt.strftime('%Y-%m-%d')
     end_date_str = end_dt.strftime('%Y-%m-%d')
@@ -2293,8 +2294,8 @@ if __name__ == '__main__':
         # reference_date=dates_cli["reference_date"],
         start_date=date_start_cli,
         end_date=date_end_cli,
-        # start_date='2025-10-01',
-        # end_date='2025-10-27'
+        # start_date='2025-10-27',
+        # end_date='2025-11-06'
     )
     # Формируем список кампаний, по которым нужно сформировать отчет
     input_companies = create_input_companies(

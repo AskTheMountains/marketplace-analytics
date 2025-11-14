@@ -10,7 +10,8 @@ import csv
 import numpy as np
 from openpyxl import Workbook
 import re
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 import getopt
 import sys
 pd.options.mode.chained_assignment = None  # default='warn'

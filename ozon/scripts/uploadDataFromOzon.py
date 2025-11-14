@@ -11,8 +11,10 @@ from colorama import Fore, Back, Style, init
 from pathlib import Path
 
 import pandas as pd
+from io import BytesIO
 import requests
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -21,7 +23,7 @@ pd.set_option('future.no_silent_downcasting', True)
 # Функция парсинга аргумента количества дней выгрузки
 from ozon.scripts.command_args_parser import cli_days_ago
 # Файл с некоторыми константами
-from ozon.scripts.constants import (client_name, headers, marketplace_dir_name,
+from ozon.scripts.constants import (client_name, headers, marketplace_dir_path,
                                     ozon_seller_api_url)
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
@@ -44,7 +46,7 @@ parser = argparse.ArgumentParser(
 
 # Определяем имя директории для загрузки файлов
 uploaddir = (
-    marketplace_dir_name
+    marketplace_dir_path
     / "Clients"
     / client_name
     / "UploadFiles"
@@ -56,7 +58,7 @@ uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 def create_upload_dir():
     # Определяем имя директории для загрузки файлов
     uploaddir = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "UploadFiles"
@@ -754,7 +756,7 @@ def getFinalOrders_fbo(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBO orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-                df.to_csv(file_name_final_orders, sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False, encoding='utf-8-sig')
             except Exception as e:
                 print(f"{e}")
                 logger.info("Connection is lost. Waiting  2 minutes and continue connection")
@@ -832,7 +834,7 @@ def getFinalOrders_fbs(headers):
                 loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
                 logger.info(str(loaded_percent) + ' % ' + "Upload FBS orders on "+ orderDate.replace("['",'').replace("']",''))
                 # time.sleep(1)
-                df.to_csv(file_name_final_orders, sep=";", index = False)
+                df.to_csv(file_name_final_orders, sep=";", index = False, encoding='utf-8-sig')
             except Exception as e:
                 print(f"{e}")
                 logger.info("Connection is lost. Waiting  2 minites and continue connection")
@@ -1073,17 +1075,36 @@ def getStockReminders_fbs(headers, to_save=True):
         resp_data = {"result":{"file":""}}
         while not resp_data["result"]["file"]:
             resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers, data=code_id).json()
-        time.sleep(5)
+            time.sleep(2)  # добавьте небольшую задержку, чтобы избежать лишних запросов
+
+        time.sleep(5)  # дайте пару секунд на саму генерацию отчета
         path_csv = resp_data["result"]["file"]
         logger.info('Get link on FBS warehouses report')
-        df_fbs_reminders = pd.read_excel(path_csv)
+        logger.info(f"FBS stock reminders report link: {path_csv}")
+
+        # Качаем файл
+        MAX_TRIES = 20
+        DELAY = 3  # секунд между попытками
+
+        for i in range(MAX_TRIES):
+            resp = requests.get(path_csv, stream=True)
+            if resp.status_code == 200:
+            # and int(resp.headers.get("Content-Length", 0)) > 5000:
+                break
+            time.sleep(DELAY)
+        else:
+            raise Exception("Файл так и не стал доступен для скачивания")
+
+        # Читаем в pandas из памяти
+        df_fbs_reminders = pd.read_excel(BytesIO(resp.content))
+
+
         # Если на складах есть остатки, то переименовываем колонки в нормальные и сохраняем в csv
         if df_fbs_reminders.shape[0] > 0:
             df_fbs_reminders.columns = fbs_reminders_columns
-        # Если нет, то пустой df
+        # Если нет, то создаём пустой DataFrame с нужными колонками
         else:
             df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
-
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
         df_fbs_reminders.to_csv(file_name_stock_rem_fbs, sep=";", encoding='utf-8-sig', index=False)
@@ -1403,7 +1424,7 @@ def get_supply_orders(
     )
     # Задаем имя файла с кластерами
     file_name_clusters = (
-        Path(marketplace_dir_name)
+        Path(marketplace_dir_path)
         / "scripts"
         / "clusters_and_warehouses.csv"
     )

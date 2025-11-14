@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -16,7 +17,7 @@ pd.options.mode.chained_assignment = None
 from wb.scripts.command_args_parser import cli_reference_date
 # Некоторые константы
 from wb.scripts.constants import (catalog_action_columns, client_name, headers,
-                                  marketplace_dir_name, net_cost_koef,
+                                  marketplace_dir_path, net_cost_koef,
                                   svod_actions_cols)
 # Функция форматирования excel с планом акций, отдельный скрипт
 from wb.scripts.format_actions_svod import format_excel_actions
@@ -42,7 +43,7 @@ parser = argparse.ArgumentParser(
 # Функция чтения дат формирования отчета
 def read_dates_file(date_report_created):
     report_dates = pd.read_csv(
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "UploadFiles"
@@ -58,7 +59,7 @@ def read_actions_files(date_report_created):
     filenames = {"path": [], "file_name": [], "action_name": []}
     # Путь к папке с данными по акциям ЛК
     path_actions = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "Actions"
@@ -99,7 +100,7 @@ def read_actions_files(date_report_created):
 def read_products_file(date_report_created):
     # Путь к файлу со списком товаром
     filepath_products = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "UploadFiles"
@@ -137,7 +138,7 @@ def process_product_list(df_products):
 
 # Функция получения столбцов из справочной таблицы
 def get_columns_from_catalog(df_products_processed):
-    catalog = pd.read_excel(marketplace_dir_name / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = pd.read_excel(marketplace_dir_path / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
     # Для размера отдельно прописываем, что колонку нужно сделать 0
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = 0
@@ -178,7 +179,7 @@ def calc_additional_columns(df_products_with_catalog):
 def get_columns_from_metrics(date_report_created, df_products):
     # Считываем файл с метриками за указанную дату
     metrics = pd.read_excel(
-            marketplace_dir_name
+            marketplace_dir_path
             / "Clients"
             / client_name
             / f"Metrics/{date_report_created}_МетрикиИтоги.xlsx",
@@ -206,7 +207,7 @@ def add_reminders_prev_day(catalog, date_report_created):
     date_report_created_ = datetime.strptime(date_report_created, "%Y-%m-%d")
     date_prev_day = datetime.strftime(date_report_created_ - timedelta(days=1), '%Y-%m-%d')
     # Путь до файла с метриками за предыдущий день
-    path_metrics = marketplace_dir_name / "Clients" / client_name / f"Metrics/{date_prev_day}_МетрикиИтоги.xlsx"
+    path_metrics = marketplace_dir_path / "Clients" / client_name / f"Metrics/{date_prev_day}_МетрикиИтоги.xlsx"
     # Если файл есть
     if os.path.exists(path_metrics):
         # Считываем метрики за пред. день
@@ -325,7 +326,7 @@ def save_excel(catalog_excel, action_list_df, date_report_created):
     })
     # Задаем имя файла для сохранения
     filepath_actions_svod = (
-        marketplace_dir_name / "Clients" / client_name / "Actions"
+        marketplace_dir_path / "Clients" / client_name / "Actions"
         / f"{date_report_created}_Таблица_по_акциям_{client_name}_WB.xlsx"
     )
     # Сохраняем файл по акциям

@@ -9,7 +9,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
@@ -129,17 +130,20 @@ def generate_dates(
         else:
             today = datetime.strptime(reference_date, "%Y-%m-%d")
 
-        # если день недели < 4 (до пятницы)
-        if today.weekday() < 4:
-            # понедельник предыдущей недели
-            start_dt = today - timedelta(days=today.weekday() + 7)
-            # воскресенье предыдущей недели
-            end_dt = start_dt + timedelta(days=6)
-        else:
-            # понедельник текущей недели
-            start_dt = today - timedelta(days=today.weekday())
-            # вчерашний день
-            end_dt = today - timedelta(days=1)
+        # Логика в зависимости от дня недели
+        # if today.weekday() == 0:
+        # Если сегодня понедельник (weekday() == 0)
+        # Понедельник предыдущей недели:
+        start_dt = today - timedelta(days=7)
+        start_dt = start_dt - timedelta(days=start_dt.weekday())
+        # Воскресенье предыдущей недели:
+        end_dt = start_dt + timedelta(days=6)
+        # else:
+        # # Если не понедельник:
+        # # Понедельник текущей недели:
+        # start_dt = today - timedelta(days=today.weekday())
+        # # Вчерашний день:
+        # end_dt = today - timedelta(days=1)
 
     start_date_str = start_dt.strftime('%Y-%m-%d')
     end_date_str = end_dt.strftime('%Y-%m-%d')

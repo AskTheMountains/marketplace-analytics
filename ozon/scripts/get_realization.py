@@ -8,12 +8,13 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 # Файл с настройками и номером клиента
-from ozon.scripts.constants import client_name, headers, marketplace_dir_name
+from ozon.scripts.constants import client_name, headers, marketplace_dir_path
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_dates
 

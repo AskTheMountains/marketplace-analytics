@@ -5,7 +5,8 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.styles import Border, Side
 from openpyxl.utils import get_column_letter
@@ -21,7 +22,7 @@ from wb.scripts.calc_svod_finance_report_WB_v2 import (  # filter_report_dates
 from wb.scripts.command_args_parser import cli_dates
 # Файл с некоторыми константами
 from wb.scripts.constants import (
-    client_name, headers, marketplace_dir_name,
+    client_name, headers, marketplace_dir_path,
     finance_report_price_column as sales_column
 )
 # Функции выгрузки данных по АПИ, которые уже готовы
@@ -47,7 +48,7 @@ parser = argparse.ArgumentParser(
 # Создание нужных директорий
 def create_dirs():
     # Папка с клиентом
-    client_dir = marketplace_dir_name / "Clients" / client_name
+    client_dir = marketplace_dir_path / "Clients" / client_name
     # Список директорий для создания
     dir_names = ['SalesOrdersSvod']
     for dir_name in dir_names:
@@ -475,7 +476,7 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
     # Имя файла для сохранения отчета
     report_file_name = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "SalesOrdersSvod"

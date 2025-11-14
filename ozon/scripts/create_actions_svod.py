@@ -11,7 +11,8 @@ import csv
 import numpy as np
 from openpyxl import Workbook
 import re
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 import getopt
 import sys
 pd.options.mode.chained_assignment = None
@@ -23,7 +24,7 @@ from ozon.scripts.format_svod_actions import format_excel_actions
 from ozon.scripts.constants import (
     client_name,
     headers,
-    marketplace_dir_name,
+    marketplace_dir_path,
     catalog_action_columns,
     svod_actions_cols,
     net_cost_koef

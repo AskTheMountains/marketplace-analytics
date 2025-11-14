@@ -10,7 +10,8 @@ import numpy as np
 import openpyxl
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter

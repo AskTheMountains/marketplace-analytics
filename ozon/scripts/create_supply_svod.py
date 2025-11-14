@@ -6,7 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+# from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
@@ -16,7 +17,7 @@ from ozon.scripts.command_args_parser import cli_reference_date
 # Файл с некоторыми константами
 from ozon.scripts.constants import (catalog_supply_columns, client_name,
                                     clusters_mapping, clusters_mapping_jewelry,
-                                    marketplace_dir_name, shop_type,
+                                    marketplace_dir_path, shop_type,
                                     svod_clusters_columns, svod_total_columns)
 
 # Добавляем описание скрипта в парсер аргументов
@@ -35,7 +36,7 @@ parser = argparse.ArgumentParser(
 
 # Директории с загруженными файлами из апи
 uploaddir = (
-    Path(marketplace_dir_name)
+    Path(marketplace_dir_path)
     / "Clients"
     / client_name
     / "UploadFiles"
@@ -44,7 +45,7 @@ uploaddir = (
 
 # Директория с метриками
 metricsdir = (
-    Path(marketplace_dir_name)
+    Path(marketplace_dir_path)
     / "Clients"
     / client_name
     / "Metrics"
@@ -162,7 +163,7 @@ def add_clusters(date_metrics):
     metrics_summary = read_metrics_file(date_metrics, sheet_name='summary')
 
     # Чтение файла с кластерами
-    clusters = pd.read_csv(f'{marketplace_dir_name}/scripts/clusters_and_warehouses.csv', sep=';')
+    clusters = pd.read_csv(f'{marketplace_dir_path}/scripts/clusters_and_warehouses.csv', sep=';')
     # clusters.drop('Unnamed: 0', axis=1, inplace=True)
 
     # Получение уникальных комбинаций Артикул-Кластер
@@ -333,11 +334,20 @@ def add_columns_from_catalog(metrics_df_by_sku_with_stats):
     # Создаем копию для избежания изменений в оригинальном df
     metrics_df_by_sku_with_stats_ = metrics_df_by_sku_with_stats.copy()
     # Считываем справочную таблицу
-    catalog = pd.read_excel(f"{marketplace_dir_name}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_Ozon.xlsx")
+    catalog = pd.read_excel(f"{marketplace_dir_path}/Clients/{client_name}/catalog/Справочная_таблица_{client_name}_Ozon.xlsx")
     # Переименовываем колонку с артикулом
     catalog = catalog.rename(columns={'Артикул продавца': 'Артикул'})
     # Переводим колонку с артикулом в строку
     catalog['Артикул'] = catalog['Артикул'].astype(str)
+
+    # Создаем колонки в справочной таблице, если их нет
+    missing_columns = []
+    for col in catalog_supply_columns:
+        if col not in catalog.columns:
+            catalog[col] = np.nan
+            missing_columns.append(col)
+    if missing_columns:
+        logger.warning(f"Отсутствуют колонки в справочной таблице: {missing_columns}")
 
     # metrics_df_by_sku_with_stats_.drop(columns=['Размер'], inplace=True)
     metrics_df_by_sku_with_stats_ = metrics_df_by_sku_with_stats_.merge(
@@ -486,7 +496,7 @@ def save_sheets_to_excel(
     ):
     # Задаем путь для сохранения
     path_supply_svod = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / f"SupplySvod"
@@ -520,7 +530,7 @@ def format_excel(
     ):
     # Определяем путь, где лежат расчеты поставок
     path_supply_svod = (
-        marketplace_dir_name
+        marketplace_dir_path
         / f"Clients"
         / f"{client_name}"
         / f"SupplySvod"

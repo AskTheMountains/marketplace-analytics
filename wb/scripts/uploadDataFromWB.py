@@ -8,17 +8,18 @@ from colorama import Fore, Back, Style, init
 
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.set_option('chained_assignment',None)
 
 # Файл с некоторыми константами
-from wb.scripts.constants import client_name, headers, marketplace_dir_name
+from wb.scripts.constants import client_name, headers, marketplace_dir_path
 
 # Имя директории для текущей выгрузки
-uploaddir = marketplace_dir_name / "Clients" / client_name / "UploadFiles"
+uploaddir = marketplace_dir_path / "Clients" / client_name / "UploadFiles"
 uploaddir_today = uploaddir / f"UploadFiles_{str(date.today())}"
 
 # Функция парсинга аргумента количества дней выгрузки

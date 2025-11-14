@@ -9,7 +9,8 @@ from datetime import date, datetime, timedelta
 import numpy as np
 import pandas as pd
 import requests
-from loguru import logger
+# # from loguru import logger
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -24,7 +25,7 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_dates
 # Файл с некоторыми константами
-from ozon.scripts.constants import (client_name, headers, marketplace_dir_name,
+from ozon.scripts.constants import (client_name, headers, marketplace_dir_path,
                                     ozon_seller_api_url)
 # Функции выгрузки данных по АПИ, которые уже готовы
 from ozon.scripts.uploadDataFromOzon import getOrders
@@ -48,7 +49,7 @@ parser = argparse.ArgumentParser(
 # Создание нужных директорий
 def create_dirs():
     # Папка с клиентом
-    client_dir = f"{marketplace_dir_name}/Clients/{client_name}/"
+    client_dir = f"{marketplace_dir_path}/Clients/{client_name}/"
     # Список директорий для создания
     dir_names = ['SalesOrdersSvod']
     for dir_name in dir_names:
@@ -414,7 +415,7 @@ def save_excel(df_plan, date_start, date_end, date_report=str(date.today())):
 
     # Имя файла для сохранения отчета
     report_file_name = (
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "SalesOrdersSvod"

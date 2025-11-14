@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 
 pd.options.mode.chained_assignment = None  # default='warn'
 
@@ -557,18 +558,51 @@ def get_company_stats_v2(
 
 # --- Выгрузка отчета реализации --- #
 ## Вспомогательные функции
-def wildberries_get_report_detail(headers, date_from, date_to, rrdid=0, limit=100000):
-    """Запрос за один кусок отчёта."""
+def wildberries_get_report_detail(
+    headers, date_from, date_to, rrdid=0, limit=100000,
+    last_call_time=None, max_retries=5
+):
+    """
+    Запрос за один кусок отчёта c лимитом – 1 запрос в минуту и обработкой 429-ошибки.
+    """
     url = 'https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod'
     params = {
         'dateFrom': date_from,
         'dateTo': date_to,
-        'rrdid': rrdid,  # тут имя параметра rrdid (без подчеркивания)
+        'rrdid': rrdid,
         'limit': limit
     }
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json()
+
+    attempt = 0
+    while True:
+        # Лимит "1 в минуту" между запросами (если не первый)
+        if last_call_time is not None:
+            elapsed = time.time() - last_call_time
+            wait = 60 - elapsed
+            if wait > 0:
+                if logger:
+                    logger.info(f'Пауза {int(wait)} секунд между запросами (лимит WB)')
+                time.sleep(wait)
+        try:
+            response = requests.get(url, headers=headers, params=params)
+        except Exception as e:
+            if logger:
+                logger.error(f"Ошибка соединения: {str(e)}")
+            raise
+        # Проверим код возврата
+        if response.status_code == 429:
+            logger.warning(f'Получен 429 Too Many Requests. Ждём 60 сек и повторяем запрос.')
+            time.sleep(60)
+
+            attempt += 1
+            if attempt > max_retries:
+                logger.error('Превышено максимальное число повторов после 429')
+                response.raise_for_status()
+        else:
+            response.raise_for_status()
+            break  # Ошибки нет – выходим из цикла
+
+    return response.json(), time.time()
 
 ## Основная логика (обработка недель, rrd_id и бинарный сплит)
 def upload_realization_report(headers, date_start, date_end, verbose=False):
@@ -604,14 +638,17 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
             rrdid = 0                # Начинаем с нуля (с начала страницы)
             last_max_date_to = None  # Для отслеживания до какой даты реально дошли
             rows_in_window = []      # Сюда собираем строки ТОЛЬКО за это окно
+            last_call_time = None  # Пауза между запросами
 
             while True:  # Цикл пагинации по rrd_id
-                # Делаем запрос в API
-                json_resp = wildberries_get_report_detail(
+                # Делаем запрос в API и ждем (sleep внутри функции)
+                json_resp, last_call_time = wildberries_get_report_detail(
                     headers,
                     temp_from.strftime("%Y-%m-%d"),
                     temp_to.strftime("%Y-%m-%d"),
-                    rrdid=rrdid)
+                    rrdid=rrdid,
+                    last_call_time=last_call_time)
+
                 rows = json_resp
                 if not rows:     # Если нет данных — выходим из пагинации
                     break
