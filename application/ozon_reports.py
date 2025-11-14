@@ -1,10 +1,17 @@
 # application/reports_ozon.py
 import sys
 import importlib
+from datetime import datetime, date, timedelta
 
 from application.paths import PYTHON_EXE
 from application.report_base import ReportBase
 from application.widgets.calendar import DateSelector
+from application.widgets.dates_defaults import (
+    month_date_range,
+    prev_week_date_range,
+    prev_month_date_range,
+    last_n_days
+)
 from ozon.scripts.constants import PROMOTION_COMPANIES
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
@@ -14,7 +21,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIntValidator
 
 class OzonSalesOrdersReport(ReportBase):
-    report_name = "Продажи и заказы"
+    report_name = "Продажи и заказы (Ozon)"
     report_dir = "ozon/Clients/{client_name}/SalesOrdersSvod"
 
     def default_params(self):
@@ -42,6 +49,13 @@ class OzonSalesOrdersReport(ReportBase):
             )
             layout.addWidget(self.start_selector)
             layout.addWidget(self.end_selector)
+
+            # --- Устанавливаем дефолтные даты ---
+            start_str, end_str = month_date_range()
+            self.start_selector.set_date(start_str)
+            self.end_selector.set_date(end_str)
+            # Обработчик для синхронизации:
+            self._on_date_changed(on_params_changed)
 
             # --- ВСЕГДА создаём status_label и progress_bar ---
             status_label = QLabel(getattr(self, 'status_text', ''))
@@ -87,7 +101,7 @@ class OzonSalesOrdersReport(ReportBase):
         return cmd
 
 class OzonUploadDataReport(ReportBase):
-    report_name = "Выгрузка данных Ozon"
+    report_name = "Выгрузка данных (Ozon)"
     report_dir = "ozon/Clients/{client_name}/UploadFiles"
 
     def default_params(self):
@@ -143,6 +157,13 @@ class OzonUploadDataReport(ReportBase):
             dates_layout.addWidget(self.end_selector)
             vbox.addWidget(self.dates_group)
 
+            # --- Устанавливаем дефолтные даты ---
+            start_str, end_str = last_n_days()
+            self.start_selector.set_date(start_str)
+            self.end_selector.set_date(end_str)
+            # Обработчик для синхронизации:
+            self._on_params_changed(on_params_changed)
+
             # --- статус и прогрессбар ---
             status_label = QLabel(getattr(self, 'status_text', ''))
             vbox.addWidget(status_label)
@@ -167,6 +188,12 @@ class OzonUploadDataReport(ReportBase):
         )
         if not already_in_layout:
             parent_layout.addWidget(self.panel_widget)
+
+    def _get_default_dates(self):
+        today = date.today()
+        start = today - timedelta(days=1)
+        end = start - timedelta(days=30)
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
     def _update_mode(self, cb):
         # Radio с днями
@@ -233,7 +260,7 @@ class OzonUploadDataReport(ReportBase):
         return cmd
 
 class OzonSupplyPlanningReport(ReportBase):
-    report_name = "Планирование поставок Ozon"
+    report_name = "Планирование поставок (Ozon)"
     report_dir = "ozon/Clients/{client_name}/SupplySvod"
 
     def default_params(self):
@@ -415,7 +442,7 @@ class OzonActionsReport(ReportBase):
         return [cmd_metrics, cmd_main]  # возвращаем две отдельные команды
 
 class OzonCampaignsReport(ReportBase):
-    report_name = "Отчет по рекламным кампаниям Ozon"
+    report_name = "Отчет по рекламным кампаниям (Ozon)"
     report_dir = "ozon/Clients/{client_name}/ClientRKSvod"
 
     def default_params(self):
@@ -486,6 +513,13 @@ class OzonCampaignsReport(ReportBase):
                     self.txt_companies.setPlainText(default_text)
                     self.params["promotion_companies"] = default_text
 
+                # --- Значение по умолчанию для дат ---
+                start_str, end_str = prev_week_date_range()
+                self.start_selector.set_date(start_str)
+                self.end_selector.set_date(end_str)
+                # Обработчик для синхронизации:
+                self._on_params_changed(on_params_changed)
+
                 # --- статус и прогрессбар ---
                 status_label = QLabel(getattr(self, 'status_text', ''))
                 vbox.addWidget(status_label)
@@ -509,7 +543,7 @@ class OzonCampaignsReport(ReportBase):
     def _filter_companies_input(self, cb):
         cur = self.txt_companies.textCursor()
         raw = self.txt_companies.toPlainText()
-        print(self.txt_companies.toPlainText().encode("unicode_escape"))
+        # print(self.txt_companies.toPlainText().encode("unicode_escape"))
         # Оставляем только цифры, ; , пробелы и переводы строк
         filtered = ''.join([ch for ch in raw if ch.isdigit() or ch in ",; \n\r"])
         if raw != filtered:
@@ -551,7 +585,7 @@ class OzonCampaignsReport(ReportBase):
         return cmd
 
 class OzonClientCabinetReport(ReportBase):
-    report_name = "Сводная по кабинету клиента Ozon"
+    report_name = "Сводная по кабинету клиента (Ozon)"
     report_dir = "ozon/Clients/{client_name}/ClientCabinetSvod"
 
     def default_params(self):
@@ -622,6 +656,13 @@ class OzonClientCabinetReport(ReportBase):
                     self.txt_companies.setPlainText(default_text)
                     self.params["promotion_companies"] = default_text
 
+                # --- Значения по умолчанию для дат ---
+                start_str, end_str = prev_week_date_range()
+                self.start_selector.set_date(start_str)
+                self.end_selector.set_date(end_str)
+                # Обработчик для синхронизации:
+                self._on_params_changed(on_params_changed)
+
                 # --- статус и прогрессбар ---
                 status_label = QLabel(getattr(self, 'status_text', ''))
                 vbox.addWidget(status_label)
@@ -687,7 +728,7 @@ class OzonClientCabinetReport(ReportBase):
         return cmd
 
 class OzonOrdersSvodReport(ReportBase):
-    report_name = "Свод по заказам Ozon"
+    report_name = "Свод по заказам (Ozon)"
     report_dir = "ozon/Clients/{client_name}/OrdersSvod"
 
     def default_params(self):
@@ -752,15 +793,28 @@ class OzonOrdersSvodReport(ReportBase):
         if not already_in_layout:
             parent_layout.addWidget(self.panel_widget)
 
+        # Изначально область с календарями неактивна
+        self._on_dates_checkbox_toggled(self.dates_checkbox.isChecked(), on_params_changed)
+
+
     def _on_dates_checkbox_toggled(self, state, cb):
         enabled = bool(state)
         self.start_selector.setEnabled(enabled)
         self.end_selector.setEnabled(enabled)
         self.params["use_dates"] = enabled
-        # При отключении диапазона очищаем даты в параметрах
+
+        # Явная подсветка серым для неактивного состояния
+        # (можно использовать "grey", но для темных тем лучше #bbbbbb)
+        grey_color = "grey"  # или "#bbbbbb"
         if not enabled:
+            self.start_selector.setStyleSheet(f"color: {grey_color};")
+            self.end_selector.setStyleSheet(f"color: {grey_color};")
             self.params["start_date"] = ""
             self.params["end_date"] = ""
+        else:
+            self.start_selector.setStyleSheet("")
+            self.end_selector.setStyleSheet("")
+
         self._on_params_changed(cb)
 
     def _on_params_changed(self, cb):
@@ -826,6 +880,13 @@ class OzonFinanceReport(ReportBase):
             dates_hbox.addWidget(self.start_selector)
             dates_hbox.addWidget(self.end_selector)
             layout.addLayout(dates_hbox)
+
+            # --- Значения по умолчанию для дат ---
+            start_str, end_str = prev_month_date_range()
+            self.start_selector.set_date(start_str)
+            self.end_selector.set_date(end_str)
+            # Обработчик для синхронизации:
+            self._on_dates_changed(on_params_changed)
 
             # --- Строка для пути к файлу + кнопка выбора ---
             hbox = QHBoxLayout()

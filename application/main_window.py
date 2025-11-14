@@ -30,8 +30,8 @@ from PySide6.QtWidgets import (
     QComboBox, QTabWidget, QSpacerItem, QSizePolicy, QToolTip, QFrame,
     QProgressBar, QMessageBox, QDialog, QTextEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 
 from application.ozon_reports import (
     OzonSalesOrdersReport,
@@ -55,22 +55,22 @@ from application.wb_reports import (
 # Список отчетов
 REPORTS_REGISTRY = {
     "Ozon": [
-        OzonUploadDataReport,
-        OzonSupplyPlanningReport,
-        OzonActionsReport,
         OzonSalesOrdersReport,
         OzonOrdersSvodReport,
         OzonCampaignsReport,
+        OzonUploadDataReport,
+        OzonSupplyPlanningReport,
+        OzonActionsReport,
         OzonFinanceReport,
         # Другие классы Ozon-отчетов...
     ],
     "WB": [
-        WBUploadDataReport,
-        WBSupplyPlanningReport,
-        WBActionsReport,
         WBSalesOrdersReport,
         WBOrdersSvodReport,
         WBCampaignsReport,
+        WBUploadDataReport,
+        WBSupplyPlanningReport,
+        WBActionsReport,
         WBFinanceReport
     ],
 }
@@ -156,11 +156,10 @@ class ReportThread(QThread):
         self.finished.emit(True, "Готово", "\n".join(all_logs))
 
 class ClientWorkspace(QWidget):
-    def __init__(self, settings, clients, start_client_idx=0, parent=None, tab_changed_callback=None):
+    def __init__(self, settings, clients, parent=None, tab_changed_callback=None):
         super().__init__(parent)
         self.settings = settings
         self.clients = clients
-        self.client_idx = start_client_idx
         self.tab_changed_callback = tab_changed_callback
 
         self.reports_registry = {}
@@ -180,39 +179,48 @@ class ClientWorkspace(QWidget):
         self.init_ui()
         self.update_buttons_and_labels()
 
-    def init_ui(self):
+    @property
+    def client_idx(self):
+        idx = self.clientCombo.currentIndex()
+        if idx <= 0:
+            return None  # Не выбран клиент
+        return idx - 1
 
+    def init_ui(self):
         layout = QVBoxLayout()
 
-        # --- Добавляем кнопку "Темная тема" ---
-        self.btn_theme = QPushButton("🌙")
+        # --- Кнопка "Темная тема" ---
+        self.icon_moon = QIcon(QPixmap("application/src/images/moon.png"))
+        self.icon_sun = QIcon(QPixmap("application/src/images/sun.png"))
+
+        self.btn_theme = QPushButton()
+        self.btn_theme.setIcon(self.icon_moon)
+        self.btn_theme.setIconSize(QSize(24, 24))
         self.btn_theme.setCheckable(True)
         self.btn_theme.toggled.connect(self.switch_theme)
-        layout.addWidget(self.btn_theme)
-        # 2. Сделаем кнопку почти квадратной
-        self.btn_theme.setFixedSize(36, 36)  # Размер в пикселях (регулируй по желанию)
+        self.btn_theme.setFixedSize(28, 28)
         self.btn_theme.setStyleSheet("""
             QPushButton {
-                font-size: 10px;
                 border-radius: 5px;
                 background: #2b2b2b;
-                color: #ffe066;
             }
             QPushButton:checked {
                 background: #393939;
-                color: #fff;
             }
-        """
-        )
+        """)
+        layout.addWidget(self.btn_theme)
+
         nameLabel = QLabel("<b>Клиент:</b>")
         layout.addWidget(nameLabel)
 
         self.clientCombo = QComboBox()
+
+        # Добавляем в ComboBox нулевой элемент "Выберите клиента" — но в self.clients его нет!
+        self.clientCombo.addItem("— Выберите клиента —")
         self.clientCombo.addItems(self.clients)
-        self.clientCombo.setCurrentIndex(self.client_idx)
+        self.clientCombo.setCurrentIndex(0)  # По умолчанию пустой выбор
         self.clientCombo.currentIndexChanged.connect(self.change_client)
         layout.addWidget(self.clientCombo)
-
 
         self.report_groups_widgets = {}
         btn_layout = QHBoxLayout()
@@ -221,7 +229,6 @@ class ClientWorkspace(QWidget):
         report_btn_styles = {
             "Ozon": "background-color: #EAF2F8; color: #21618C; font-weight: 600;",
             "WB": "background-color: #f5e9fe; color: #6c3483; font-weight: 600;",
-            # Можно добавить другие группы здесь...
         }
 
         for group, reports in self.reports_registry.items():
@@ -248,14 +255,12 @@ class ClientWorkspace(QWidget):
                 panel_layout = QVBoxLayout()
                 panel_widget.setLayout(panel_layout)
                 panel_widget.setVisible(False)
-                # ---- build_ui только при первом клике ----
                 report_btn.clicked.connect(lambda _, r=report, p=panel_widget: self.toggle_report_panel(r, p))
 
                 row_layout.addWidget(report_btn)
                 row_layout.addWidget(panel_widget)
                 group_reports_vbox.addWidget(row_widget)
 
-                # Сохраняем для последующих вызовов
                 if not hasattr(self, "report_panels"):
                     self.report_panels = {}
                 self.report_panels[(group, report)] = panel_widget
@@ -286,34 +291,45 @@ class ClientWorkspace(QWidget):
         if checked:
             with open("application/themes/dark_theme.qss", "r", encoding="utf-8") as f:
                 app.setStyleSheet(f.read())
-            self.btn_theme.setText("🌞")
+            self.btn_theme.setIcon(self.icon_sun)   # Показываем солнышко при тёмной теме
             self.btn_theme.setToolTip("Переключить на светлую тему")
         else:
             app.setStyleSheet("")
-            self.btn_theme.setText("🌙")
+            self.btn_theme.setIcon(self.icon_moon)  # Показываем луну при светлой теме
             self.btn_theme.setToolTip("Переключить на тёмную тему")
 
     def get_current_client_name(self):
-        return self.clients[self.client_idx]
+        idx = self.client_idx
+        if idx is None:
+            return ""
+        return self.clients[idx]
 
     def change_client(self, idx):
-        self.client_idx = idx
+        # idx - индекс выбора в ComboBox
+        if idx == 0:  # "— Выберите клиента —"
+            self.hide_reports()
+            return
+        # Везде else работаем с остатком интерфейса через self.client_idx
         self.update_buttons_and_labels()
-        self.hide_reports()      # <--- сюда!
+        self.hide_reports()
         if self.tab_changed_callback:
             self.tab_changed_callback(self)
 
     def update_buttons_and_labels(self):
         for group, (group_btn, group_reports_widget) in self.report_groups_widgets.items():
-            # Проверяем можно ли раскрывать группу (активна ли вообще)
+            idx = self.client_idx
             is_active = False
-            if group.lower() == "ozon":
-                is_active = check_ozon_active(self.settings, self.client_idx)
-                tip = "" if is_active else gather_ozon_error(self.settings, self.client_idx)
+            if idx is None:
+                is_active = False
+                tip = "Сначала выберите клиента"
+                color = "#bbb"
+            elif group.lower() == "ozon":
+                is_active = check_ozon_active(self.settings, idx)
+                tip = "" if is_active else gather_ozon_error(self.settings, idx)
                 color = "#2471A3"
             elif group.lower() == "wb":
-                is_active = check_wb_active(self.settings, self.client_idx)
-                tip = "" if is_active else gather_wb_error(self.settings, self.client_idx)
+                is_active = check_wb_active(self.settings, idx)
+                tip = "" if is_active else gather_wb_error(self.settings, idx)
                 color = "#8e44ad"
             else:
                 is_active = True
@@ -336,46 +352,22 @@ class ClientWorkspace(QWidget):
         self.report_params_widget.setVisible(False)
         self.active_report = None
 
-    def show_report_group(self, group):
-        # Скрываем видимость списков всех групп (но не трогаем состояние параметров!)
-        for g, (_, widget) in self.report_groups_widgets.items():
-            widget.setVisible(g == group)
-        self.report_params_widget.setVisible(False)
-        # Скрываем только все панели параметров для ТЕКУЩЕГО клиента и ОТЧЁТЫ внутри выбранной группы:
-        for (cli, ro), panel in self.param_panels.items():
-            if cli == self.client_idx:
-                panel.setVisible(False)
-        # Восстанавливаем открытые (развёрнутые) отчеты для этого клиента и выбранной группы
-        for report_obj in self.open_reports[group]:
-            key = (self.client_idx, report_obj)
-            panel = self.param_panels.get(key)
-            if panel:
-                panel.setVisible(True)
-                self.report_params_widget.setVisible(True)
-
     def get_report_group(self, report_obj):
         for group, reports in self.reports_registry.items():
             if report_obj in reports:
                 return group
         return None
 
-    # def _open_folder_in_explorer(self, path: Path):
-    #     if platform.system() == "Windows":
-    #         os.startfile(str(path))
-    #     elif platform.system() == "Darwin":
-    #         subprocess.run(["open", str(path)])
-    #     else:  # Linux, etc.
-    #         subprocess.run(["xdg-open", str(path)])
-
     def open_report_folder(self, report_obj):
-        client_name = self.settings["client_name"][self.client_idx]
+        idx = self.client_idx
+        if idx is None:
+            QMessageBox.warning(self, "Не выбран клиент", "Сначала выберите клиента!")
+            return
+        client_name = self.settings["client_name"][idx]
         path = Path(report_obj.report_dir.format(client_name=client_name)).resolve()
-
         if not path.exists():
             QMessageBox.warning(self, "Папка не найдена", f"Папка отчётов не существует:\n{str(path)}")
             return
-
-
         system = platform.system()
         if system == "Windows":
             subprocess.run(["explorer", str(path)])
@@ -386,18 +378,20 @@ class ClientWorkspace(QWidget):
 
     def append_log_line(self, key, line):
         self.report_logs[key] = self.report_logs.get(key, "") + line + "\n"
-        print(f"[LOG][{key}]: {line}")  # <-- вот тут!
-        # Сигнал для отображения каждой строки в реальном времени (если окно было открыто)
+        print(f"[LOG][{key}]: {line}")
         if key in self.log_windows and self.log_windows[key] is not None:
             log_window = self.log_windows[key]
             if hasattr(log_window, "live_update_log"):
                 log_window.live_update_log()
 
     def open_log_window(self, client_idx, report_obj):
+        idx = client_idx
+        if idx is None:
+            QMessageBox.warning(self, "Не выбран клиент", "Сначала выберите клиента!")
+            return
         key = (client_idx, report_obj)
-        client_name = self.settings["client_name"][client_idx]
+        client_name = self.settings["client_name"][idx]
         report_name = getattr(report_obj, 'report_name', str(report_obj))
-        # Устанавливаем заголовок окна
         dlg = QDialog(self)
         dlg.setWindowTitle(f"{client_name}: {report_name}")
         layout = QVBoxLayout(dlg)
@@ -408,7 +402,6 @@ class ClientWorkspace(QWidget):
         dlg.resize(700, 500)
         dlg.show()
 
-        # Запоминаем txt для live-логирования
         self.log_windows[key] = dlg
         dlg.txt = txt
 
@@ -421,34 +414,45 @@ class ClientWorkspace(QWidget):
         live_update_log()
 
     def toggle_report_panel(self, report_obj, panel_widget):
-        # Свернуть все панели в группе
         group = self.get_report_group(report_obj)
         for r in self.reports_registry[group]:
             p = self.report_panels.get((group, r))
             if p and p is not panel_widget:
                 p.setVisible(False)
-        # Если панель уже открыта — свернуть
         panel_widget.setVisible(not panel_widget.isVisible())
         if panel_widget.isVisible():
-                if panel_widget.layout().count() == 0:
-                    key = (self.client_idx, report_obj)
-                    report_obj.build_ui(
-                        panel_widget.layout(),
-                        self.on_report_params_changed,
-                        parent_workspace=self,
-                        key=key
-                    )
+            if panel_widget.layout().count() == 0:
+                key = (self.client_idx, report_obj)
+                report_obj.parent_workspace = self
+                report_obj.build_ui(
+                    panel_widget.layout(),
+                    self.on_report_params_changed,
+                    parent_workspace=self,
+                    key=key
+                )
+
+    def show_report_group(self, group):
+        for g, (_, widget) in self.report_groups_widgets.items():
+            widget.setVisible(g == group)
+        self.report_params_widget.setVisible(False)
+        for (cli, ro), panel in self.param_panels.items():
+            if cli == self.client_idx:
+                panel.setVisible(False)
+        for report_obj in self.open_reports[group]:
+            key = (self.client_idx, report_obj)
+            panel = self.param_panels.get(key)
+            if panel:
+                panel.setVisible(True)
+                self.report_params_widget.setVisible(True)
 
     def show_report_params(self, report_obj):
         group = self.get_report_group(report_obj)
         key = (self.client_idx, report_obj)
         panel = self.param_panels.get(key)
 
-        # 1. Свернуть панель, если уже видна
         if panel and panel.isVisible():
             panel.setVisible(False)
             self.open_reports[group].discard(report_obj)
-            # Скрыть контейнер, если больше нет открытых
             if not any(
                 self.param_panels.get((self.client_idx, r)) and self.param_panels[(self.client_idx, r)].isVisible()
                 for r in self.reports_registry[group]
@@ -456,7 +460,6 @@ class ClientWorkspace(QWidget):
                 self.report_params_widget.setVisible(False)
             return
 
-        # 2. Удалить панели чужих клиентов для этого отчёта
         to_delete = []
         for (cli, ro), p in list(self.param_panels.items()):
             if ro == report_obj and cli != self.client_idx:
@@ -466,37 +469,30 @@ class ClientWorkspace(QWidget):
         for k in to_delete:
             del self.param_panels[k]
 
-        # 3. Скрыть все панели этого клиента в группе
         for (cli, ro), p in self.param_panels.items():
             if cli == self.client_idx and self.get_report_group(ro) == group:
                 p.setVisible(False)
 
-        # 4. Если панели нет — создать
         if key not in self.param_panels:
             panel = QFrame()
             panel.setFrameShape(QFrame.StyledPanel)
             panel_layout = QVBoxLayout(panel)
-            # build_ui всё построит: поля, кнопки, всё!
+            report_obj.parent_workspace = self
             report_obj.build_ui(
                 panel_layout,
                 self.on_report_params_changed,
                 parent_workspace=self,
                 key=key
             )
-
-            # Можно добавить статус/прогресс-бар, если нужно
             status_label = QLabel(getattr(report_obj, 'status_text', ''))
             panel_layout.addWidget(status_label)
-
             progress_bar = QProgressBar()
             progress_bar.setRange(0, 0)
             progress_bar.setVisible(False)
             panel_layout.addWidget(progress_bar)
-
             self.param_panels[key] = panel
             self.report_params_layout.addWidget(panel)
 
-        # 5. Показываем только нужную панель
         self.open_reports[group].add(report_obj)
         self.report_params_widget.setVisible(True)
         self.param_panels[key].setVisible(True)
@@ -511,23 +507,25 @@ class ClientWorkspace(QWidget):
         self.dots_count = (self.dots_count + 1) % 4
         dots = '.' * self.dots_count
         status_label.setText(f"<b>Формируется{dots}</b>")
-        # Также актуализируй status_text в report_statuses, если нужно:
         if hasattr(self, '_report_key'):
             self.report_statuses[self._report_key] = f"<b>Формируется{dots}</b>"
 
     def run_report(self, report_obj, key, status_label, progress_bar, btn_run):
-
         if not report_obj:
             return
 
         client_number = self.client_idx
+        if client_number is None:
+            QMessageBox.warning(self, "Не выбран клиент", "Сначала выберите клиента!")
+            btn_run.setEnabled(True)
+            return
+
         cmds = report_obj.build_cmd(client_number)
         if isinstance(cmds[0], str):
-            cmds = [cmds]  # если один скрипт, превращаем в список списков
+            cmds = [cmds]
         self.report_thread = ReportThread(cmds)
-        # Проверка обязательных параметров
+
         if not report_obj.is_params_ready():
-            # Параметры не заполнены — возврат с предупреждением
             if self.dots_timer:
                 self.dots_timer.stop()
                 self.dots_timer = None
@@ -538,7 +536,6 @@ class ClientWorkspace(QWidget):
             self.report_statuses[key] = msg
             return
 
-        # Все параметры ок — запуск формирования отчёта
         msg = "<b>Формируется</b>"
         status_label.setText(msg)
         status_label.setStyleSheet("font-weight: bold;")
@@ -546,7 +543,6 @@ class ClientWorkspace(QWidget):
         btn_run.setEnabled(False)
         self.report_statuses[key] = msg
 
-        # Остановить предыдущий таймер, если он был
         if self.dots_timer:
             self.dots_timer.stop()
             self.dots_timer = None
@@ -556,7 +552,6 @@ class ClientWorkspace(QWidget):
         self.dots_count = 0
         self.dots_timer.start(400)
 
-        # Сохраним текущее активное для on_report_finished
         self._status_label = status_label
         self._progress_bar = progress_bar
         self._run_btn = btn_run
@@ -575,9 +570,7 @@ class ClientWorkspace(QWidget):
         if hasattr(self, '_run_btn'):
             self._run_btn.setEnabled(True)
         if hasattr(self, '_status_label') and hasattr(self, '_report_key'):
-            # Ловим WARNING в логах
             contains_warning = "WARNING" in log_text
-            # Проверяем успех и уровень лога
             if success:
                 if contains_warning:
                     text = "<span style='color:#e67e22; font-weight:bold;'>⚠️ Отчет сформирован с предупреждениями!</span>"
@@ -588,16 +581,13 @@ class ClientWorkspace(QWidget):
             self._status_label.setText(text)
             self.report_statuses[self._report_key] = text
 
-        # Обновляем сохранённый лог для ключа: (client_idx, active_report)
         key = (self.client_idx, self.active_report)
         self.report_logs[key] = log_text
 
-        # Если окно логов открыто — обновляем его сразу:
         if key in self.log_windows and self.log_windows[key] is not None:
             dlg = self.log_windows[key]
             if hasattr(dlg, "live_update_log"):
                 dlg.live_update_log()
-
 
 class MainWindow(QWidget):
     def __init__(self):
@@ -605,13 +595,16 @@ class MainWindow(QWidget):
         self.setWindowTitle("Отчеты по маркетплейсам")
         self.settings = load_settings()
         self.clients = get_clients_list(self.settings)
+
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.tabBar().tabBarClicked.connect(self.on_tab_clicked)
+
         layout = QVBoxLayout()
         layout.addWidget(self.tab_widget)
         self.setLayout(layout)
+
         self.add_client_tab(activate=True)
         self.add_plus_tab()
 
@@ -623,7 +616,6 @@ class MainWindow(QWidget):
         tab = ClientWorkspace(
             self.settings,
             self.clients,
-            0,
             tab_changed_callback=self.update_tab_name
         )
         tab_label = tab.get_current_client_name()

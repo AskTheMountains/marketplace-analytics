@@ -24,5 +24,10 @@ class DateSelector(QWidget):
     def get_date(self):
         return self.date_edit.date().toString("yyyy-MM-dd")
 
-    def set_date(self, qdate):
-        self.date_edit.setDate(qdate)
+    def set_date(self, date):
+        if isinstance(date, QDate):
+            self.date_edit.setDate(date)
+        elif isinstance(date, str):
+            # date: "YYYY-MM-DD"
+            y, m, d = map(int, date.split('-'))
+            self.date_edit.setDate(QDate(y, m, d))
