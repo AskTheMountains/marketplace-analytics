@@ -10,7 +10,8 @@ import numpy as np
 import openpyxl
 import pandas as pd
 import requests
-from loguru import logger
+# from loguru import logger
+from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
@@ -23,7 +24,7 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
-from wb.scripts.constants import client_name, headers, marketplace_dir_name
+from wb.scripts.constants import client_name, headers, marketplace_dir_path
 # Уже написанные ранее функции выгрузки данных из АПИ
 from wb.scripts.uploadDataFromWB import getOrdersWB
 # Функция выгрузки для АПИ Продвижение
@@ -75,7 +76,7 @@ def create_finance_report_dir(client_name, date_start, date_end):
     )
     # Формируем путь к директории
     current_report_dir = (
-        marketplace_dir_name
+        marketplace_dir_path
         / 'Clients'
         / client_name
         / 'FinanceReports'
@@ -229,7 +230,7 @@ def rename_report_columns(df_realization_report):
     # Создаем копию для избежания изменений в оригинальном df
     df_realization_report_ = df_realization_report.copy()
     # Считывание файла с соответствием колонки из апи её описанию из документации
-    api_report_columns = pd.read_csv(f'{marketplace_dir_name}/scripts/Столбцы отчета о реализации из апи.csv', sep=';')
+    api_report_columns = pd.read_csv(f'{marketplace_dir_path}/scripts/Столбцы отчета о реализации из апи.csv', sep=';')
     # Создаем df с колонками из отчета по апи
     df_realization_report_columns = pd.DataFrame({'api_name': df_realization_report_.columns})
     # Мерджим с колонками отчета, который выгрузили по апи
@@ -258,7 +259,15 @@ def add_new_columns(df_realization_report_renamed):
     # Создаем столбец с id строки
     df_realization_report_new_columns['id'] = np.arange(1, df_realization_report_new_columns.shape[0] + 1)
     # Создание колонок, которые не всегда приходят с апи
-    variable_api_columns = ['Обоснование штрафов и доплат', 'Возмещение издержек по перевозке']
+    variable_api_columns = [
+        'Обоснование штрафов и доплат',
+        'Возмещение издержек по перевозке',
+        'Возмещение издержек по эквайрингу',
+        'Тип платежа за Эквайринг/Комиссии за организацию платежей',
+        'Вознаграждение с продаж до вычета услуг поверенного, без НДС',
+        'Сумма, удержанная за начисленные баллы программы лояльности',
+        'Компенсация скидки по программе лояльности'
+    ]
     for col in variable_api_columns:
         if col not in df_realization_report_new_columns.columns:
             df_realization_report_new_columns[col] = 0
@@ -291,10 +300,31 @@ def add_new_columns(df_realization_report_renamed):
             'Дата формирования отчёта',
             'Дата начала действия фиксации', 'Дата окончания действия фиксации',
             'Артикул WB',
+            'Артикул продавца',
+            'Размер',
             'Предмет',
             'Бренд',
+            'Тип документа',
             'Обоснование для оплаты',
             'Обоснование штрафов и доплат',
+            'Тип платежа за Эквайринг/Комиссии за организацию платежей',
+            'Цена розничная',
+            'Цена розничная с учетом согласованной скидки',
+            'Сумма продаж (возвратов)',
+            'К перечислению продавцу за реализованный товар',
+            'Стоимость логистики',
+            'Возмещение за выдачу и возврат товаров на ПВЗ',
+            'Возмещение издержек по эквайрингу',
+            'Вознаграждение WB без НДС',
+            'НДС с вознаграждения WB',
+            'Штрафы',
+            'Доплаты',
+            'Возмещение издержек по перевозке',
+            'Стоимость хранения',
+            'Прочие удержания/выплаты',
+            'Стоимость платной приёмки',
+            'Сумма, удержанная за начисленные баллы программы лояльности',
+            'Компенсация скидки по программе лояльности'
         ],
         position=0,
         insert_type='after'
@@ -303,7 +333,8 @@ def add_new_columns(df_realization_report_renamed):
     other_costs_replace_patterns = {
         # r'^Списание за отзыв .+: акция №\d+, товар \d+': 'Списания за отзывы',
         'Платная приемка': 'Платная приемка (Отчет реализации)',
-        'Хранение': 'Хранение (Отчет реализации)'
+        'Хранение': 'Хранение (Отчет реализации)',
+        'Возмещение за выдачу и возврат товаров на ПВЗ': 'Возмещение за выдачу и возврат товаров на ПВЗ (не разбито по SKU)',
     }
     # Колонки, в которых заменяем
     cols_to_replace_patterns = [
@@ -317,19 +348,39 @@ def add_new_columns(df_realization_report_renamed):
             regex=False
         )
     )
+    # У некоторых групп расходов заменяем лишь часть значений
+    other_costs_combo_replace_patterns = {
+        'Возмещение издержек по перевозке/по складским операциям с товаром': 'Возмещение издержек по перевозке/по складским операциям с товаром (не разбито по SKU)'
+    }
+    # Там, где нет Артикула продавца или он равен '', делаем замену расходов на (не разбито по SKU)
+    mask = (df_realization_report_new_columns['Артикул продавца'].isna()) | \
+        (df_realization_report_new_columns['Артикул продавца'] == '')
+
+    # Итерация по колонкам, где делаем замену
+    for col in cols_to_replace_patterns:
+        df_realization_report_new_columns.loc[
+            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
+            col
+        ] = df_realization_report_new_columns.loc[
+            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
+            col
+        ].map(other_costs_combo_replace_patterns)
+
+
     # Колонки, по которым считаем прочие расходы
     other_costs_columns = [
         'Стоимость логистики',
-        'К перечислению продавцу за реализованный товар',
+        # 'К перечислению продавцу за реализованный товар',
         'Возмещение за выдачу и возврат товаров на ПВЗ',
-        'Возмещение издержек по эквайрингу',
-        'Размер комиссии за эквайринг без НДС, %',
-        'Вознаграждение WB без НДС',
-        'НДС с вознаграждения WB',
+        # 'Возмещение издержек по эквайрингу',
+        # 'Размер комиссии за эквайринг без НДС, %',
+        # 'Вознаграждение WB без НДС',
+        # 'НДС с вознаграждения WB',
         'Возмещение издержек по перевозке',
         'Стоимость хранения',
         'Прочие удержания/выплаты',
         'Стоимость платной приёмки',
+        'Компенсация скидки по программе лояльности',
         'Штрафы',
         'Доплаты'
     ]
@@ -440,6 +491,7 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
     sales_returns_spp = 'Цена розничная с учетом согласованной скидки'
     # else:
     sales_returns_without_spp = 'Сумма продаж (возвратов)'
+    sales_returns_to_client = 'К перечислению продавцу за реализованный товар'
 
     # Расчет продаж
     sales_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == 'Продажа', 'id'].to_list()
@@ -459,6 +511,12 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
         .groupby(groupby_cols)
         [sales_returns_without_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб к перечислению'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_to_client]
         .sum()
     )
     # Расчет возвратов
@@ -481,6 +539,12 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         [sales_returns_without_spp]
         .sum()
     )
+    df_sku_sizes_costs_stats['Возвраты руб к перечислению'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_to_client]
+        .sum()
+    )
 
     # Считаем итоговы суммы по Продажам и Возвратам (без разбивки по Артикулам)
     df_sku_sales_returns_by_operation = (
@@ -490,6 +554,7 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         .agg(**{
             'Расходы руб с СПП': (sales_returns_spp, 'sum'),
             'Расходы руб без СПП': (sales_returns_without_spp, 'sum'),
+            'Расходы руб к перечислению': (sales_returns_to_client, 'sum'),
         })
         .reset_index()
         .rename(columns={'Обоснование для оплаты': 'Группа расходов'})
@@ -502,6 +567,7 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
     df_sku_sizes_costs_stats['Продажи минус возвраты шт'] = df_sku_sizes_costs_stats['Продажи шт'] - df_sku_sizes_costs_stats['Возвраты шт']
     df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП'] = df_sku_sizes_costs_stats['Продажи руб с СПП'] - df_sku_sizes_costs_stats['Возвраты руб с СПП']
     df_sku_sizes_costs_stats['Продажи минус возвраты руб без СПП'] = df_sku_sizes_costs_stats['Продажи руб без СПП'] - df_sku_sizes_costs_stats['Возвраты руб без СПП']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб к перечислению'] = df_sku_sizes_costs_stats['Продажи руб к перечислению'] - df_sku_sizes_costs_stats['Возвраты руб к перечислению']
 
     # Считаем комиссию WB
     df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] = (
@@ -515,16 +581,87 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         .groupby(groupby_cols)
         ['НДС с вознаграждения WB'].sum()
     )
+
+    # Изменяем знак некоторых расходов
+    # change_sign_columns = [
+    #     'Вознаграждение WB без НДС',
+    #     'НДС с вознаграждения WB'
+    # ]
+    # for col in df_sku_sizes_costs_stats:
+    #     if col in change_sign_columns:
+    #         df_sku_sizes_costs_stats[col] = df_sku_sizes_costs_stats[col] * (-1)
+
+    # Считаем полную комиссию WB
+    df_sku_sizes_costs_stats['Полная комиссия WB'] = (
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП'] -
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб без СПП'] +
+        df_sku_sizes_costs_stats['Вознаграждение WB без НДС']
+    )
+    # Считаем комиссию WB, %
     df_sku_sizes_costs_stats['Комиссия WB, %'] = (
         (df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] + df_sku_sizes_costs_stats['НДС с вознаграждения WB']) /
         df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП']
         * 100
     )
-
-
     # Заменяем деление на 0 на пропуски
-    df_sku_sizes_costs_stats['Комиссия WB, %'] = df_sku_sizes_costs_stats['Комиссия WB, %'].replace(np.inf, np.nan).replace(-np.inf, np.nan)
+    df_sku_sizes_costs_stats['Комиссия WB, %'] = df_sku_sizes_costs_stats['Комиссия WB, %'].replace([np.inf, -np.inf], np.nan)
 
+    # Какая-то параша
+    strange_cols = ['Вознаграждение с продаж до вычета услуг поверенного, без НДС']
+    for col in strange_cols:
+        if col in df_sku_costs.columns:
+            df_sku_sizes_costs_stats[col] = (
+                df_sku_costs
+                .groupby(groupby_cols)
+                [col].sum()
+            )
+    # Считаем суммы по колонкам, которые частично разбиты по SKU
+    combo_sku_columns = [
+        'Возмещение за выдачу и возврат товаров на ПВЗ',
+        'Возмещение издержек по перевозке'
+    ]
+    for col in combo_sku_columns:
+        if col in df_sku_costs.columns:
+            df_sku_sizes_costs_stats[f'{col} (разбито по SKU)'] = (
+                df_sku_costs
+                .groupby(groupby_cols)
+                [col].sum()
+            )
+    # Считаем расходы на эквайринг
+    acquiring_type_column = 'Тип платежа за Эквайринг/Комиссии за организацию платежей'
+    acquiring_costs_column = 'Возмещение издержек по эквайрингу'
+    acquiring_costs_ids = []
+    if acquiring_type_column in df_sku_costs.columns:
+        acquiring_costs_ids = (
+            df_sku_costs
+            .loc[
+                (df_sku_costs[acquiring_type_column] != 0)
+                & (df_sku_costs[acquiring_type_column] != '')
+                & (~df_sku_costs[acquiring_type_column].isna()),
+                'id'
+            ]
+            .to_list()
+        )
+        df_sku_acquiring_costs = df_sku_costs.loc[df_sku_costs['id'].isin(acquiring_costs_ids), :]
+        for operation_type in df_sku_acquiring_costs[acquiring_type_column].unique():
+            df_sku_sizes_costs_stats[f'Эквайринг: {operation_type}'] = (
+                df_sku_acquiring_costs
+                .loc[df_sku_acquiring_costs[acquiring_type_column] == operation_type, :]
+                .groupby(groupby_cols)
+                [acquiring_costs_column].sum()
+                .fillna(0)
+            )
+
+    # Список с названиями и затратами по Эквайрингу
+    df_sku_acquiring_costs_by_operation = (
+        df_sku_acquiring_costs
+        .groupby('Обоснование для оплаты')
+        .agg(**{
+            'Расходы руб': ('Итого руб', 'sum')
+        })
+        .reset_index()
+        .rename(columns={'Обоснование для оплаты': 'Группа расходов'})
+    )
 
     # Считаем суммы по Штрафам и Доплатам (по ним есть доп. детализация в столбце Обоснование штрафов и доплат)
     penalty_costs_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'].isin(['Штрафы и доплаты', 'Штраф']), 'id'].to_list()
@@ -546,7 +683,7 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
     )
 
     # Считаем суммы по оставшимся расходам
-    other_costs_ids = df_sku_costs.loc[~df_sku_costs['id'].isin(sales_ids + returns_ids + penalty_costs_ids), 'id'].to_list()
+    other_costs_ids = df_sku_costs.loc[~df_sku_costs['id'].isin(sales_ids + returns_ids + penalty_costs_ids + acquiring_costs_ids), 'id'].to_list()
     df_sku_other_costs = df_sku_costs.loc[df_sku_costs['id'].isin(other_costs_ids), :]
     for operation_type in df_sku_other_costs['Обоснование для оплаты'].unique():
         df_sku_sizes_costs_stats[operation_type] = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == operation_type, :] \
@@ -562,6 +699,336 @@ def calc_sku_costs(df_realization_report_date_filtered, groupby_cols = ['Арт�
         .reset_index()
         .rename(columns={'Обоснование для оплаты': 'Группа расходов'})
     )
+
+    # Удаляем временную колонку
+    df_sku_sizes_costs_stats = df_sku_sizes_costs_stats.drop(columns=['tmp_col'])
+
+    # Достаем доп. столбцы из index
+    df_sku_sizes_costs_stats = df_sku_sizes_costs_stats.reset_index()
+
+    # Переводим артикул продавца с верхний регистр
+    df_sku_sizes_costs_stats['Артикул продавца'] = df_sku_sizes_costs_stats['Артикул продавца'].str.upper()
+
+
+    # Формируем list с id строк расходов по артикулам
+    sku_costs_ids = sales_ids + returns_ids + penalty_costs_ids + other_costs_ids
+
+    # Формируем df со списком расходов, которые привязаны к Артикулам
+    df_sku_costs_by_operation = (
+        pd.concat([
+                df_sku_sales_returns_by_operation,
+                df_sku_penalty_costs_by_operation,
+                df_sku_other_costs_by_operation
+            ],
+            ignore_index=True)
+        #.reset_index(drop=True)
+    )
+
+    # Формируем словарь с результатами
+    result_sku_costs = {
+        'df_sku_sizes_costs_stats': df_sku_sizes_costs_stats,
+        'df_sku_costs_by_operation': df_sku_costs_by_operation,
+        'sku_costs_ids': sku_costs_ids
+    }
+
+    return result_sku_costs
+
+
+# Функция расчета расходов, которые уже разделены по артикулам в отчете апи
+def calc_sku_costs_v2(df_realization_report_date_filtered, groupby_cols = ['Артикул WB', 'Артикул продавца', 'Размер']):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_sales_returns = df_realization_report_date_filtered.copy()
+    # Выбираем тип документа продажа или возврат
+    # df_sales_returns = df_sales_returns.loc[df_sales_returns['Тип документа'].isin(['Продажа', 'Возврат']), :]
+    # Выбираем расходы, где есть артикул
+    df_sku_costs = df_sales_returns.loc[df_sales_returns['Артикул продавца'] != '', :]
+
+    # Заменяем пропуски в размере на 0
+    df_sku_costs['Размер'] = df_sku_costs['Размер'].replace("", "0")
+    # Колонки, по которым будет производиться группировка
+    # groupby_cols = ['Артикул WB', 'Артикул продавца', 'Размер']
+
+    df_sku_sizes_costs_stats = pd.DataFrame()
+
+    # Временная колонка с размерами групп
+    df_sku_sizes_costs_stats['tmp_col'] = df_sku_costs.groupby(groupby_cols).size()
+
+    # Колонка, по которой считаем продажи и возвраты в рублях
+    # if client_name in ['Orsk_Combinat', 'Neva_Metall']:
+    sales_returns_spp = 'Цена розничная с учетом согласованной скидки'
+    # else:
+    sales_returns_without_spp = 'Сумма продаж (возвратов)'
+    sales_returns_to_client = 'К перечислению продавцу за реализованный товар'
+
+    # Расчет продаж
+    sales_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == 'Продажа', 'id'].to_list()
+    df_sku_sizes_costs_stats['Продажи шт'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        ['Количество']
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб с СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб без СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_without_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Продажи руб к перечислению'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(sales_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_to_client]
+        .sum()
+    )
+    # Расчет возвратов
+    returns_ids = df_sku_costs.loc[df_sku_costs['Обоснование для оплаты'] == 'Возврат', 'id'].to_list()
+    df_sku_sizes_costs_stats['Возвраты шт'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        ['Количество']
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Возвраты руб с СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Возвраты руб без СПП'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_without_spp]
+        .sum()
+    )
+    df_sku_sizes_costs_stats['Возвраты руб к перечислению'] = (
+        df_sku_costs.loc[df_sku_costs['id'].isin(returns_ids), :]
+        .groupby(groupby_cols)
+        [sales_returns_to_client]
+        .sum()
+    )
+
+    # Считаем итоговы суммы по Продажам и Возвратам (без разбивки по Артикулам)
+    df_sku_sales_returns_by_operation = (
+        df_sku_costs
+        .loc[df_sku_costs['id'].isin(sales_ids + returns_ids), :]
+        .groupby('Обоснование для оплаты')
+        .agg(**{
+            'С СПП': (sales_returns_spp, 'sum'),
+            'Без СПП': (sales_returns_without_spp, 'sum'),
+            'К перечислению': (sales_returns_to_client, 'sum'),
+        })
+        .reset_index()
+        .rename(columns={'Обоснование для оплаты': 'Группа расходов'})
+    )
+
+    # Заполняем пропуски
+    df_sku_sizes_costs_stats = df_sku_sizes_costs_stats.fillna(0)
+
+    # Итоговые колонки по продажам и возвратам
+    df_sku_sizes_costs_stats['Продажи минус возвраты шт'] = df_sku_sizes_costs_stats['Продажи шт'] - df_sku_sizes_costs_stats['Возвраты шт']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП'] = df_sku_sizes_costs_stats['Продажи руб с СПП'] - df_sku_sizes_costs_stats['Возвраты руб с СПП']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб без СПП'] = df_sku_sizes_costs_stats['Продажи руб без СПП'] - df_sku_sizes_costs_stats['Возвраты руб без СПП']
+    df_sku_sizes_costs_stats['Продажи минус возвраты руб к перечислению'] = df_sku_sizes_costs_stats['Продажи руб к перечислению'] - df_sku_sizes_costs_stats['Возвраты руб к перечислению']
+
+    # Считаем расходы по типу документа продажи минус возвраты
+    def sales_minus_returns(df, col_sum, groupby_cols, doc_type_col='Тип документа'):
+        sales = df[df[doc_type_col] == 'Продажа'].groupby(groupby_cols)[col_sum].sum()
+        returns = df[df[doc_type_col] == 'Возврат'].groupby(groupby_cols)[col_sum].sum()
+        return sales.sub(returns, fill_value=0)
+
+    columns_to_calc = [
+        'Вознаграждение WB без НДС',
+        'НДС с вознаграждения WB',
+        'Возмещение за выдачу и возврат товаров на ПВЗ',
+        'Возмещение издержек по эквайрингу'
+    ]
+
+    for col in columns_to_calc:
+        df_sku_sizes_costs_stats[col] = sales_minus_returns(
+            df_sku_costs, col, groupby_cols
+        )
+    # Изменяем знак некоторых расходов
+    # change_sign_columns = [
+    #     'Вознаграждение WB без НДС',
+    #     'НДС с вознаграждения WB'
+    # ]
+    # for col in df_sku_sizes_costs_stats:
+    #     if col in change_sign_columns:
+    #         df_sku_sizes_costs_stats[col] = df_sku_sizes_costs_stats[col] * (-1)
+
+    # Считаем полную комиссию WB
+    df_sku_sizes_costs_stats['Полная комиссия WB'] = (
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП'] -
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб без СПП'] +
+        df_sku_sizes_costs_stats['Вознаграждение WB без НДС']
+    )
+    # Считаем комиссию WB, %
+    df_sku_sizes_costs_stats['Комиссия WB, %'] = (
+        (df_sku_sizes_costs_stats['Вознаграждение WB без НДС'] + df_sku_sizes_costs_stats['НДС с вознаграждения WB']) /
+        df_sku_sizes_costs_stats['Продажи минус возвраты руб с СПП']
+        * 100
+    )
+    # Заменяем деление на 0 на пропуски
+    df_sku_sizes_costs_stats['Комиссия WB, %'] = df_sku_sizes_costs_stats['Комиссия WB, %'].replace([np.inf, -np.inf], np.nan)
+
+    # Какая-то параша
+    strange_cols = ['Вознаграждение с продаж до вычета услуг поверенного, без НДС']
+    for col in strange_cols:
+        if col in df_sku_costs.columns:
+            df_sku_sizes_costs_stats[col] = (
+                df_sku_costs
+                .groupby(groupby_cols)
+                [col].sum()
+            )
+    # Считаем суммы по колонкам, которые частично разбиты по SKU
+    combo_sku_columns = [
+        # 'Возмещение за выдачу и возврат товаров на ПВЗ',
+        'Возмещение издержек по перевозке'
+    ]
+    # Выбираем id, по которым считаем частичные расходы, чтобы не учитывать их второй раз
+    partial_expense_ids = df_sku_costs.loc[
+        df_sku_costs['Обоснование для оплаты'].isin(['Возмещение издержек по перевозке/по складским операциям с товаром']),
+        'id'
+    ].to_list()
+    for col in combo_sku_columns:
+        if col in df_sku_costs.columns:
+            df_sku_sizes_costs_stats[f'{col} (разбито по SKU)'] = (
+                df_sku_costs
+                .groupby(groupby_cols)
+                [col].sum()
+            )
+
+    # Считаем суммы по Штрафам и Доплатам (по ним есть доп. детализация в столбце 'Обоснование штрафов и доплат')
+    penalty_costs_ids = df_sku_costs.loc[
+        df_sku_costs['Обоснование для оплаты'].isin(['Штрафы и доплаты', 'Штраф']),
+        'id'
+    ].to_list()
+    df_sku_penalty_costs = df_sku_costs.loc[
+        df_sku_costs['id'].isin(penalty_costs_ids), :
+    ]
+
+    # Словарь: {группа расходов: имя столбца для суммы}
+    custom_sum_cols = {
+        'Название группы расходов': 'Столбец для суммы',
+        # 'Штраф за что-то': 'Другая метрика',
+        # и т.д.
+    }
+
+    rows = []
+    for op_type, df_op in df_sku_penalty_costs.groupby('Обоснование штрафов и доплат'):
+        # Выбираем столбец для суммы
+        sum_col = custom_sum_cols.get(op_type, 'Итого руб')
+
+        # Для итоговой таблицы (без группировки по артикулу)
+        doc_types_not_empty = df_op['Тип документа'].dropna().astype(str).str.strip()
+        doc_types_not_empty = doc_types_not_empty[doc_types_not_empty != '']
+        has_sales = 'Продажа' in doc_types_not_empty.values
+        has_returns = 'Возврат' in doc_types_not_empty.values
+
+        sum_sales = df_op.loc[df_op['Тип документа'] == 'Продажа', sum_col].sum()
+        sum_returns = df_op.loc[df_op['Тип документа'] == 'Возврат', sum_col].sum()
+        sum_empty = df_op.loc[
+            df_op['Тип документа'].isna() | (df_op['Тип документа'].astype(str).str.strip() == ''),
+            sum_col
+        ].sum()
+
+        if has_sales and has_returns:
+            total = sum_sales - sum_returns + sum_empty
+        else:
+            total = df_op[sum_col].sum()
+
+        rows.append({
+            'Группа расходов': op_type,
+            'Продажа': sum_sales,
+            'Возврат': sum_returns,
+            'Расходы руб': total
+        })
+
+        # ---- Формируем столбцы в итоговом df с группировкой ----
+        group_sum_sales = df_op[df_op['Тип документа'] == 'Продажа'].groupby(groupby_cols)[sum_col].sum()
+        group_sum_returns = df_op[df_op['Тип документа'] == 'Возврат'].groupby(groupby_cols)[sum_col].sum()
+        group_sum_empty = df_op[
+            df_op['Тип документа'].isna() | (df_op['Тип документа'].astype(str).str.strip() == '')
+        ].groupby(groupby_cols)[sum_col].sum()
+
+        if has_sales and has_returns:
+            result = group_sum_sales.sub(group_sum_returns, fill_value=0).add(group_sum_empty, fill_value=0)
+        else:
+            result = df_op.groupby(groupby_cols)[sum_col].sum()
+
+        # Вставляем расчёт в итоговый df (столбец с названием текущей группы расходов)
+        df_sku_sizes_costs_stats[op_type] = result
+
+    df_sku_penalty_costs_by_operation = pd.DataFrame(rows)
+
+    # Считаем суммы по оставшимся расходам с учётом типа документа
+    other_costs_ids = df_sku_costs.loc[
+        ~df_sku_costs['id'].isin(sales_ids + returns_ids + penalty_costs_ids),
+        'id'
+    ].to_list()
+    df_sku_other_costs = df_sku_costs.loc[
+        df_sku_costs['id'].isin(other_costs_ids), :
+    ]
+
+    # Словарь: {группа расходов: имя столбца для суммы}
+    custom_sum_cols = {
+        'Компенсация ущерба': 'К перечислению продавцу за реализованный товар',
+        'Добровольная компенсация при возврате': 'К перечислению продавцу за реализованный товар',
+        # и т.д.
+    }
+
+    rows = []
+    for op_type, df_op in df_sku_other_costs.groupby('Обоснование для оплаты'):
+        # Столбец для суммы
+        sum_col = custom_sum_cols.get(op_type, 'Итого руб')
+
+        # Для таблицы по всем расходам (итоговая по категориям)
+        doc_types_not_empty = df_op['Тип документа'].dropna().astype(str).str.strip()
+        doc_types_not_empty = doc_types_not_empty[doc_types_not_empty != '']
+        has_sales = 'Продажа' in doc_types_not_empty.values
+        has_returns = 'Возврат' in doc_types_not_empty.values
+
+        sum_sales = df_op.loc[df_op['Тип документа'] == 'Продажа', sum_col].sum()
+        sum_returns = df_op.loc[df_op['Тип документа'] == 'Возврат', sum_col].sum()
+        sum_empty = df_op.loc[
+            df_op['Тип документа'].isna() |
+            (df_op['Тип документа'].astype(str).str.strip() == ''),
+            sum_col
+        ].sum()
+
+        if has_sales and has_returns:
+            total = sum_sales - sum_returns + sum_empty
+        else:
+            total = df_op[sum_col].sum()
+
+        rows.append({
+            'Группа расходов': op_type,
+            'Продажа': sum_sales,
+            'Возврат': sum_returns,
+            'Расходы руб': total
+        })
+
+        # --- Формируем столбцы в df с группировкой ---
+        group_sum_sales = df_op[df_op['Тип документа'] == 'Продажа'].groupby(groupby_cols)[sum_col].sum()
+        group_sum_returns = df_op[df_op['Тип документа'] == 'Возврат'].groupby(groupby_cols)[sum_col].sum()
+        group_sum_empty = df_op[
+            df_op['Тип документа'].isna() | (df_op['Тип документа'].astype(str).str.strip() == '')
+        ].groupby(groupby_cols)[sum_col].sum()
+
+        if has_sales and has_returns:
+            result = group_sum_sales.sub(group_sum_returns, fill_value=0).add(group_sum_empty, fill_value=0)
+        else:
+            result = df_op.groupby(groupby_cols)[sum_col].sum()
+
+        df_sku_sizes_costs_stats[op_type] = result
+
+    df_sku_other_costs_by_operation = pd.DataFrame(rows)
 
     # Удаляем временную колонку
     df_sku_sizes_costs_stats = df_sku_sizes_costs_stats.drop(columns=['tmp_col'])
@@ -715,7 +1182,7 @@ def calc_paid_storage_costs(
         for idx, row in paid_storage_dates.iterrows():
             # Выбираем одну неделю
             date_start_paid_storage = row['date_from'].isoformat()
-            date_end_paid_storage = row['date_to'].isoformat()
+            date_end_paid_storage = row['date_to'].replace(hour=23, minute=59, second=59).isoformat()
 
             logger.info(f"Uploading paid storage for dates {date_start_paid_storage} - {date_end_paid_storage}")
 
@@ -1548,11 +2015,11 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             df_sku_sizes_costs_merged
         )
 
-        # Формируем словарь с результатами
-        result_companies_costs = {
-            'df_companies_stats': df_companies_stats,
-            'df_companies_stats_by_sku': df_companies_stats_by_sku
-        }
+    # Формируем словарь с результатами
+    result_companies_costs = {
+        'df_companies_stats': df_companies_stats,
+        'df_companies_stats_by_sku': df_companies_stats_by_sku
+    }
 
 
     return result_companies_costs
@@ -1705,61 +2172,83 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_all):
     df_other_costs = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(sku_costs_ids), :]
     other_costs_ids = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(sku_costs_ids), 'id'].to_list()
 
-    # Выбираем расходы, у которых есть доп. детализация в столбце "Обоснование штрафов и доплат"
-    df_other_costs_fees = (
-        df_other_costs
-        .loc[
-            (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
-            :
-        ]
-        # .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+    # Создаем столбец с типом расходов по прочим расходам
+    df_other_costs['Тип расходов'] = np.where(
+         (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
+         df_other_costs['Обоснование штрафов и доплат'],
+         df_other_costs['Обоснование для оплаты']
     )
-    # Определяем id строк, у которых есть доп. детализация
-    other_costs_fees_ids = df_other_costs_fees['id'].to_list()
-
-    # Считаем итоговые суммы по Штрафам и доплатам
-    df_other_costs_fees_by_operation = (
-        df_other_costs_fees
-        .groupby('Обоснование штрафов и доплат')
+    # Считаем суммы по прочим расходам
+    df_other_costs_by_operation = (
+        df_other_costs
+        .groupby('Тип расходов')
         .agg(
             Итого_прочие_расходы=('Итого руб', 'sum')
         )
         .reset_index()
-        .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+        # .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
     )
 
-    # Выбираем расходы, у которых нет доп. детализации
-    df_other_costs_leftover = df_other_costs.loc[~df_other_costs['id'].isin(other_costs_fees_ids), :]
-    other_costs_leftover_ids = df_other_costs_leftover['id'].to_list()
+    # Выбираем расходы, у которых есть доп. детализация в столбце "Обоснование штрафов и доплат"
+    # df_other_costs_fees = (
+    #     df_other_costs
+    #     .loc[
+    #         (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
+    #         :
+    #     ]
+    #     # .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+    # )
+    # # Определяем id строк, у которых есть доп. детализация
+    # other_costs_fees_ids = df_other_costs_fees['id'].to_list()
 
-    # Считаем итоговые суммы по прочим расходам
-    df_other_costs_leftover_by_operation = (
-        df_other_costs_leftover
-        .groupby('Обоснование для оплаты')
-        .agg(
-            Итого_прочие_расходы=('Итого руб', 'sum')
-            )
-        .reset_index()
-        .rename(columns={'Обоснование для оплаты': 'Тип расходов'})
-    )
+    # # Считаем итоговые суммы по Штрафам и доплатам
+    # df_other_costs_fees_by_operation = (
+    #     df_other_costs_fees
+    #     .groupby('Обоснование штрафов и доплат')
+    #     .agg(
+    #         Итого_прочие_расходы=('Итого руб', 'sum')
+    #     )
+    #     .reset_index()
+    #     .rename(columns={'Обоснование штрафов и доплат': 'Тип расходов'})
+    # )
 
-    # Объединяем группы расходов, полученные выше
-    df_other_costs_by_operation = pd.concat([
-            df_other_costs_fees_by_operation,
-            df_other_costs_leftover_by_operation
-        ],
-        axis=0,
-        ignore_index=True
-    )
+    # # Выбираем расходы, у которых нет доп. детализации
+    # df_other_costs_leftover = df_other_costs.loc[~df_other_costs['id'].isin(other_costs_fees_ids), :]
+    # other_costs_leftover_ids = df_other_costs_leftover['id'].to_list()
+
+    # # Считаем итоговые суммы по прочим расходам
+    # df_other_costs_leftover_by_operation = (
+    #     df_other_costs_leftover
+    #     .groupby('Обоснование для оплаты')
+    #     .agg(
+    #         Итого_прочие_расходы=('Итого руб', 'sum')
+    #         )
+    #     .reset_index()
+    #     .rename(columns={'Обоснование для оплаты': 'Тип расходов'})
+    # )
+
+    # # Объединяем группы расходов, полученные выше
+    # df_other_costs_by_operation = pd.concat([
+    #         df_other_costs_fees_by_operation,
+    #         df_other_costs_leftover_by_operation
+    #     ],
+    #     axis=0,
+    #     ignore_index=True
+    # )
     # Удаляем некоторые группы расходов, которые мы уже учли
     exclude_costs_list = [
         r'Списание за отзыв.*акция №\d+, товар \d+$',
+        'Хранение (Отчет реализации)',
+        'Платная приемка (Отчет реализации)',
+        'Оказание услуг «ВБ.Продвижение»',
+        'Оказание услуг «WB Продвижение»',
+
     ]
     exclude_costs_filter = '|'.join(f"(?:{p})" for p in exclude_costs_list)
     df_other_costs_by_operation = (
         df_other_costs_by_operation
         .loc[
-            df_other_costs_by_operation['Тип расходов']
+            ~df_other_costs_by_operation['Тип расходов']
             .str.contains(exclude_costs_filter, regex=True, na=False),
             :
         ]
@@ -1778,7 +2267,7 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_all):
     other_costs_duplicate_flags = {
         'Платное хранение (отдельный отчет)': ['Хранение (Отчет реализации)'],
         'Платная приемка (отдельный отчет)': ['Платная приемка (Отчет реализации)'],
-        'Расходы по рекламным кампаниям': ['Оказание услуг «ВБ.Продвижение»']
+        'Расходы по рекламным кампаниям': ['Оказание услуг «ВБ.Продвижение»', 'Оказание услуг «WB Продвижение»']
     }
     for separate_report_cost, realization_report_cost in other_costs_duplicate_flags.items():
         if separate_report_cost in df_sku_and_other_costs.columns:
@@ -1803,6 +2292,114 @@ def calc_other_costs_v2(result_sku_costs, df_sku_sizes_costs_all):
 
     return result_other_costs
 
+
+# Функция расчета расходов, которые не привязаны к артикулам (v2)
+def calc_other_costs_v3(result_sku_costs, df_sku_sizes_costs_all):
+    # Получаем list с id строк расходов по артикулам
+    sku_costs_ids = result_sku_costs['sku_costs_ids']
+    # df, в который будем помещать итоговый результат (df уже содержит расходы по sku)
+    df_sku_and_other_costs = df_sku_sizes_costs_all.copy()
+
+    # Выбираем строки из отчета, которые не привязаны к артикулам
+    df_other_costs = df_realization_report_date_filtered.loc[
+        ~df_realization_report_date_filtered['id'].isin(sku_costs_ids), :
+    ]
+    other_costs_ids = df_realization_report_date_filtered.loc[
+        ~df_realization_report_date_filtered['id'].isin(sku_costs_ids), 'id'
+    ].to_list()
+
+    # Создаем столбец с типом расходов по прочим расходам
+    df_other_costs['Тип расходов'] = np.where(
+         (df_other_costs['Обоснование штрафов и доплат'] != '') & (~df_other_costs['Обоснование штрафов и доплат'].isna()),
+         df_other_costs['Обоснование штрафов и доплат'],
+         df_other_costs['Обоснование для оплаты']
+    )
+
+    # --- Новый блок: считаем суммы с учетом типа документа (Продажа или Возврат) ---
+    # Считаем суммы по типу документа и виду расходов
+    other_costs_result = []
+
+    for op_type, df_op in df_other_costs.groupby('Тип расходов'):
+        # Определяем типы документов (без пустых и NaN)
+        doc_types = df_op['Тип документа'].dropna()
+        doc_types = [str(x).strip() for x in doc_types]
+        doc_types = [x for x in doc_types if x]
+        has_sales = 'Продажа' in doc_types
+        has_returns = 'Возврат' in doc_types
+
+        if has_sales and has_returns:
+            # Если есть оба – вычитаем (суммируем только непустые типы)
+            sum_sales = df_op.loc[df_op['Тип документа'] == 'Продажа', 'Итого руб'].sum()
+            sum_returns = df_op.loc[df_op['Тип документа'] == 'Возврат', 'Итого руб'].sum()
+            # Отдельно — суммируем строки с пустым/NaN типом документа
+            sum_empty = df_op.loc[df_op['Тип документа'].isna() | (df_op['Тип документа'].astype(str).str.strip() == ''), 'Итого руб'].sum()
+            total = sum_sales - sum_returns + sum_empty
+            sale = sum_sales
+            ret = sum_returns
+        else:
+            # Иначе — просто сумма по всей группе
+            total = df_op['Итого руб'].sum()
+            sale = df_op.loc[df_op['Тип документа'] == 'Продажа', 'Итого руб'].sum()
+            ret = df_op.loc[df_op['Тип документа'] == 'Возврат', 'Итого руб'].sum()
+
+        other_costs_result.append({
+            'Тип расходов': op_type,
+            'Продажа': sale,
+            'Возврат': ret,
+            'Итого прочие расходы': total
+        })
+
+    df_other_costs_by_operation = pd.DataFrame(other_costs_result)
+    # --- конец нового блока ---
+
+    # Удаляем некоторые группы расходов, которые мы уже учли
+    exclude_costs_list = [
+        r'списание за отзыв.*акция №\d+, товар \d+$',
+        'хранение (отчет реализации)',
+        'платная приемка (отчет реализации)',
+        'оказание услуг «вб.продвижение»',
+        'оказание услуг «wb продвижение»',
+    ]
+    exclude_costs_filter = '|'.join(f"(?:{p})" for p in exclude_costs_list)
+
+    # Фильтрация с нормализацией, но без изменения исходного столбца
+    mask = (
+        ~df_other_costs_by_operation['Тип расходов'] \
+        .str.strip().str.lower() \
+        .str.contains(exclude_costs_filter, regex=True, na=False)
+    )
+
+    df_other_costs_by_operation = df_other_costs_by_operation.loc[mask].reset_index(drop=True)
+
+    # Добавляем прочие расходы в df с расходами по sku, разбивая их от количества продаж
+    total_sales = df_sku_and_other_costs['Продажи шт'].sum()
+    for operation_type in df_other_costs_by_operation['Тип расходов']:
+        operation_costs = df_other_costs_by_operation.loc[
+            df_other_costs_by_operation['Тип расходов'] == operation_type, 'Итого прочие расходы'
+        ].values[0]
+        df_sku_and_other_costs[operation_type] = df_sku_and_other_costs['Продажи шт'] / total_sales * operation_costs
+
+    # Удаляем некоторые группы расходов, т.к. по ним мы формируем отдельные отчеты
+    # Поскольку мы выгружали отдельные отчеты по некоторым расходам,
+    # мы должны убрать их из прочих расходов, чтобы не было дубликатов
+    # Да, удаляем два раза, потому что я дебил и мне пох
+    other_costs_duplicate_flags = {
+        'Платное хранение (отдельный отчет)': ['Хранение (Отчет реализации)'],
+        'Платная приемка (отдельный отчет)': ['Платная приемка (Отчет реализации)'],
+        'Расходы по рекламным кампаниям': ['Оказание услуг «ВБ.Продвижение»', 'Оказание услуг «WB Продвижение»']
+    }
+    for separate_report_cost, realization_report_cost in other_costs_duplicate_flags.items():
+            if separate_report_cost in df_sku_and_other_costs.columns:
+                df_sku_and_other_costs.drop(columns=realization_report_cost, inplace=True, errors='ignore')
+
+    # Формируем словарь с результатами
+    result_other_costs = {
+        'df_sku_and_other_costs': df_sku_and_other_costs,
+        'df_other_costs_by_operation': df_other_costs_by_operation,
+        'other_costs_ids': other_costs_ids
+    }
+
+    return result_other_costs
 
 # Функция расчета расходов, которые не привязаны к артикулам
 def calc_other_costs(df_realization_report_date_filtered, result_sku_costs):
@@ -1882,7 +2479,7 @@ def calc_other_costs(df_realization_report_date_filtered, result_sku_costs):
 def add_data_from_catalog(result_other_costs):
     # Чтение справочной таблицы
     catalog = pd.read_excel(
-        marketplace_dir_name
+        marketplace_dir_path
         / "Clients"
         / client_name
         / "catalog"
@@ -1939,21 +2536,46 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     # Создание копии для избежания изменений в оригинальном df
     df_final_costs = df_all_costs_stats_with_catalog.copy()
     # Колонка, от которой будем считать маржинальность в %
-    marg_sales_column = pd.to_numeric(df_final_costs['Продажи минус возвраты руб с СПП'], errors='coerce')
-    marg_sales_amount_column = df_final_costs['Продажи минус возвраты шт']
-    # Колонки, по которым нужно поменять знаки расходов с + на -
-    change_sign_columns = [
-        'Возмещение издержек по перевозке',
-        'Добровольная компенсация при возврате',
-        'Компенсация ущерба',
-        'Логистика сторно',
-        'Вознаграждение WB без НДС',
-        'НДС с вознаграждения WB'
-    ]
-    # Изменяем знак некоторых расходов с + на -
-    for col in change_sign_columns:
-        if col in df_final_costs.columns:
-            df_final_costs[col] = df_final_costs[col] * (-1)
+    sales_for_percent = 'Продажи минус возвраты руб с СПП'
+    sales_for_rub = 'Продажи минус возвраты руб к перечислению'
+    marg_amount = 'Продажи минус возвраты шт'
+    sales_for_percent_column = pd.to_numeric(df_final_costs[sales_for_percent], errors='coerce')
+    sales_for_rub_column = pd.to_numeric(df_final_costs[sales_for_rub], errors='coerce')
+    sales_amount_column = df_final_costs[marg_amount]
+    # # Колонки, по которым нужно изменить знак расходов
+    # change_sign_columns = [
+    #     'Возмещение издержек по перевозке',
+    #     'Добровольная компенсация при возврате',
+    #     'Компенсация ущерба',
+    #     'Логистика сторно',
+    #     # 'Вознаграждение WB без НДС',  # Знак уже изменен в расходах по SKU
+    #     # 'НДС с вознаграждения WB'  # Знак уже изменен в расходах по SKU
+    # ]
+    # # Изменяем знак некоторых расходов с + на -
+    # for col in change_sign_columns:
+    #     if col in df_final_costs.columns:
+    #         df_final_costs[col] = df_final_costs[col] * (-1)
+
+    # # Считаем комиссию WB
+    # df_final_costs['Комиссия WB, %'] = (
+    #     (df_final_costs['Вознаграждение WB без НДС'] + df_final_costs['НДС с вознаграждения WB']) /
+    #     df_final_costs['Продажи минус возвраты руб с СПП']
+    #     * 100
+    # )
+    # # Заменяем деление на 0 на пропуски
+    # df_final_costs['Комиссия WB, %'] = df_final_costs['Комиссия WB, %'].replace([np.inf, -np.inf], np.nan)
+    # # Считаем полную комиссию WB
+    # df_final_costs['Полная комиссия WB'] = (
+    #     df_final_costs['Продажи минус возвраты руб с СПП'] -
+    #     df_final_costs['Продажи минус возвраты руб без СПП'] +
+    #     df_final_costs['Вознаграждение WB без НДС']
+    # )
+    # # Помещаем колонки после продаж минус возвратов
+    # df_final_costs = move_columns(
+    #     df_final_costs,
+    #     ['Полная комиссия WB', 'Комиссия WB, %'],
+    #     position='НДС с вознаграждения WB'
+    # )
 
     # Считаем все расходы на рекламные кампании
     promotion_columns = [
@@ -1974,7 +2596,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     df_final_costs['% Затрат на рекламные кампании'] = (
         abs(
             df_final_costs['Затраты на рекламу руб'] /
-            marg_sales_column
+            sales_for_percent_column
             * 100
         )
     )
@@ -2013,7 +2635,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Маржа по артикулу %',
         'Маржинальность на ед. товара руб',
         'Себестоимость',
-        # 'Вознаграждение WB без НДС',
+        'Вознаграждение WB без НДС',  # Уже учтено в полной комиссии WB
         # 'НДС с вознаграждения WB',
         'Комиссия WB, %',
         # 'Платное хранение (отдельный отчет)',
@@ -2023,7 +2645,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     )
 
     # Расчет маржинальности в рублях
-    df_final_costs['Маржинальность руб'] = marg_sales_column
+    df_final_costs['Маржинальность руб'] = sales_for_rub_column
     for col in df_final_costs.columns[~df_final_costs.columns.isin(columns_to_exclude_from_final_costs)]:
         df_final_costs['Маржинальность руб'] = (
             df_final_costs['Маржинальность руб'] - df_final_costs[col].fillna(0)
@@ -2037,14 +2659,14 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     # Там, где нет себестоимости, маржинальность не считаем
     df_final_costs.loc[df_final_costs['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
     df_final_costs['Маржинальность %'] = np.where(
-        (marg_sales_column != 0) & (~np.isnan(marg_sales_column)),
-        df_final_costs['Маржинальность руб'] / marg_sales_column * 100,
+        (sales_for_percent_column != 0) & (~np.isnan(sales_for_percent_column)),
+        df_final_costs['Маржинальность руб'] / sales_for_percent_column * 100,
         np.nan
     )
     # Расчет маржинальности на единицу товара
     df_final_costs['Маржинальность на ед. товара руб'] = np.where(
-        (marg_sales_amount_column != 0) & (~pd.isna(marg_sales_amount_column)),
-        df_final_costs['Маржинальность руб'] / marg_sales_amount_column,
+        (sales_amount_column != 0) & (~pd.isna(sales_amount_column)),
+        df_final_costs['Маржинальность руб'] / sales_amount_column,
         np.nan
     )
     # Маржинальность от себестоимости (%)
@@ -2057,7 +2679,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     sales_rub_mean_by_article = (
         df_final_costs
         .groupby(['Артикул WB'])
-        ['Продажи руб без СПП'].transform('mean')
+        [sales_for_percent].transform('mean')
     )
     marg_rub_mean_by_article = (
         df_final_costs
@@ -2119,13 +2741,6 @@ def create_svod_by_operations(df_final_costs):
     ]
     # Создаем копию для избежения изменений в исходном df
     df_final_costs_by_operation = df_final_costs.copy()
-    # Рассчитываем доп. столбцы
-    # if 'Вознаграждение WB без НДС' in df_final_costs_by_operation.columns:
-    df_final_costs_by_operation['Вознаграждение WB без НДС'] = (
-        df_final_costs_by_operation['Продажи минус возвраты руб с СПП'] -
-        df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
-        + df_final_costs_by_operation['Вознаграждение WB без НДС']
-    )
 
     # Считаем суммы по остальным столбцам
     df_final_costs_by_operation = (
@@ -2150,11 +2765,11 @@ def create_svod_by_operations(df_final_costs):
         # })
     )
     # Пересчитываем некоторые столбцы
-    df_final_costs_by_operation['Вознаграждение WB без НДС'] = (
-        df_final_costs_by_operation['Продажи минус возвраты руб с СПП'] -
-        df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
-        + df_final_costs_by_operation['Вознаграждение WB без НДС']
-    )
+    # df_final_costs_by_operation['Вознаграждение WB без НДС'] = (
+    #     df_final_costs_by_operation['Продажи минус возвраты руб с СПП'] -
+    #     df_final_costs_by_operation['Продажи минус возвраты руб без СПП']
+    #     + df_final_costs_by_operation['Вознаграждение WB без НДС']
+    # )
     df_final_costs_by_operation['Маржинальность на ед. товара'] = (
         df_final_costs_by_operation['Маржинальность руб']
         / df_final_costs_by_operation['Продажи минус возвраты шт']
@@ -2168,7 +2783,6 @@ def create_svod_by_operations(df_final_costs):
     # Считаем сумму, от которой будем считать процент
     sum_columns = [
         'Продажи минус возвраты руб с СПП',
-        # 'Баллы за скидки',
     ]
     # Считается сумма по тем колонкам, которые есть в df_final_costs
     sum_for_percent = (
@@ -2304,7 +2918,9 @@ def format_excel(
     end_row = final_ws.max_row  # Последняя строка с данными в финальной таблице
 
     # Колонка продаж минус возвратов
-    sales_minus_returns_col = 'Продажи минус возвраты руб с СПП'
+    sales_for_percent_col = 'Продажи минус возвраты руб с СПП'
+    sales_for_rub_col = 'Продажи минус возвраты руб к перечислению'
+
     sales_minus_returns_amount_col = 'Продажи минус возвраты шт'
 
     for row in range(start_row, end_row + 1):
@@ -2318,7 +2934,7 @@ def format_excel(
 
         # --- Формула: "% Затрат на рекламные кампании" (IFERROR — чтобы не было #ЗНАЧ!)
         cell_promo = f"{col_map['Затраты на рекламу руб']}{row}"
-        cell_sales_minus_returns = f"{col_map[sales_minus_returns_col]}{row}"
+        cell_sales_minus_returns = f"{col_map[sales_for_percent_col]}{row}"
         formula_percent = (
             f'=IFERROR(ABS({cell_promo}/{cell_sales_minus_returns}*100), "")'
         )
@@ -2326,18 +2942,19 @@ def format_excel(
 
         # --- Формула: "Маржинальность руб" (IFERROR — если что-то не так)
         cell_sebestoimost = f"{col_map['Себестоимость']}{row}"
-        base = f"{col_map[sales_minus_returns_col]}{row}"
+        base = f"{col_map[sales_for_rub_col]}{row}"
         cost_formula = '-'.join(f"{col_map[col]}{row}" for col in cost_columns)
         margin_base_formula = f"{base}-" + f"-".join(f"{col_map[col]}{row}" for col in cost_columns) if cost_columns else base
         margin_formula = (
             f'=IF(OR({cell_sebestoimost}=0, {cell_sebestoimost}=""), "", IFERROR({margin_base_formula}, ""))'
         )
         final_ws[f"{col_map['Маржинальность руб']}{row}"].value = margin_formula
+
         # --- Формула: "Маржинальность %" (IFERROR)
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
-        cell_sales = base
+        cell_sales_for_percent = f"{col_map[sales_for_percent_col]}{row}"
         formula_percent_margin = (
-            f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
+            f'=IFERROR({cell_marg_rub}/{cell_sales_for_percent}, "")'
         )
         final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
@@ -2442,12 +3059,11 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-10-01',
+        date_start = '2025-09-29',
         date_end='2025-10-31'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
-
     # Получение отчета о реализации по АПИ
     df_realization_report = upload_realization_report_new(
         headers,
@@ -2476,7 +3092,7 @@ if __name__ == '__main__':
     )
 
     # Расчет затрат, которые уже разбиты по артикулам
-    result_sku_costs = calc_sku_costs(
+    result_sku_costs = calc_sku_costs_v2(
         df_realization_report_date_filtered
     )
     # # Выгрузка заказов
@@ -2530,7 +3146,7 @@ if __name__ == '__main__':
     )
     # Расчет затрат, которые не привязаны к артикулам
     # result_other_costs = calc_other_costs(df_realization_report_date_filtered, result_sku_costs)
-    result_other_costs = calc_other_costs_v2(
+    result_other_costs = calc_other_costs_v3(
         result_sku_costs,
         df_sku_sizes_costs_all
     )
@@ -2578,6 +3194,7 @@ if __name__ == '__main__':
     )
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
     logger.info(f"Finance Report saved in {filepath_finance_report}")
+
 
 
 # %%
