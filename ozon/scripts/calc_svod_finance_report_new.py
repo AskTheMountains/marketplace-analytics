@@ -635,7 +635,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
                 df_company = pd.read_csv(company_file_path, sep=';')
             # Если нет, считаем, что расходы по данной кампании были равны 0
             else:
-                df_company = pd.DataFrame(columns=['sku', 'Расходы'])
+                df_company = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы'])
                 # Выводим предупреждение, что файла с расходами по данной кампании нет
                 logger.warning(f"Company file {row['Номер кампании']} has not been found")
             # Удаляем лишнюю колонку, если есть
@@ -910,11 +910,9 @@ def calc_supplies_costs(df_finance_report):
         # Помещаем расходы на поставки из ЛК в отдельный df
         supplies_costs_from_report = df_supplies_from_report_total.copy()
         # df_supplies_from_report_total['Номер заявки на поставку'] = df_supplies_from_report_total['Номер заявки на поставку'].astype('Int64')
-
         # Выгрузка товаров в заявке на поставку
         df_supplies_items = get_supply_orders(headers, states=[], to_save=False)
         # df_supplies_items.to_excel(f"{finance_reports_dir}/{client_name}_Товары_в_поставках.xlsx")
-
         # Переименовываем колонки для удобства
         df_supplies_items = df_supplies_items.rename(columns={
             'sku': 'SKU',
@@ -1411,7 +1409,8 @@ def create_svod_by_operations(df_final_costs):
     sum_columns = [
         'Продажи - Возвраты (руб)',
         'Баллы за скидки',
-        'Программы партнеров'
+        'Программы партнеров',
+        'Программы партнёров'
     ]
     # Считается сумма по тем колонкам, которые есть в df_final_costs
     df_final_costs_['Продажа (Выручка) руб'] = (
@@ -1727,7 +1726,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет по начислениям_01.10.2025-31.10.2025 (1).xlsx"
+    report_file_name = "Отчет_по_начислениям_01_11_2025_30_11_2025_ИП.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
