@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer
 from PySide6.QtGui import QIcon, QPixmap
+from application.widgets.update_reference_table_button import UpdateReferenceTableButton
 
 from application.ozon_reports import (
     OzonSalesOrdersReport,
@@ -176,6 +177,11 @@ class ClientWorkspace(QWidget):
         self.report_logs = {}  # (client_idx, report_obj): str
         self.log_windows = {}  # (client_idx, report_obj): ссылка на окно (QDialog)
 
+        self.report_threads = {}  #  хранилище потоков
+        self.status_labels = {}   # (client_idx, report_obj): QLabel
+        self.progress_bars = {}  # (client_idx, report_obj): QProgressBar
+        self.run_btns = {}       # (client_idx, report_obj): QPushButton
+
         self.init_ui()
         self.update_buttons_and_labels()
 
@@ -270,6 +276,20 @@ class ClientWorkspace(QWidget):
             self.report_groups_widgets[group] = (group_btn, group_reports_widget)
             group_widgets.append(group_reports_widget)
             group_btn.clicked.connect(lambda _, g=group: self.show_report_group(g))
+            # Кнопка обновления справочной таблицы
+            btn_update_reference = UpdateReferenceTableButton(
+                group_reports_widget,
+                get_client_idx=lambda: self.client_idx,
+                get_client_name=lambda: self.settings["client_name"][self.client_idx] if self.client_idx is not None else "",
+                get_marketplace_group=lambda g=group: g.lower(),
+                get_marketplace_name=lambda g=group: "Ozon" if g.lower()=="ozon" else "WB",
+            )
+            # Сохраняем для регулировки активности
+            if not hasattr(self, "update_reference_buttons"):
+                self.update_reference_buttons = {}
+            self.update_reference_buttons[group.lower()] = btn_update_reference
+            group_reports_vbox.addWidget(btn_update_reference, alignment=Qt.AlignRight | Qt.AlignBottom)
+
 
         layout.addLayout(btn_layout)
         for w in group_widgets:
@@ -281,6 +301,10 @@ class ClientWorkspace(QWidget):
         self.report_params_widget.setLayout(self.report_params_layout)
         layout.addWidget(self.report_params_widget)
         self.report_params_widget.setVisible(False)
+
+        spacer = QSpacerItem(5, 50, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        layout.addSpacerItem(spacer)
+        self.setLayout(layout)
 
         spacer = QSpacerItem(5, 50, QSizePolicy.Minimum, QSizePolicy.Expanding)
         layout.addSpacerItem(spacer)
@@ -343,6 +367,13 @@ class ClientWorkspace(QWidget):
                 group_btn.setStyleSheet("background-color: #bbb; color: white; font-weight: 700;")
             if not is_active:
                 group_reports_widget.setVisible(False)
+        # Кнопка обновления справочной таблицы
+        for group in self.update_reference_buttons:
+            idx = self.client_idx
+            if group == 'ozon':
+                self.update_reference_buttons[group].setEnabled(idx is not None and check_ozon_active(self.settings, idx))
+            elif group == 'wb':
+                self.update_reference_buttons[group].setEnabled(idx is not None and check_wb_active(self.settings, idx))
 
     def hide_reports(self):
         for _, (_, grp_widget) in self.report_groups_widgets.items():
@@ -523,8 +554,26 @@ class ClientWorkspace(QWidget):
         cmds = report_obj.build_cmd(client_number)
         if isinstance(cmds[0], str):
             cmds = [cmds]
-        self.report_thread = ReportThread(cmds)
 
+        # --- Управление потоками ---
+        # Если поток с этим ключом уже есть, аккуратно удаляем старый
+        if not hasattr(self, "report_threads"):
+            self.report_threads = {}
+        if key in self.report_threads:
+            old_thread = self.report_threads.pop(key)
+            old_thread.quit()
+            old_thread.wait()
+            old_thread.deleteLater()
+
+        report_thread = ReportThread(cmds)
+        self.report_threads[key] = report_thread
+        report_thread.log_line.connect(lambda line, k=key: self.append_log_line(k, line))
+        report_thread.finished.connect(
+            lambda success, msg, log_text, k=key: self.on_report_finished(success, msg, log_text, k)
+        )
+        report_thread.start()
+
+        # --- Статусы и UI ---
         if not report_obj.is_params_ready():
             if self.dots_timer:
                 self.dots_timer.stop()
@@ -557,19 +606,23 @@ class ClientWorkspace(QWidget):
         self._run_btn = btn_run
         self._report_key = key
         self.report_logs[key] = ""
-        self.report_thread = ReportThread(cmds)
-        self.report_thread.log_line.connect(lambda line, k=key: self.append_log_line(k, line))
-        self.report_thread.finished.connect(self.on_report_finished)
-        self.report_thread.start()
 
-    def on_report_finished(self, success, msg, log_text):
+
+    def on_report_finished(self, success, msg, log_text, key):
+        # Отключаем анимацию только если она относится к этому key
         if self.dots_timer:
             self.dots_timer.stop()
-        if hasattr(self, '_progress_bar'):
-            self._progress_bar.setVisible(False)
-        if hasattr(self, '_run_btn'):
-            self._run_btn.setEnabled(True)
-        if hasattr(self, '_status_label') and hasattr(self, '_report_key'):
+
+        # Прячем progress bar для конкретного отчёта
+        if key in self.progress_bars:
+            self.progress_bars[key].setVisible(False)
+
+        # Разблокируем кнопку "Сформировать отчет"
+        if key in self.run_btns:
+            self.run_btns[key].setEnabled(True)
+
+        # Обновляем статус в лейбле — тоже для key!
+        if key in self.status_labels:
             contains_warning = "WARNING" in log_text
             if success:
                 if contains_warning:
@@ -578,16 +631,20 @@ class ClientWorkspace(QWidget):
                     text = "<span style='color:#157f3b; font-weight:bold;'>✅ Готово!</span>"
             else:
                 text = f"<span style='color:#b30000; font-weight:bold;'>❌ Ошибка формирования отчета, см. логи</span>"
-            self._status_label.setText(text)
-            self.report_statuses[self._report_key] = text
+            self.status_labels[key].setText(text)
+            self.report_statuses[key] = text
 
-        key = (self.client_idx, self.active_report)
         self.report_logs[key] = log_text
 
         if key in self.log_windows and self.log_windows[key] is not None:
             dlg = self.log_windows[key]
             if hasattr(dlg, "live_update_log"):
                 dlg.live_update_log()
+
+        # --- Безопасное завершение потока ---
+        if hasattr(self, "report_threads") and key in self.report_threads:
+            thread = self.report_threads.pop(key)
+            thread.deleteLater()
 
 class MainWindow(QWidget):
     def __init__(self):

@@ -51,6 +51,11 @@ class ReportBase:
         )
         btns.append(btn_folder)
 
+        # Сохраняем ссылки в объекте рабочей области для параллельной работы кнопок/статусов
+        parent_workspace.run_btns[key] = btn_run
+        parent_workspace.status_labels[key] = status_label
+        parent_workspace.progress_bars[key] = progress_bar
+
         return btns
 
     def make_custom_buttons(self, parent_workspace, key, status_label=None, progress_bar=None):
