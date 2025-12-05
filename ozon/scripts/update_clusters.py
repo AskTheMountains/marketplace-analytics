@@ -1,3 +1,4 @@
+# %% Определение всех функций
 import requests
 import json
 import time
@@ -17,6 +18,7 @@ from ast import literal_eval
 from ozon.scripts.constants import (
     headers,
     ozon_seller_api_url,
+    marketplace_dir_path,
     client_name
 )
 
@@ -108,20 +110,23 @@ def get_cluster_list(headers):
 def update_cluster_list(headers):
     # Получаем список кластеров и их складов по апи
     df_clusters = get_cluster_list(headers)
-    # Проверяем, есть ли сохраненный файл с предыдущего запуска
-    if os.path.isfile('clusters_and_warehouses.csv'):
-        # Считываем старый файл с кластерами
-        df_clusters_old = pd.read_csv('clusters_and_warehouses.csv', sep=';')
-        # Убираем колонку с датой обновления, чтобы исключить её из сравнения
-        df_clusters = df_clusters.loc[:, ~df_clusters.columns.isin(['date_updated'])]
-        df_clusters_old = df_clusters_old.loc[:, ~df_clusters_old.columns.isin(['date_updated'])]
-        # Если старый список кластеров отличается от нового,
-        # то сохраняем новый список кластеров, если нет - оставляем старый
-        if not df_clusters_old.equals(df_clusters):
-            df_clusters.to_csv('clusters_and_warehouses.csv', sep=';', encoding='utf-8-sig', index=False)
-            logger.info("Cluster list has been updated")
-    else:
-        logger.info("Cluster list has not changed")
+    # # Проверяем, есть ли сохраненный файл с предыдущего запуска
+    # if os.path.isfile('clusters_and_warehouses.csv'):
+    #     # Считываем старый файл с кластерами
+    #     df_clusters_old = pd.read_csv('clusters_and_warehouses.csv', sep=';')
+    #     # Убираем колонку с датой обновления, чтобы исключить её из сравнения
+    #     df_clusters = df_clusters.loc[:, ~df_clusters.columns.isin(['date_updated'])]
+    #     df_clusters_old = df_clusters_old.loc[:, ~df_clusters_old.columns.isin(['date_updated'])]
+    #     # Если старый список кластеров отличается от нового,
+    #     # то сохраняем новый список кластеров, если нет - оставляем старый
+    #     if not df_clusters_old.equals(df_clusters):
+    df_clusters.to_csv(f'{marketplace_dir_path}/scripts/clusters_and_warehouses.csv', sep=';', encoding='utf-8-sig', index=False)
+    logger.info("Cluster list has been updated")
+    # else:
+    #     logger.info("Cluster list has not changed")
 
+# %% Вызов всех функций
 if __name__ == '__main__':
     update_cluster_list(headers)
+
+# %%
