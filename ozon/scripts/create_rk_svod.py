@@ -5,6 +5,7 @@ import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from click import group
 import numpy as np
 import pandas as pd
 import re
@@ -255,7 +256,7 @@ def process_campaigns_report(
     # Убираем сшитые товары
     df_campaigns_report_processed = (
         df_campaigns_report_processed
-        .loc[df_campaigns_report_processed['Тип товара'].isin(['Товар из РК']), :]
+        .loc[df_campaigns_report_processed['Тип товара'].isin(['Товар из РК', 'Товар из заказов']), :]
         .reset_index(drop=True)
     )
     # Переименовываем некоторые колонки
@@ -263,6 +264,15 @@ def process_campaigns_report(
         'Расход по кампаниям с НДС, руб': 'РК',
         'ДРР, %': 'ДРР % по размеру'
     })
+    # Считаем параметры РК с группировкой по артикулу
+    df_campaigns_report_processed = (
+        df_campaigns_report_processed
+        .groupby('Артикул', as_index=False)
+        .agg({
+            'РК': 'sum',
+            'ДРР % по размеру': 'first'
+        })
+    )
 
     return df_campaigns_report_processed
 
@@ -349,14 +359,14 @@ def calc_orders(df_orders):
 # Функция добавления данных к списку товаров
 def add_data_to_product_list(
         df_products_processed,
-        df_campaigns_report,
+        df_campaigns_report_processed,
         df_reminders,
         df_orders_by_products,
     ):
     # Создаем список датафреймов, которые объединяем
     merge_params = [
         {"df": df_reminders, "columns": ["Остаток",], "on": "Артикул"},
-        {"df": df_campaigns_report, "columns": ["РК", "ДРР % по размеру"], "on": "Артикул"},
+        {"df": df_campaigns_report_processed, "columns": ["РК", "ДРР % по размеру"], "on": "Артикул"},
         {"df": df_orders_by_products, "columns": ["Сумма заказов", "Кол-во заказов"], "on": "Артикул"}
     ]
 
