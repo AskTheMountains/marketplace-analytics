@@ -704,3 +704,163 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
 
     return df
 # --- Конец выгрузки отчета реализации --- #
+
+
+# Функция перевода столбцов в другую валюту
+def convert_currency(
+    df,
+    columns_to_convert=None,
+    custom_columns_to_ignore=None,
+    k_exchange_rate=1.0,
+    reverse=False
+):
+    """
+    Переводит значения указанных столбцов между валютой и рублями по единому курсу.
+
+    Параметры:
+    ----------
+    df : pd.DataFrame
+        Исходный DataFrame, в котором требуется конвертация валюты.
+
+    columns_to_convert : list of str, optional
+        Список названий столбцов, которые нужно конвертировать.
+        Если не указан или пуст — конвертируются все столбцы, кроме игнорируемых.
+
+    custom_columns_to_ignore : list of str, optional
+        Список столбцов, которые НЕ нужно конвертировать.
+        Если не указан — используется дефолтный список.
+
+    k_exchange_rate : float, default=1.0
+        Курс валюты для конвертации. Один курс применяется для всех выбранных столбцов.
+        reverse=False: перевод из валюты в рубли (умножение).
+        reverse=True: перевод из рублей в валюту (деление).
+
+    reverse : bool, default=False
+        reverse=False: перевод из валюты в рубли (умножение).
+        reverse=True: перевод из рублей в валюту (деление).
+
+    Возвращает:
+    -----------
+    pd.DataFrame
+        Новый DataFrame с преобразованными значениями в заданных столбцах.
+    """
+
+    # Дефолтный игнорируемый список
+    default_ignore = [
+        'id', 'Артикул WB', 'Артикул продавца', 'Наименование', 'Размер',
+        'Дата', 'Тип документа', 'Обоснование для оплаты',
+        'Обоснование штрафов и доплат', 'Страна производства',
+        'Продажи шт',
+        'Возвраты шт',
+        'Продажи минус возвраты шт',
+
+    ]
+
+    if custom_columns_to_ignore is None:
+        custom_columns_to_ignore = default_ignore
+
+    # Если columns_to_convert не передан или пуст — берем все числовые, не в ignore
+    if not columns_to_convert:
+        all_num_cols = [col for col in df.select_dtypes(include='number').columns
+                        if col not in custom_columns_to_ignore]
+        columns = all_num_cols
+    else:
+        # Если columns_to_convert есть — только из него, пропуская ignore
+        columns = [col for col in columns_to_convert if col not in custom_columns_to_ignore]
+
+    df_result = df.copy()
+    for col in columns:
+        if reverse:
+            df_result[col] = df_result[col] / k_exchange_rate
+        else:
+            df_result[col] = df_result[col] * k_exchange_rate
+
+    return df_result
+
+
+# Функция выгрузки воронки продаж
+def get_sales_funnel(
+    headers: dict,
+    nm_ids: list,
+    date_from: str,
+    date_to: str,
+    limit: int = 50
+) -> pd.DataFrame:
+    """
+    Выгружает все данные из метода Воронка продаж WB c поддержкой пагинации и лимитами WB.
+    """
+    url = "https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products"
+    logger.info("Старт выгрузки данных по воронке продаж WB с пагинацией и лимитами")
+    all_products = []
+    offset = 0
+    burst_limit = 3
+    burst_period = 60  # секунд
+    request_timestamps = []
+
+    while True:
+        payload = {
+            "selectedPeriod": {
+                "start": date_from,
+                "end": date_to
+            },
+            "limit": limit,
+            "offset": offset
+        }
+        if nm_ids:
+            payload["nmIds"] = nm_ids
+
+        # Контроль лимитов
+        now = time.time()
+        request_timestamps = [ts for ts in request_timestamps if now - ts < burst_period]
+        if len(request_timestamps) >= burst_limit:
+            wait_time = burst_period - (now - request_timestamps[0]) + 0.1
+            logger.info(f"Лимит запросов исчерпан, ожидаем {wait_time:.1f} секунд...")
+            time.sleep(wait_time)
+            continue
+
+        # logger.debug(f"POST {url}, payload: {payload}")
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 429:
+                logger.info("Превышен лимит запросов! Ждем 21 секунду и пробуем снова.")
+                time.sleep(21)
+                continue
+            response.raise_for_status()
+            resp_json = response.json()
+            products = resp_json.get("data", {}).get("products", [])
+            request_timestamps.append(time.time())
+        except Exception as e:
+            logger.exception(f"Ошибка при выполнении запроса: {e}")
+            raise
+
+        logger.info(f"Получено {len(products)} товаров, offset={offset}")
+        all_products.extend(products)
+
+        # Если получено меньше, чем limit — достигли конца списка
+        if len(products) < limit:
+            break
+        offset += limit
+
+    # Сборка данных по нужным полям
+    rows = []
+    for prod in all_products:
+        product = prod.get("product", {})
+        stats = prod.get("statistic", {}).get("selected", {})
+        rows.append({
+            "Артикул WB": product.get("nmId"),
+            "Артикул продавца": product.get("vendorCode"),
+            "Название карточки товара": product.get("title"),
+            "Количество переходов в карточку товара": stats.get("openCount"),
+            "Положили в корзину, шт.": stats.get("cartCount"),
+            "Заказали товаров, шт.": stats.get("orderCount"),
+            "Заказали на сумму": stats.get("orderSum"),
+            "Выкупили товаров, шт.": stats.get("buyoutCount"),
+            "Выкупили на сумму": stats.get("buyoutSum"),
+            "Отменили товаров, шт.": stats.get("cancelCount"),
+            "Отменили на сумму": stats.get("cancelSum"),
+            "Средняя цена": stats.get("avgPrice"),
+        })
+    df = pd.DataFrame(rows)
+
+    return df
+# %%
