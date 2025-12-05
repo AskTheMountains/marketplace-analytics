@@ -1080,7 +1080,7 @@ def getStockReminders_fbs(headers, to_save=True):
         time.sleep(5)  # дайте пару секунд на саму генерацию отчета
         path_csv = resp_data["result"]["file"]
         logger.info('Get link on FBS warehouses report')
-        logger.info(f"FBS stock reminders report link: {path_csv}")
+        # logger.info(f"FBS stock reminders report link: {path_csv}")
 
         # Качаем файл
         MAX_TRIES = 20
@@ -1113,73 +1113,65 @@ def getStockReminders_fbs(headers, to_save=True):
         return df_fbs_reminders
 
 
-# Отчет по транзакциям
-def getTransactionReport(headers, date_start, date_end):
-    # Разбиваем диапазон дат на периоды по 1 месяцу каждый
-
-    # GPT START ----
-    # Преобразование строковых дат в datetime
-    dt_start = pd.to_datetime(date_start).tz_localize(None)
-    dt_end = pd.to_datetime(date_end).tz_localize(None)
-
-    # Создание списка интервалов
+def generate_monthly_intervals(date_start: str, date_end: str):
+    """Генерирует месячные интервалы, если период больше месяца"""
+    dt_start = pd.to_datetime(date_start)
+    dt_end = pd.to_datetime(date_end)
     intervals = []
 
-    # Первый интервал от начальной даты до конца месяца
-    first_month_end = (dt_start + pd.DateOffset(months=1)).replace(day=1) - pd.Timedelta(seconds=1)
-    if first_month_end > dt_end:
-        first_month_end = dt_end
-
-    intervals.append({
-        'date_start': dt_start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-        'date_end': first_month_end.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-        'dt_start': dt_start,
-        'dt_end': first_month_end
-    })
-
-    # Следующий интервал от начала следующего месяца до конца месяца
-    current_start = first_month_end + pd.Timedelta(seconds=1)
+    current_start = dt_start
     while current_start <= dt_end:
-        monthly_start = current_start.replace(day=1)
-        monthly_end = (monthly_start + pd.DateOffset(months=1)).replace(day=1) - pd.Timedelta(seconds=1)
-
-        if monthly_end > dt_end:
-            monthly_end = dt_end
-
+        next_month = (current_start + pd.DateOffset(months=1)).replace(day=1)
+        current_end = min(next_month - pd.Timedelta(seconds=1), dt_end)
         intervals.append({
-            'date_start': monthly_start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-            'date_end': monthly_end.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-            'dt_start': monthly_start,
-            'dt_end': monthly_end
+            'date_start': current_start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            'date_end': current_end.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            'dt_start': current_start,
+            'dt_end': current_end
         })
+        current_start = next_month
 
-        # Переход к следующему месяцу
-        current_start = monthly_start + pd.DateOffset(months=1)
+    return pd.DataFrame(intervals)
 
-    # Создание датафрейма
-    date_range_df = pd.DataFrame(intervals)
-    # GPT END ----
 
-    # Задаем имя файла для списка транзакций
+def getTransactionReport(headers, date_start, date_end):
+    """
+    Выгружает транзакции по API Ozon с разбивкой по месяцам и логированием.
+    """
+    dt_start = pd.to_datetime(date_start)
+    dt_end = pd.to_datetime(date_end)
+    period_days = (dt_end - dt_start).days
+
+    if period_days <= 31:
+        # Один интервал на весь указанный диапазон
+        date_range_df = pd.DataFrame([{
+            'date_start': dt_start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            'date_end': dt_end.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            'dt_start': dt_start,
+            'dt_end': dt_end
+        }])
+    else:
+        # Дробим на месяцы
+        date_range_df = generate_monthly_intervals(date_start, date_end)
+
+    logger.info(f"Выгрузка транзакций с {date_start} по {date_end} начата.")
+
     file_name_transactions = (
-        uploaddir_today /
+        Path(uploaddir_today) /
         f"{str(date.today())}_Транзакции.csv"
     )
-
-    # df, в который будем помещать результаты
     df_transaction_list = pd.DataFrame()
 
-    for i in range(date_range_df.shape[0]):
-        # Начальные значения для цикла
+    for idx, interval in date_range_df.iterrows():
+        logger.info(f"Обработка периода: {interval['dt_start']} - {interval['dt_end']}")
         page = 1
-        page_count = 2
-        while page_count > 0:
-            # Выгружаем отдельно каждую страницу отчета
-            params = json.dumps({
+        total_pages = 1  # Пажинация: по умолчанию хотя бы одну страницу пробуем
+        while page <= total_pages:
+            payload = {
                 "filter": {
                     "date": {
-                        "from": date_range_df['date_start'][i],
-                        "to": date_range_df['date_end'][i]
+                        "from": interval['date_start'],
+                        "to": interval['date_end']
                     },
                     "operation_type": [],
                     "posting_number": "",
@@ -1187,32 +1179,45 @@ def getTransactionReport(headers, date_start, date_end):
                 },
                 "page": page,
                 "page_size": 1000
-            })
+            }
+            try:
+                resp = requests.post(
+                    f"{ozon_seller_api_url}/v3/finance/transaction/list",
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=60
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                # Получение страниц
+                result = data.get('result', {})
+                total_pages = result.get('page_count', 0)
+                operations = result.get('operations', [])
+                if not operations:
+                    logger.info(f"Нет транзакций за этот период, страница {page}.")
+                tmp_df = pd.DataFrame(operations)
+                if not tmp_df.empty:
+                    tmp_df = tmp_df.assign(
+                        dt_start=interval['dt_start'],
+                        dt_end=interval['dt_end']
+                    )
+                    df_transaction_list = pd.concat([df_transaction_list, tmp_df], ignore_index=True)
+                logger.info(f"Страница {page} из {total_pages} обработана.")
+            except requests.RequestException as ex:
+                logger.error(f"Ошибка запроса API на странице {page}: {ex}")
+            except Exception as ex:
+                logger.error(f"Общая ошибка на странице {page}: {ex}")
+            page += 1
 
-            resp_data_transaction_list = requests.post(f"{ozon_seller_api_url}/v3/finance/transaction/list", headers=headers, data=params).json()
-            # Сколько нужно выгрузить страниц
-            page_count =  resp_data_transaction_list['result']['page_count']
-            # Увеличиваем страницу 1 для выгрузки следующей страницы
-            page = page + 1
-            # print(resp_data_transaction_list)
-            # Промежуточный df, в который помещаем результаты текущей страницы
-            tmp_df = pd.DataFrame(resp_data_transaction_list['result']['operations'])
-            # Добавляем даты, за который был выгружен отчет по транзакциям
-            tmp_df = tmp_df.assign(
-                dt_start=date_range_df['dt_start'][i],
-                dt_end=date_range_df['dt_end'][i]
-            )
-            # Объединяем с предыдущей страницей
-            df_transaction_list = pd.concat([df_transaction_list, tmp_df])
+    if not df_transaction_list.empty:
+        df_transaction_list['items_amount'] = df_transaction_list['items'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+        df_transaction_list['services_amount'] = df_transaction_list['services'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+        df_transaction_list.to_csv(file_name_transactions, sep=';', index=False, encoding='utf-8-sig')
+        logger.info(f"Выгрузка транзакций завершена. Найдено {df_transaction_list.shape[0]} транзакций.")
+    else:
+        logger.info("Транзакции не найдены по указанному периоду.")
 
-    # Убираем дубликаты из index
-    df_transaction_list = df_transaction_list.reset_index(drop=True)
-    # Количество товаров в одной операции
-    df_transaction_list['items_amount'] = df_transaction_list['items'].apply(lambda x: len(x))
-    df_transaction_list['services_amount'] = df_transaction_list['services'].apply(lambda x: len(x))
-    # Сохраняем csv
-    df_transaction_list.to_csv(file_name_transactions, sep=';', index=False, encoding='utf-8-sig')
-
+    return file_name_transactions
 
 # Продажи FBO
 def getSalesFBO(headers):
@@ -1547,7 +1552,12 @@ def get_supply_orders(
                                         "last_id": last_id,
                                         "limit": 100
                 })
-                resp_data_supply_orders_items = requests.post(f"{ozon_seller_api_url}/v1/supply-order/bundle", headers=headers, data=params_supply_orders_items).json()
+                resp_data_supply_orders_items = requests.post(f"{ozon_seller_api_url}/v1/supply-order/bundle", headers=headers, data=params_supply_orders_items)
+
+                if resp_data_supply_orders_items.status_code != 200:
+                    logger.error(f"Error fetching supply order items: {resp_data_supply_orders_items.text}")
+                    continue
+                resp_data_supply_orders_items = resp_data_supply_orders_items.json()
                 # Получаем товары из ответа
                 df_items = pd.DataFrame(resp_data_supply_orders_items['items'])
                 # Добавляем данные по поставке
@@ -1565,7 +1575,7 @@ def get_supply_orders(
                 last_id = resp_data_supply_orders_items['last_id']
                 has_next = resp_data_supply_orders_items['has_next']
                 # Делаем паузу в запросах, т.к. лимит 3 запроса в секунду
-                time.sleep(0.4)
+                time.sleep(0.8)
 
         # Добавляем названия кластеров к складам
         # df_clusters = pd.read_csv('clasters_warehouse.csv', sep=',')
