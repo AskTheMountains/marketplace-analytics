@@ -27,6 +27,10 @@ from wb.scripts.command_args_parser import cli_companies
 from wb.scripts.constants import client_name, headers, PROMOTION_COMPANIES
 # Функции выгрузки данных
 from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
+# Доп. функции
+from wb.scripts.wb_generic_functions import (
+    get_sales_funnel
+)
 
 parser = argparse.ArgumentParser(
     description="Create promotion report (WB)",
@@ -881,9 +885,9 @@ def get_company_stats_v2(
         'nmId': 'Артикул WB',
         'name': 'Наименование товара',
         'views': 'Показы',
-        'clicks': 'Клики',
+        'clicks': 'Клики РК',
         'sum': 'Затраты руб',
-        'atbs': 'Добавлений в корзину',
+        'atbs': 'Корзина РК',
         'orders': 'Заказы шт (из отчета РК)',
         'sum_price': 'Заказы руб (из отчета РК)',
         'shks': 'Заказанные товары шт (из отчета РК)',
@@ -907,10 +911,10 @@ def get_company_stats_v2(
             'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
             # 'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК',
             'Артикул WB', 'Наименование товара',
-            'Показы', 'Клики',
+            'Показы', 'Клики РК',
             'CTR, %', 'CR, %', 'CPC','CPM',
             'Затраты руб',
-            'Добавлений в корзину',
+            'Корзина РК',
             'Заказы шт (из отчета РК)',
             'Заказанные товары шт (из отчета РК)',
             'Заказы руб (из отчета РК)',
@@ -1302,10 +1306,84 @@ def calc_orders_for_companies(
     return df_companies_stats_with_orders, df_associated_orders
 
 
+# Функция добавления данных из воронки продаж
+def add_data_from_sales_funnel(df_companies_stats_with_orders):
+    # Из статистики кампаний формируем список уникальных артикулов и дат
+    results = []
+    groups = (
+        df_companies_stats_with_orders
+        .groupby([
+            'Начальная дата запроса статистики РК',
+            'Конечная дата запроса статистики РК'
+        ])
+    )
+    # Цикл по каждой группе
+    for (date_from, date_to), group in groups:
+        # Выбираем артикулы в группе
+        nm_ids = group['Артикул WB'].tolist()
+        # Разбиваем список артикулов на чанки по 1000
+        for i in range(0, len(nm_ids), 1000):
+            nm_ids_chunk = nm_ids[i:i+1000]
+            # Выгружаем данные воронки продаж
+            tmp_df_sales_funnel = get_sales_funnel(
+                headers=headers,
+                nm_ids=nm_ids_chunk,
+                date_from=date_from,
+                date_to=date_to,
+                limit=50
+            )
+            # Добавляем даты из группы к воронке продаж
+            tmp_df_sales_funnel['Начальная дата запроса статистики РК'] = date_from
+            tmp_df_sales_funnel['Конечная дата запроса статистики РК'] = date_to
+            # Добавляем результаты в общий список
+            results.append(tmp_df_sales_funnel)
+
+    # Объединяем результаты в один DataFrame
+    df_sales_funnel = pd.concat(results, ignore_index=True)
+    # Выбираем нужные колонки из воронки продаж
+    df_sales_funnel = (
+        df_sales_funnel
+        .rename(columns={
+            'Количество переходов в карточку товара': 'Клики общие',
+            'Положили в корзину, шт.': 'Корзина общая'
+        })
+        .loc[:, [
+            'Артикул WB',
+            'Клики общие',
+            'Корзина общая',
+            'Начальная дата запроса статистики РК',
+            'Конечная дата запроса статистики РК',
+        ]]
+    )
+
+    # Объединяем данные со статистикой РК
+    df_companies_stats_with_sales_funnel = df_companies_stats_with_orders.merge(
+        df_sales_funnel,
+        on=[
+            'Артикул WB',
+            'Начальная дата запроса статистики РК',
+            'Конечная дата запроса статистики РК',
+        ],
+        how='left'
+    )
+    # Перемещаем колонки
+    df_companies_stats_with_sales_funnel = move_columns(
+        df_companies_stats_with_sales_funnel,
+        'Клики общие',
+        'Клики РК',
+    )
+    df_companies_stats_with_sales_funnel = move_columns(
+        df_companies_stats_with_sales_funnel,
+        'Корзина общая',
+        'Корзина РК',
+    )
+
+    return df_companies_stats_with_sales_funnel
+
 # Функция расчета итоговых колонок в статистике РК
-def calc_final_orders(df_companies_stats_with_orders):
+def calc_final_orders(df_companies_stats_with_sales_funnel):
     # Достаем df со статистикой РК из словаря
-    df_companies_stats_final_orders = df_companies_stats_with_orders.copy()
+    df_companies_stats_final_orders = df_companies_stats_with_sales_funnel.copy()
     # Считаем ДРР
     df_companies_stats_final_orders['ДРР, %'] = np.where(
         df_companies_stats_final_orders['Заказы артикула руб (из отчета по заказам)'] > 0,
@@ -1398,66 +1476,69 @@ def get_keywords_stats(headers, df_input_companies):
 
             # Если была ошибка, выводим текст ошибки
             else:
-                print(resp_data_keyword_companies.text)
+                logger.warning(f'Ошибка запроса: {resp_data_keyword_companies.text}')
 
             # Делаем паузу между запросами
             time.sleep(0.25)
 
-    # Обработка данных кампаний поиска по ключевым фразам
-    # Достаем данные из словарей
-    df_companies_keywords_normalized = (
-        pd.concat([
-            df_keyword_company_stats_api,
-            pd.json_normalize(df_keyword_company_stats_api['keywords'])
-        ], axis=1)
-    )
-    # Достаем данные из списков
-    df_companies_keywords_unpacked = df_companies_keywords_normalized.explode(['stats'], ignore_index=True)
-    # Достаем данные из словарей списков
-    df_companies_keywords_stats = (
-        pd.concat([
-            df_companies_keywords_unpacked,
-            pd.json_normalize(df_companies_keywords_unpacked['stats']),
-        ], axis=1)
-        # Убираем колонку со словарями
-        .pipe(
-            lambda df:
-                df.loc[:, ~df.columns.isin(['stats'])]
+    if not df_keyword_company_stats_api.empty:
+        # Обработка данных кампаний поиска по ключевым фразам
+        # Достаем данные из словарей
+        df_companies_keywords_normalized = (
+            pd.concat([
+                df_keyword_company_stats_api,
+                pd.json_normalize(df_keyword_company_stats_api['keywords'])
+            ], axis=1)
         )
-        # Переименовываем колонки
-        .rename(columns={
-            'date': 'Дата',
-            'keyword': 'Ключевая фраза',
-            'views': 'Просмотры',
-            'clicks': 'Клики',
-            'ctr': 'CTR',
-            'sum': 'Затраты'
-        })
-    )
-    # Переводим колонку с датой в datetime
-    df_companies_keywords_stats['Дата'] = pd.to_datetime(df_companies_keywords_stats['Дата'])
-    # Сортируем по затратам
-    df_companies_keywords_stats = (
-        df_companies_keywords_stats
-        .sort_values(
-            by=['Номер кампании', 'Затраты'],
-            ascending=False,
-            ignore_index=True
+        # Достаем данные из списков
+        df_companies_keywords_unpacked = df_companies_keywords_normalized.explode(['stats'], ignore_index=True)
+        # Достаем данные из словарей списков
+        df_companies_keywords_stats = (
+            pd.concat([
+                df_companies_keywords_unpacked,
+                pd.json_normalize(df_companies_keywords_unpacked['stats']),
+            ], axis=1)
+            # Убираем колонку со словарями
+            .pipe(
+                lambda df:
+                    df.loc[:, ~df.columns.isin(['stats'])]
+            )
+            # Переименовываем колонки
+            .rename(columns={
+                'date': 'Дата',
+                'keyword': 'Ключевая фраза',
+                'views': 'Просмотры',
+                'clicks': 'Клики',
+                'ctr': 'CTR',
+                'sum': 'Затраты'
+            })
         )
-    )
-    # Делаем удобный порядок колонок
-    df_companies_keywords_stats = df_companies_keywords_stats.loc[
-        :,
-        [
-            'Номер кампании',
-            'Дата',
-            'Ключевая фраза',
-            'Затраты',
-            'Клики',
-            'Просмотры',
-            'CTR'
+        # Переводим колонку с датой в datetime
+        df_companies_keywords_stats['Дата'] = pd.to_datetime(df_companies_keywords_stats['Дата'])
+        # Сортируем по затратам
+        df_companies_keywords_stats = (
+            df_companies_keywords_stats
+            .sort_values(
+                by=['Номер кампании', 'Затраты'],
+                ascending=False,
+                ignore_index=True
+            )
+        )
+        # Делаем удобный порядок колонок
+        df_companies_keywords_stats = df_companies_keywords_stats.loc[
+            :,
+            [
+                'Номер кампании',
+                'Дата',
+                'Ключевая фраза',
+                'Затраты',
+                'Клики',
+                'Просмотры',
+                'CTR'
+            ]
         ]
-    ]
+    else:
+        df_companies_keywords_stats = pd.DataFrame()
 
     return df_companies_keywords_stats
 
@@ -1498,12 +1579,19 @@ def create_result_dictionary(
         df_companies_keywords_stats,
         df_keywords_stats,
 ):
+    # Убираем лишние колонки из статистики РК
+    df_final_orders_ = (
+        df_final_orders.drop(columns=[
+            'Начальная дата запроса статистики РК',
+            'Конечная дата запроса статистики РК'
+        ])
+    )
     # Добавляем статистику по ключевым словам в словарь с кампаниями
     result_companies_report = {
-        'Статистика РК': df_final_orders,
+        'Статистика РК': df_final_orders_,
         'Ассоциированные заказы': df_associated_orders,
         'Ключевые слова (свод)': df_keywords_stats,
-        'Ключевые слова': df_companies_keywords_stats
+        # 'Ключевые слова': df_companies_keywords_stats
     }
 
     return result_companies_report
@@ -1657,6 +1745,10 @@ if __name__ == '__main__':
         df_orders,
         df_companies_stats
     )
+    # Добавляем данные из воронки продаж
+    df_companies_stats_with_sales_funnel = add_data_from_sales_funnel(
+        df_companies_stats_with_orders
+    )
     # Получаем статистику по ключевым фразам в поиске
     df_companies_keywords_stats = get_keywords_stats(
         headers,
@@ -1670,7 +1762,7 @@ if __name__ == '__main__':
     # df_companies_sku_stats = calc_costs_by_sku(result_companies_info, df_costs_history_stats)
 
     # Считаем ДРР и итоговые заказы
-    df_final_orders = calc_final_orders(df_companies_stats_with_orders)
+    df_final_orders = calc_final_orders(df_companies_stats_with_sales_funnel)
     # Создаем итоговый словарь с результатами
     result_companies_report = create_result_dictionary(
         df_final_orders,
