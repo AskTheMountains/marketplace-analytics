@@ -321,7 +321,7 @@ def cli_companies(parser):
     parser,
     '--promotion_companies', '-comps',
     type=str,
-    help='Список ID кампаний через запятую или с новой строки. Примеры: "13687629,14962180" или "13687629\\n14962180".',
+    help='Список ID кампаний через разделитель (запятая, точка с запятой, пробел, новая строка). Примеры: "13687629,14962180" или "13687629\\n14962180".',
     # metavar='IDS'
     )
     args, unknown = parser.parse_known_args()
@@ -343,3 +343,133 @@ def cli_companies(parser):
     params["promotion_companies"] = getattr(args, 'promotion_companies', None)
 
     return params
+
+def cli_article_and_companies(parser):
+    """
+    Парсит date_start и date_end как позиционные и именованные,
+    reference_date — только как именованный.
+    promotion_companies — список номеров кампаний.
+    wb_skus — списки sku для каждой кампании.
+    start_dates — список начальных дат для кампаний.
+    end_dates — список конечных дат для кампаний.
+    Возвращает dict со всеми этими ключами.
+    """
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        help="Номер клиента (необязательный, если не передан — берётся из options.py)",
+        metavar='[N]'
+    )
+    safe_add_argument(
+        parser,
+        'start_date_pos',
+        nargs='?',
+        help=argparse.SUPPRESS
+    )
+    safe_add_argument(
+        parser,
+        'end_date_pos',
+        nargs='?',
+        help=argparse.SUPPRESS
+    )
+    safe_add_argument(
+        parser,
+        '--start_date',
+        type=str,
+        help='Начальная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
+    )
+    safe_add_argument(
+        parser,
+        '--end_date',
+        type=str,
+        help='Конечная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
+        metavar='YYYY-MM-DD'
+    )
+    safe_add_argument(
+        parser,
+        '--reference_date',
+        type=str,
+        help='Опорная дата (например, для автоматического диапазона) в формате YYYY-MM-DD (опционально)',
+        metavar=''
+    )
+    safe_add_argument(
+        parser,
+        '--promotion_companies', '-comps',
+        type=str,
+        help='Список ID кампаний через разделитель (запятая, точка с запятой, пробел, новая строка). ТОЛЬКО ЧИСЛА! Примеры: "13687629,14962180" или "13687629\\n14962180".'
+    )
+    safe_add_argument(
+        parser,
+        '--wb_skus', '-wb',
+        type=str,
+        help='Список артикулов Wildberries для каждой кампании в виде списка. Например: "[123456, 234567]; [345678]".'
+    )
+    safe_add_argument(
+        parser,
+        '--start_dates',
+        type=str,
+        help='Список начальных дат для кампаний через запятую, пробел или новую строку. Например: "2024-11-01,2024-12-02".'
+    )
+    safe_add_argument(
+        parser,
+        '--end_dates',
+        type=str,
+        help='Список конечных дат для кампаний через запятую, пробел или новую строку. Например: "2024-11-15,2024-12-16".'
+    )
+
+    args, unknown = parser.parse_known_args()
+
+    # Преобразуем приоритетно:
+    # (позиционные > именованные; reference_date только именованный)
+    params = {}
+    if args.start_date_pos and args.end_date_pos:
+        params["start_date"] = args.start_date_pos
+        params["end_date"] = args.end_date_pos
+    elif args.start_date and args.end_date:
+        params["start_date"] = args.start_date
+        params["end_date"] = args.end_date
+    else:
+        params["start_date"] = None
+        params["end_date"] = None
+
+    params["reference_date"] = args.reference_date if args.reference_date else None
+    params["promotion_companies"] = getattr(args, 'promotion_companies', None)
+    params["wb_skus"] = getattr(args, 'wb_skus', None)
+    params["start_dates"] = getattr(args, 'start_dates', None)
+    params["end_dates"] = getattr(args, 'end_dates', None)
+
+    return params
+
+def cli_update_reference_table(parser):
+    # Номер клиента (обязательный аргумент)
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        required=True,
+        help="Номер клиента (обязательный аргумент)",
+        metavar='[N]'
+    )
+
+    # Путь к файлу (обязательный аргумент)
+    safe_add_argument(
+        parser,
+        "--file", "-f",
+        dest="file_path",
+        type=str,
+        required=True,
+        help="Путь к файлу для обновления справочной таблицы (обязательный аргумент)"
+    )
+
+    args, unknown = parser.parse_known_args()
+    args = clean_jupyter_kernel_args(args)
+
+    client = getattr(args, "client", None)
+    file_path = getattr(args, "file_path", None)
+
+    return {
+        "client": client,
+        "file_path": file_path
+    }

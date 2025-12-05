@@ -461,3 +461,35 @@ def cli_finance(parser):
         "finance_report_file_path": finance_report_file_path,
         "client": client
     }
+
+def cli_update_reference_table(parser):
+    # Номер клиента (обязательный аргумент)
+    safe_add_argument(
+        parser,
+        "--client", "-c",
+        type=int,
+        required=True,
+        help="Номер клиента (обязательный аргумент)",
+        metavar='[N]'
+    )
+
+    # Путь к файлу (обязательный аргумент)
+    safe_add_argument(
+        parser,
+        "--file", "-f",
+        dest="file_path",
+        type=str,
+        required=True,
+        help="Путь к файлу для обновления справочной таблицы (обязательный аргумент)"
+    )
+
+    args, unknown = parser.parse_known_args()
+    args = clean_jupyter_kernel_args(args)
+
+    client = getattr(args, "client", None)
+    file_path = getattr(args, "file_path", None)
+
+    return {
+        "client": client,
+        "file_path": file_path
+    }
