@@ -617,17 +617,21 @@ def get_prices(catalog, headers):
         df_products_prices[col] = pd.to_numeric(df_products_prices[col], errors='coerce')
         df_products_prices[col] = df_products_prices[col].astype(float)
     # Объединяем с df товаров
-    catalog_ = catalog_.merge(df_products_prices[['product_id', 'old_price', 'price', 'min_price']], # 'marketing_price исключена 26.08.2024
-                                    how='left',
-                                    left_on='Ozon Product ID',
-                                    right_on='product_id')
+    catalog_ = catalog_.merge(
+        df_products_prices[['product_id', 'old_price', 'price', 'min_price']], # 'marketing_price исключена 26.08.2024
+        how='left',
+        left_on='Ozon Product ID',
+        right_on='product_id'
+    )
     # Удаляем ненужные колонки
     catalog_.drop(columns=['product_id'], inplace=True)
-    catalog_.rename(columns={"marketing_price": "Цена для покупателя",
-                            "old_price": "Цена до скидки",
-                            "price": "Цена после скидки",
-                            "min_price": "Мин. цена Ozon"},
-                    inplace=True)
+    catalog_ = catalog_.rename(columns={
+        "marketing_price": "Цена для покупателя",
+        "old_price": "Цена до скидки",
+        "price": "Цена после скидки",
+        "min_price": "Мин. цена Ozon"
+    })
+
     return catalog_
 
 
@@ -693,10 +697,10 @@ def process_catalog_data(catalog):
        ])]
     # Удаляем лишние символы из артикула
     catalog_processed['Артикул'] = catalog_processed['Артикул'].str.replace("'", "", regex=False)
-    # Переводим баркод в число
-    catalog_processed['Barcode'] = pd.to_numeric(catalog_processed['Barcode'], errors='coerce')
-    catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
-    catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: str(x).split('.')[0] if pd.notnull(x) else x).astype('Int64')
+    # Переводим баркод в строку
+    catalog_processed['Barcode'] = catalog_processed['Barcode'].astype(str)
+    # catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
+    # catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: str(x).split('.')[0] if pd.notnull(x) else x).astype('Int64')
     # Переименовываем колонки с ценами, которые приходят из отчета по товарам из апи
     # чтобы потом не было путаницы с ценами, которые мы получаем из отдельного метода
     catalog_processed = catalog_processed.rename(columns={
