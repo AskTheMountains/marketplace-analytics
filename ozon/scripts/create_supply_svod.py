@@ -51,10 +51,6 @@ metricsdir = (
     / "Metrics"
 )
 
-# Таблица объединения кластеров в один (какие в какой объединяем)
-clusters_mapping_df = pd.DataFrame(clusters_mapping)
-clusters_mapping_jewelry_df = pd.DataFrame(clusters_mapping_jewelry)
-
 
 # Функция чтения списка товаров
 def read_products_file(date_metrics):
@@ -201,19 +197,15 @@ def add_clusters(date_metrics):
 
 
 # Объединение нескольких кластеров в один
-def replace_clusters(
-        clusters_mapping_df,
-        df_with_clusters,
-    ):
+def replace_clusters(clusters_mapping, df, cluster_col='Кластер'):
+    cluster_by_sub = {}
+    for cluster, subclusters in clusters_mapping.items():
+        for sub in subclusters:
+            cluster_by_sub[sub] = cluster
 
-    # Создаем копию для избежания изменений в оригинальном df
-    df_with_replaced_clusters = df_with_clusters.copy()
-    # Замена названий кластеров только на нужные
-    # (несколько кластеров могут сливаться в один)
-    for i in range(len(clusters_mapping_df)):
-        df_with_replaced_clusters.loc[df_with_replaced_clusters['Кластер'].isin(clusters_mapping_df["subcluster"][i]), "Кластер"] = clusters_mapping_df["cluster"][i]
-
-    return df_with_replaced_clusters
+    df_res = df.copy()
+    df_res[cluster_col] = df_res[cluster_col].map(cluster_by_sub).fillna(df_res[cluster_col])
+    return df_res
 
 
 # Расчет потребности и оборачиваемости для товаров по кластерам
@@ -363,7 +355,7 @@ def add_columns_from_catalog(metrics_df_by_sku_with_stats):
 def create_jewelry_clusters_svod(metrics_df_all_clusters):
     if shop_type == 'jewelry':
         # Заменяем кластеры по маппингу ювелирных кластеров
-        metrics_df_with_clusters = replace_clusters(clusters_mapping_jewelry_df, metrics_df_all_clusters, flag_replace_clusters=True)
+        metrics_df_with_clusters = replace_clusters(clusters_mapping_jewelry, metrics_df_all_clusters, flag_replace_clusters=True)
         # Расчитываем доп. колонки с оборачиваемостью и потребностью для листа "По кластерам"
         svod_for_replaced_clusters = calc_svod_for_clusters(metrics_df_with_replaced_clusters)
         # Группировка по кластеру
@@ -382,7 +374,7 @@ def create_jewelry_clusters_svod(metrics_df_all_clusters):
         # Чтение файла с датами формирования выгрузок
         report_dates = read_dates_file(date_metrics)
         # Добавляем недостающие колонки для excel
-        cluster_list = clusters_mapping_jewelry_df['cluster'].unique().tolist()
+        cluster_list = list(clusters_mapping_jewelry.keys())
         svod_excel_by_sku = add_columns_for_excel(
             svod_with_catalog_for_sku,
             cluster_list,
@@ -584,7 +576,7 @@ if __name__ == '__main__':
     # Сводная таблица по кластерам для записи в excel
     df_pivot_by_clusters = create_pivot_clusters(svod_for_clusters)
     # Объединяем несколько кластеров в один
-    metrics_df_with_replaced_clusters = replace_clusters(clusters_mapping_df, metrics_df_all_clusters)
+    metrics_df_with_replaced_clusters = replace_clusters(clusters_mapping, metrics_df_all_clusters)
     # metrics_df_with_clusters = metrics_df.copy()
     # Расчитываем доп. колонки с оборачиваемостью и потребностью для листа "По кластерам"
     svod_for_replaced_clusters = calc_svod_for_clusters(metrics_df_with_replaced_clusters)
@@ -612,7 +604,7 @@ if __name__ == '__main__':
     # Чтение файла с датами формирования выгрузок
     report_dates = read_dates_file(date_metrics)
     # Добавляем недостающие колонки для excel
-    cluster_list = clusters_mapping_df['cluster'].unique().tolist()
+    cluster_list = list(clusters_mapping.keys())
     # Лист "Всего"
     svod_excel_for_sku = add_columns_for_excel(
         svod_with_catalog_for_sku,
@@ -649,6 +641,6 @@ if __name__ == '__main__':
         svod_excel_for_sku,
         svod_excel_for_sku_jewelry,
         svod_excel_for_clusters,
-        clusters_mapping_df,
-        clusters_mapping_jewelry_df
+        clusters_mapping,
+        clusters_mapping_jewelry
     )
