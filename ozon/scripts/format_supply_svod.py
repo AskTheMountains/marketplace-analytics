@@ -35,7 +35,7 @@ def format_sheet_total(
         date_report_created,
         svod_excel,
         svod_excel_clusters,
-        clusters_mapping_df,
+        clusters_mapping,
         sheet_name='Всего'
     ):
 
@@ -179,51 +179,41 @@ def format_sheet_total(
         ws[f'{demand_60_days_rounded}{i}'] = f'= ROUNDUP(IF({deficit_60_days}{i} > 0, 0, -{deficit_60_days}{i}),0)'
 
     # Суммирование данных с листа по кластерам
-    clusters_mapping_df_ = clusters_mapping_df.copy()
-    # Объединяем кластер и его субкластеры в один лист
-    # clusters_mapping_df_['cluster_and_subcluster'] = clusters_mapping_df_['cluster'].map(list) + clusters_mapping_df_['subcluster']
-    for i in range(clusters_mapping_df_.shape[0]):
-        # Выбираем список кластеров из таблицы соответствия
-        cluster = clusters_mapping_df_['cluster'][i]
-        subcluster_list = clusters_mapping_df_['subcluster'][i].copy()
-        # Добавляем кластер в список субкластеров
-        subcluster_list.insert(0, cluster)
-        # Удаляем дубликаты из субкластеров
-        subcluster_list = list(dict.fromkeys(subcluster_list))
-        # Выбираем колонку с потребностью и остатками для кластера на листе всего
-        demand_cluster_column = excel_columns.loc[excel_columns['column'] == f"Потребность {cluster}", 'excel_column'].values[0]
-        reminders_cluster_column = excel_columns.loc[excel_columns['column'] == f"Остаток {cluster}", 'excel_column'].values[0]
-        for k in range(row_start, svod_len + 1):
-            # Строка, куда будет помещаться итоговая формула
-            subcluster_formula_demand = ''
-            subcluster_formula_reminders = ''
-            for subcluster in subcluster_list:
-                # Прописываем формулу, включающую в себя сумму по субкластерам
-                subcluster_formula_demand_tmp = (
-                     f"SUMIFS('По кластерам'!${correction_null_reminders_from_clusters}${row_start_clusters}:${correction_null_reminders_from_clusters}${svod_len_clusters + 1}, "
-                     f"'По кластерам'!${article_from_clusters}${row_start_clusters}:${article_from_clusters}${svod_len_clusters + 1}, ${article}{k}, "
-                     f"'По кластерам'!${cluster_from_clusters}${row_start_clusters}:${cluster_from_clusters}${svod_len_clusters + 1}, \"{subcluster}\""
-                     f")\n"
-                )
-                subcluster_formula_reminders_tmp = (
-                     f"SUMIFS('По кластерам'!${reminders_from_clusters}${row_start_clusters}:${reminders_from_clusters}${svod_len_clusters + 1}, "
-                     f"'По кластерам'!${article_from_clusters}${row_start_clusters}:${article_from_clusters}${svod_len_clusters + 1}, ${article}{k}, "
-                     f"'По кластерам'!${cluster_from_clusters}${row_start_clusters}:${cluster_from_clusters}${svod_len_clusters + 1}, \"{subcluster}\""
-                     f")\n"
-                )
-                # Суммируем с предыдущим кластером
-                subcluster_formula_demand = f"{subcluster_formula_demand_tmp} + {subcluster_formula_demand}"
-                subcluster_formula_reminders = f"{subcluster_formula_reminders_tmp} + {subcluster_formula_reminders}"
-                # Удаляем лишние символы в конце строки, если это последний субкластер
-                subcluster_formula_demand = subcluster_formula_demand.rstrip(" + ''")
-                subcluster_formula_reminders = subcluster_formula_reminders.rstrip(" + ''")
-            # Добавляем = вначале формулы, чтобы эксель воспринимал это как формулу
-            subcluster_formula_demand = f"= {subcluster_formula_demand}"
-            subcluster_formula_reminders = f"= {subcluster_formula_reminders}"
-            # Вставляем формулу в нужную ячейку
-            ws[f'{demand_cluster_column}{k}'] = subcluster_formula_demand
-            ws[f'{reminders_cluster_column}{k}'] = subcluster_formula_reminders
+    for cluster, subcluster_list in clusters_mapping.items():
+        # Для формулы обязательно включаем сам кластер в субкластеры (если его там нет)
+        if cluster not in subcluster_list:
+            subclusters_full = [cluster] + list(subcluster_list)
+        else:
+            subclusters_full = list(subcluster_list)
+        # Удаляем дубликаты
+        subclusters_full = list(dict.fromkeys(subclusters_full))
 
+        demand_cluster_column = excel_columns.loc[
+            excel_columns['column'] == f"Потребность {cluster}", 'excel_column'
+        ].values[0]
+        reminders_cluster_column = excel_columns.loc[
+            excel_columns['column'] == f"Остаток {cluster}", 'excel_column'
+        ].values[0]
+
+        for k in range(row_start, svod_len + 1):
+            subcluster_formula_demand = []
+            subcluster_formula_reminders = []
+            for subcluster in subclusters_full:
+                subcluster_formula_demand.append(
+                    f"SUMIFS('По кластерам'!${correction_null_reminders_from_clusters}${row_start_clusters}:${correction_null_reminders_from_clusters}${svod_len_clusters + 1}, "
+                    f"'По кластерам'!${article_from_clusters}${row_start_clusters}:${article_from_clusters}${svod_len_clusters + 1}, ${article}{k}, "
+                    f"'По кластерам'!${cluster_from_clusters}${row_start_clusters}:${cluster_from_clusters}${svod_len_clusters + 1}, \"{subcluster}\")"
+                )
+                subcluster_formula_reminders.append(
+                    f"SUMIFS('По кластерам'!${reminders_from_clusters}${row_start_clusters}:${reminders_from_clusters}${svod_len_clusters + 1}, "
+                    f"'По кластерам'!${article_from_clusters}${row_start_clusters}:${article_from_clusters}${svod_len_clusters + 1}, ${article}{k}, "
+                    f"'По кластерам'!${cluster_from_clusters}${row_start_clusters}:${cluster_from_clusters}${svod_len_clusters + 1}, \"{subcluster}\")"
+                )
+            # Склеиваем формулы через +
+            final_formula_demand = "= " + " + ".join(subcluster_formula_demand)
+            final_formula_reminders = "= " + " + ".join(subcluster_formula_reminders)
+            ws[f'{demand_cluster_column}{k}'] = final_formula_demand
+            ws[f'{reminders_cluster_column}{k}'] = final_formula_reminders
     # Условное форматирование для колонок Дефицит\Избыток на 40 и 60 дней
     red_font = Font(color='9C0006')
     red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
