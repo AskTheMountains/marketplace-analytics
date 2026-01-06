@@ -44,7 +44,7 @@ def update_reference_table(marketplace_dir_path, client_name, new_file_path):
 
         if reference_path.exists():
             last_mod_time = datetime.fromtimestamp(reference_path.stat().st_mtime)
-            date_last_changed = last_mod_time.strftime("%Y-%m-%d_%H-%M-%S")
+            date_last_changed = last_mod_time.strftime("%Y-%m-%d")
             archived_name = f"{date_last_changed}_Справочная_таблица_{client_name}_{marketplace_name}.xlsx"
             archived_path = previous_versions_dir / archived_name
             shutil.move(str(reference_path), str(archived_path))
