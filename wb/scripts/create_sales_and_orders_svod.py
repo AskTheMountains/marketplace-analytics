@@ -181,7 +181,7 @@ def get_realization_report(headers, date_start, date_end):
     df_realization_report_date_filtered = filter_report_dates(
         date_start_, date_end_,
         df_realization_report_new_columns,
-        filter_dates=True
+        filter_dates=False
     )
 
     return df_realization_report_date_filtered
@@ -585,7 +585,6 @@ if __name__ == '__main__':
     df_sales_api = get_sales(headers, date_start, date_end)
     # Выгружаем отчет о реализации
     df_realization_report = get_realization_report(headers, date_start, date_end)
-
     # Рассчитываем заказы
     orders = calc_orders(df_orders, date_range_df)
     # Рассчитываем продажи
