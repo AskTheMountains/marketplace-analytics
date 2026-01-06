@@ -563,55 +563,100 @@ def wildberries_get_report_detail(
     last_call_time=None, max_retries=5
 ):
     """
-    Запрос за один кусок отчёта c лимитом – 1 запрос в минуту и обработкой 429-ошибки.
+    Запрос за один кусок отчёта с лимитом 1 запрос в минуту.
+
+    Перед запросом делается пауза, чтобы выдержать не менее 60 секунд
+    с момента последнего успешного запроса, если last_call_time передан.
+
+    При ошибке 429 (Too Many Requests) ожидаем время из заголовка
+    X-Ratelimit-Retry или по умолчанию 60 секунд и повторяем запрос.
+
+    Аргументы:
+      headers (dict): заголовки с авторизацией API.
+      date_from (str): дата начала периода 'YYYY-MM-DD'.
+      date_to (str): дата конца периода 'YYYY-MM-DD'.
+      rrdid (int): смещение пагинации.
+      limit (int): лимит строк в ответе (максимум 100000).
+      last_call_time (float): время последнего успешного запроса (секунды UNIX).
+      max_retries (int): максимальное число повторных попыток при 429.
+
+    Возвращает:
+      tuple: (response_data, время успешного запроса).
     """
+
+
     url = 'https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod'
     params = {
         'dateFrom': date_from,
         'dateTo': date_to,
         'rrdid': rrdid,
-        'limit': limit
+        'limit': limit,
+        'period': 'daily',
     }
 
-    attempt = 0
+    attempt = 0  # счетчик попыток при 429
     while True:
-        # Лимит "1 в минуту" между запросами (если не первый)
+        # Если известна метка времени последнего успешного запроса, ждём, чтобы
+        # прошло как минимум 60 секунд, иначе спим разницу
         if last_call_time is not None:
             elapsed = time.time() - last_call_time
             wait = 60 - elapsed
             if wait > 0:
                 if logger:
-                    logger.info(f'Пауза {int(wait)} секунд между запросами (лимит WB)')
+                    logger.info(f'Пауза {int(wait)} сек перед запросом (лимит 1 в минуту)')
                 time.sleep(wait)
+
         try:
+            # Отправляем GET-запрос с нужными параметрами
             response = requests.get(url, headers=headers, params=params)
         except Exception as e:
+            # Логируем и пробрасываем исключение при ошибке соединения
             if logger:
                 logger.error(f"Ошибка соединения: {str(e)}")
             raise
-        # Проверим код возврата
-        if response.status_code == 429:
-            logger.warning(f'Получен 429 Too Many Requests. Ждём 60 сек и повторяем запрос.')
-            time.sleep(60)
 
+        # Запоминаем время текущего запроса (успешного или нет) для контроля пауз
+        last_call_time = time.time()
+
+        if response.status_code == 200:
+            # Успешный ответ, парсим JSON и возвращаем данные
+            response_data = response.json()
+            response.raise_for_status()
+            return response_data, last_call_time
+
+        elif response.status_code == 429:
+            # Превышен лимит запросов — читаем сколько ждать из заголовка X-Ratelimit-Retry
+            retry_after = response.headers.get('X-Ratelimit-Retry')
+            # Если заголовок отсутствует или некорректен — ждём 60 секунд по умолчанию
+            wait_time = int(retry_after) if retry_after and retry_after.isdigit() else 60
+            if logger:
+                logger.warning(f'Получен 429 Too Many Requests. Ждём {wait_time} сек перед повтором.')
+            time.sleep(wait_time)
             attempt += 1
             if attempt > max_retries:
-                logger.error('Превышено максимальное число повторов после 429')
+                if logger:
+                    logger.error('Превышено максимальное число повторов после 429')
                 response.raise_for_status()
-        else:
-            response.raise_for_status()
-            break  # Ошибки нет – выходим из цикла
 
-    return response.json(), time.time()
+        elif response.status_code == 204:
+            logger.warning(f'\nПустой отчет за период: {date_from} - {date_to}')
+            # Нет данных — возвращаем пустой список
+            return [], last_call_time
+
+        else:
+            # В остальном логируем ошибку и пробрасываем исключение
+            if logger:
+                logger.error(f"\nОшибка получения отчета реализации, инфо:\n {response.text}")
+            response.raise_for_status()
 
 ## Основная логика (обработка недель, rrd_id и бинарный сплит)
 def upload_realization_report(headers, date_start, date_end, verbose=False):
     """
-    Выгружает финансовый отчет Wildberries по частям (по недельным окнам, с разбивкой, пагинацией
-    по rrd_id и автодроблением, если данных слишком много).
+    Выгружает финансовый отчет Wildberries по частям (по недельным окнам) с контролем лимита
+    1 запрос в минуту.
 
     Аргументы:
-      token (str): Ваш API-токен WB.
+      headers (dict): Заголовки запроса с токеном.
       date_start (str): Дата начала ('YYYY-MM-DD').
       date_end (str): Дата конца ('YYYY-MM-DD').
       verbose (bool): Выводить ли подробный лог.
@@ -619,29 +664,35 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
     Возвращает:
       pd.DataFrame со всеми уникальными строками за указанный период.
     """
+
     all_rows = []             # Список для сбора всех строк отчета
-    dedup_key_set = set()     # Для дедупликации: уникальные пары (realizationreport_id, rrd_id)
+    dedup_key_set = set()     # Для дедупликации по (realizationreport_id, rrd_id)
 
     cursor_start = datetime.strptime(date_start, "%Y-%m-%d")  # Текущая начальная дата окна
-    end_date = datetime.strptime(date_end, "%Y-%m-%d")         # Финальная дата всего периода
+    end_date = datetime.strptime(date_end, "%Y-%m-%d")       # Конечная дата всего периода
 
+    last_call_time = None  # Время последнего успешного запроса (для контроля rate limit)
+
+    # Проходим по всему периоду по недельным окнам (максимум 7 дней)
     while cursor_start <= end_date:
-        # Определяем дату конца текущего окна: максимум неделя или до конца всего периода
+        # Определяем дату конца текущего окна: максимум неделя или до конца периода
         window_end = min(cursor_start + timedelta(days=6), end_date)
+
         if verbose:
-            logger.info(f"\nОкно: {cursor_start} - {window_end}")
+            logger.info(f"\nОкно: {cursor_start.strftime('%Y-%m-%d')} - {window_end.strftime('%Y-%m-%d')}")
 
-        temp_from = cursor_start    # Начальная дата дайжеста (окна)
-        temp_to = window_end        # Конечная дата дайжеста (окна)
+        temp_from = cursor_start
+        temp_to = window_end
 
-        while True:  # Цикл автодробления окна, если оно слишком объемное
-            rrdid = 0                # Начинаем с нуля (с начала страницы)
-            last_max_date_to = None  # Для отслеживания до какой даты реально дошли
-            rows_in_window = []      # Сюда собираем строки ТОЛЬКО за это окно
-            last_call_time = None  # Пауза между запросами
+        # Цикл дробления окна, если данных слишком много
+        while True:
+            rrdid = 0                # Старт пагинации с rrdid=0
+            rows_in_window = []      # Собираем строки только за это окно
+            last_max_date_to = None  # Максимальная дата для контроля дробления
 
-            while True:  # Цикл пагинации по rrd_id
-                # Делаем запрос в API и ждем (sleep внутри функции)
+            # Цикл пагинации по rrdid
+            while True:
+                # Вызываем функцию выгрузки с передачей last_call_time для контроля пауз
                 json_resp, last_call_time = wildberries_get_report_detail(
                     headers,
                     temp_from.strftime("%Y-%m-%d"),
@@ -650,10 +701,11 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
                     last_call_time=last_call_time)
 
                 rows = json_resp
-                if not rows:     # Если нет данных — выходим из пагинации
+                if not rows:
+                    # Нет данных — выходим из пагинации для этого окна
                     break
 
-                # Дедупликация по (realizationreport_id, rrd_id)
+                # Дедупликация по ключу (realizationreport_id, rrd_id)
                 for row in rows:
                     key = (row.get('realizationreport_id'), row.get('rrd_id'))
                     if key not in dedup_key_set:
@@ -661,46 +713,51 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
                         all_rows.append(row)
                         rows_in_window.append(row)
 
-                # Обновляем rrdid для следующего запроса по пачке
+                # Обновляем rrdid для следующего запроса по пагинации
                 max_rrd = max(row['rrd_id'] for row in rows)
-                # Смотрим, по какие даты реально дошли — это нужно для контроля дробления окна
+
+                # Запоминаем максимальную дату из выгруженных данных
                 last_max_date_to = max(pd.to_datetime(row['date_to']) for row in rows)
 
                 if verbose:
-                   logger.info(f"  rrdid={rrdid}: получено {len(rows)} строк; max_rrd={max_rrd}")
+                    logger.info(f"  rrdid={rrdid}: получено {len(rows)} строк; max_rrd={max_rrd}")
 
-                # Если получили меньше лимита — все данные окна получены, выходим из rrdid-цикла
+                # Если получили меньше лимита, считаем окно выгруженным
                 if len(rows) < 100000:
                     break
 
-                rrdid = max_rrd  # Следующий запрос с обновлённым rrdid
+                # Иначе продолжаем пагинацию с новым rrdid
+                rrdid = max_rrd
 
-            # Если за это окно подняли меньше лимита — окно пройдено, дробление не требуется
+            # Если данные за окно меньше лимита — окнo полностью выгружено, переходим дальше
             if len(rows_in_window) < 100000:
                 break
 
-            # Если лимит выбран, но окно не "сдвигается" по дате — значит слишком плотно, дробим окно меньше
-            date_progress = (last_max_date_to - temp_from).days
+            # Если много данных и окно не "сдвинулось" по дате — дробим окно
+            date_progress = (last_max_date_to - temp_from).days if last_max_date_to else 0
             window_days = (temp_to - temp_from).days
+
             if verbose:
                 logger.info(
-                    f"\n!!! Нужно дробление: внутри окна {len(rows_in_window)} строк,\n"
+                    f"\n!!! Нужно дробление окна: внутри окна {len(rows_in_window)} строк,\n"
                     f"last_max_date_to={last_max_date_to}, date_progress={date_progress}, window_days={window_days}"
                 )
 
-            # Бинарное деление (уменьшаем правую границу окна вдвое)
-            temp_to = temp_from + timedelta(days=window_days//2)
-            # Если уже нельзя уменьшать — выходим (что-то с данными, обычно не бывает)
-            if temp_to <= temp_from:
+            # Бинарное дробление окна — уменьшаем правую границу вдвое
+            new_window_days = window_days // 2
+            if new_window_days == 0:
+                # Нельзя уменьшить окно — прерываем дробление
                 break
+
+            temp_to = temp_from + timedelta(days=new_window_days)
 
         # Переходим к следующему недельному окну
         cursor_start = window_end + timedelta(days=1)
 
-    # Формируем итоговый датафрейм (уже без дублей)
+    # Формируем итоговый DataFrame
     df = pd.DataFrame(all_rows)
-    # Выводим число строк в отчете
-    logger.info(f"Всего строк в отчете: {df.shape[0]}")
+    if logger:
+        logger.info(f"Всего строк в отчете: {df.shape[0]}")
 
     return df
 # --- Конец выгрузки отчета реализации --- #
