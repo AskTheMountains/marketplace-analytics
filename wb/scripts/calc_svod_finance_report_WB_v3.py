@@ -6,8 +6,7 @@ import os
 import time
 from datetime import datetime, timedelta
 
-from click import group
-from matplotlib.pylab import f
+
 import numpy as np
 import openpyxl
 import pandas as pd
@@ -2098,6 +2097,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     # Считаем все расходы на рекламные кампании
     promotion_columns = [
         'Расходы по рекламным кампаниям',
+        'Списания за отзывы',
         'Витрина Магазина',
         'Оказание услуг «ВБ.Медиа»',
         'Предоставление услуг по подписке «Джем»',
@@ -2646,8 +2646,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-11-01',
-        date_end='2025-11-30'
+        date_start = '2025-12-22',
+        date_end='2025-12-23'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
@@ -2671,7 +2671,7 @@ if __name__ == '__main__':
         date_start,
         date_end,
         df_realization_report_new_columns,
-        filter_dates=True
+        filter_dates=False
     )
     # Получаем список дат отчета
     report_dates = get_report_dates(
