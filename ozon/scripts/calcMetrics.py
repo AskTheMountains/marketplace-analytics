@@ -83,7 +83,7 @@ def calcMetrics(date_upload_files = str(date.today())):
     # Объединение данных продаж FBO и FBS
     sales = pd.concat([sales_fbo, sales_fbs], axis=0)
     sales['Продажи'] = sales['Количество']
-    sales = sales.rename(columns={'Кластер_доставки': 'Кластер'})
+    sales = sales.rename(columns={'Кластер доставки': 'Кластер'})
     sales = sales.loc[:, ['Артикул', 'Кластер', 'Продажи']]
 
     # Удаление ненужных колонок и фильтрация складских данных
@@ -101,8 +101,10 @@ def calcMetrics(date_upload_files = str(date.today())):
     # Обработка данных поставок
     # Если есть заявки на поставку, добавляем их в отчет
     if supply_order_items.shape[0] > 0:
-        supply_order_items = supply_order_items.rename(columns={'Наименование товара': 'Название товара',
-                                                                'quantity': 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'})
+        supply_order_items = supply_order_items.rename(columns={
+            'Наименование товара': 'Название товара',
+            'Количество': 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ'
+        })
         supply_order_items = supply_order_items.loc[:, ['Артикул', 'Кластер', 'ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ']]
     # Если нет, то создаем пустой df, чтобы потом не было ошибок в concat
     else:
