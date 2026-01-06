@@ -17,7 +17,8 @@ from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.utils import get_column_letter
 
 # Некоторые доп. функции
@@ -37,6 +38,9 @@ from ozon.scripts.constants import (
 # Функция выгрузки товаров в поставках
 from ozon.scripts.uploadDataFromOzon import (
     get_supply_orders,
+    get_supply_order_list,
+    get_supply_orders_details,
+    get_supply_bundle_items,
     get_ozon_product as upload_ozon_product
 )
 # Функция выгрузки данных о рекламных кампаниях
@@ -910,8 +914,49 @@ def calc_supplies_costs(df_finance_report):
         # Помещаем расходы на поставки из ЛК в отдельный df
         supplies_costs_from_report = df_supplies_from_report_total.copy()
         # df_supplies_from_report_total['Номер заявки на поставку'] = df_supplies_from_report_total['Номер заявки на поставку'].astype('Int64')
-        # Выгрузка товаров в заявке на поставку
-        df_supplies_items = get_supply_orders(headers, states=[], to_save=False)
+        # Составляем список уникальных заявок на поставку (только те, которые были в отчете)
+        unique_supply_ids = (
+            df_supplies_from_report_total['Номер заявки на поставку']
+            # .astype(str)
+            .unique()
+            .tolist()
+        )
+        # --- Выгрузка информации о поставках --- #
+        # Список заявок на поставку
+        df_supply_order_list = get_supply_order_list(
+            headers,
+            states = [
+                # "UNSPECIFIED",
+                "DATA_FILLING",
+                "READY_TO_SUPPLY",
+                "ACCEPTED_AT_SUPPLY_WAREHOUSE",
+                "IN_TRANSIT",
+                "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+                "REPORTS_CONFIRMATION_AWAITING",
+                "REPORT_REJECTED",
+                "COMPLETED",
+                "REJECTED_AT_SUPPLY_WAREHOUSE",
+                "CANCELLED",
+                "OVERDUE"
+            ]
+            # order_number_search=unique_supply_ids
+        )
+        # Информация о заявках на поставку
+        df_supply_orders_info = get_supply_orders_details(
+            df_supply_order_list,
+            headers,
+            batch_size=50
+        )
+        # Выбираем только те заявки на поставку, которые были в отчете по начислениям
+        df_supply_orders_info_filtered = (
+            df_supply_orders_info
+            .loc[df_supply_orders_info['supply_id'].isin(unique_supply_ids), :]
+        )
+        # Получаем товары в заявках на поставку
+        df_supplies_items = get_supply_bundle_items(
+            df_supply_orders_info_filtered,
+            headers
+        )
         # df_supplies_items.to_excel(f"{finance_reports_dir}/{client_name}_Товары_в_поставках.xlsx")
         # Переименовываем колонки для удобства
         df_supplies_items = df_supplies_items.rename(columns={
@@ -924,12 +969,12 @@ def calc_supplies_costs(df_finance_report):
             # .groupby(['SKU', 'Артикул продавца', 'Наименование товара', 'supply_id'])
              .groupby(['Артикул продавца', 'supply_id'])
             .agg(
-                quantity=('quantity', 'sum')
+                Количество=('Количество', 'sum')
             )
             .reset_index()
         )
         # Количество товаров в заявке
-        df_supplies_items_total['Количество товаров в поставке'] = df_supplies_items_total.groupby('supply_id')['quantity'].transform('sum')
+        df_supplies_items_total['Количество товаров в поставке'] = df_supplies_items_total.groupby('supply_id')['Количество'].transform('sum')
 
         # Конвертация в Int64 для избежания ошибок при join
         df_supplies_items_total['supply_id'] = df_supplies_items_total['supply_id'].astype('Int64')
@@ -957,7 +1002,7 @@ def calc_supplies_costs(df_finance_report):
             # Считаем число товаров в каждой поставке
             # df_supplies_found['Количество товаров в поставке'] = df_supplies_found.groupby('supply_id')['quantity'].transform('sum')
             # Считаем расходы на отдельный sku (распределение от количества sku в поставке)
-            df_supplies_found['Расходы по поставкам'] = df_supplies_found['quantity'] / df_supplies_found['Количество товаров в поставке'] * df_supplies_found['Расходы_поставки_из_отчета_ЛК']
+            df_supplies_found['Расходы по поставкам'] = df_supplies_found['Количество'] / df_supplies_found['Количество товаров в поставке'] * df_supplies_found['Расходы_поставки_из_отчета_ЛК']
             # Переводим в широкий формат
             df_supplies_found_total = (
                 pd.pivot_table(
@@ -1255,6 +1300,7 @@ def calc_final_costs(df_all_costs_with_catalog):
         'Трафареты',
         'Продвижение с оплатой за заказ',
         'Оплата за клик',
+        'Абонентское обслуживание товаров на продвижении',
         'Подписка Premium',
         'Подписка Premium Plus',
         'Бонусы продавца',
@@ -1670,6 +1716,54 @@ def format_excel(
         except KeyError:
             logger.warning('Столбец "Маржинальность %" не найден в col_map для форматирования процентов')
 
+    # --- Условное форматирование столбцов с маржинальностью ---
+
+    # Список названий столбцов маржинальности
+    margin_columns = [
+        "Маржинальность руб",
+        "Маржинальность %",
+        "Маржинальность на ед. товара руб",
+        "Маржа от себестоимости %",
+        "Маржа по артикулу, %"
+        "Приход денег на РС"
+    ]
+
+    # Цвета
+    green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+    green_font = Font(color='006100', bold=True)
+    red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
+    red_font = Font(color='9C0006', bold=True)
+
+    for col_name in margin_columns:
+        if col_name in col_map:
+            col_letter = col_map[col_name]
+            rng = f"{col_letter}{start_row}:{col_letter}{end_row}"
+
+            # Формула для первой строки диапазона (например, A2)
+            first_cell = f"{col_letter}{start_row}"
+            rule_pos = FormulaRule(
+                formula=[f'AND(NOT(ISTEXT({first_cell})), {first_cell}>0)'],
+                fill=green_fill, font=green_font)
+            rule_neg = FormulaRule(
+                formula=[f'AND(NOT(ISTEXT({first_cell})), {first_cell}<0)'],
+                fill=red_fill, font=red_font)
+            final_ws.conditional_formatting.add(rng, rule_pos)
+            final_ws.conditional_formatting.add(rng, rule_neg)
+
+
+    # Переименовываем некоторые заголовки столбцов
+    rename_map = {
+        'Маржинальность %': 'Маржинальность руб / Продажи минус возвраты руб с СПП * 100',
+        'Маржинальность на ед. товара': 'Маржинальность руб / Продажи минус возвраты шт * 100',
+        'Маржа по артикулу %': 'средняя маржинальность по артикулу в руб., / на среднюю сумму по Продажи минус возвраты руб с СПП'
+    }
+
+    # Закрепляем первую строку
+    final_ws.freeze_panes = 'A2'
+
+
+
+
     # --- ШАГ 4. Форматирование всех листов (без формул) ---
     # Задаем стиль границы
     thin_border = Side(border_style="thin", color="000000")
@@ -1726,7 +1820,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет_по_начислениям_01_11_2025_30_11_2025_ИП.xlsx"
+    report_file_name = "Отчет_по_начислениям_01_12_2025_25_12_2025.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -1740,10 +1834,10 @@ if __name__ == "__main__":
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        date_start,
-        date_end,
-        # date_start = '2025-09-01',
-        # date_end='2025-09-30'
+        # date_start,
+        # date_end,
+        date_start = '2025-12-01',
+        date_end='2025-12-24'
     )
 
     # Создаем директорию для текущего отчета
