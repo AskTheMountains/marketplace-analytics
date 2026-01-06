@@ -441,16 +441,21 @@ class WBActionsReport(ReportBase):
         return True
 
     def build_cmd(self, client_number):
-        cmd = [
-            PYTHON_EXE,
+        cmd_metrics = [
+            PYTHON_EXE, "-u",  # -u для небуферизованного вывода
+            "-m", "wb.scripts.calcMetrics",
+            "-c", str(client_number)
+        ]
+        cmd_actions = [
+            PYTHON_EXE, "-u",
             "-m", "wb.scripts.create_actions_svod",
             "-c", str(client_number)
         ]
         if self.params.get("reference_date"):
-            cmd.append(self.params["reference_date"])
+            cmd_actions.append(self.params["reference_date"])
         if self.params.get("actions_file_path"):
-            cmd += ["--file", self.params["actions_file_path"]]
-        return cmd
+            cmd_actions += ["--file", self.params["actions_file_path"]]
+        return [cmd_metrics, cmd_actions]
 
 class WBCampaignsReport(ReportBase):
     report_name = "Отчет по рекламным кампаниям (WB)"

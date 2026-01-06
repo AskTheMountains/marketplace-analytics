@@ -1,18 +1,19 @@
 from PySide6.QtWidgets import QPushButton, QFileDialog, QMessageBox, QDialog, QVBoxLayout, QLabel, QTextEdit
+from application.paths import PYTHON_EXE
 import subprocess
 import sys
 
 class UpdateReferenceTableButton(QPushButton):
     def __init__(self, parent, get_client_idx, get_client_name, get_marketplace_group, get_marketplace_name):
         super().__init__("Обновить справочную таблицу", parent)
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             QPushButton {
                 background-color: #b6fcd5;
                 color: #20603d;
                 font-weight: bold;
                 border-radius: 5px;
                 border: 1px solid #7be5a5;
+                padding: 4px 16px;
             }
             QPushButton:disabled {
                 background-color: #e8fbe8;
@@ -21,8 +22,7 @@ class UpdateReferenceTableButton(QPushButton):
             QPushButton:hover {
                 background-color: #a3f7c3;
             }
-            """
-        )
+        """)
         self.setEnabled(False)  # будет включаться только при выбранном клиенте
         self.clicked.connect(self.update_reference_table_dialog)
 
@@ -54,15 +54,20 @@ class UpdateReferenceTableButton(QPushButton):
             return
 
         try:
+            if sys.platform == "win32":
+                CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+            else:
+                CREATE_NO_WINDOW = 0
             process = subprocess.run(
                 [
-                    sys.executable, "-m",
+                    PYTHON_EXE, "-m",
                     f"{marketplace_group}.scripts.update_reference_table",
                     "--client", str(idx),
                     "--file", file_path
                 ],
                 capture_output=True,
                 text=True,
+                creationflags=CREATE_NO_WINDOW
             )
             if process.returncode == 0:
                 QMessageBox.information(
