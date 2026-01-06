@@ -56,8 +56,8 @@ parser = argparse.ArgumentParser(
 )
 
 # Имя файла с данными по акциям
-# actions_file_name = 'products-1977747 (29).xlsx'
-actions_file_name = None
+actions_file_name = 'products-1977747 (13).xlsx'
+# actions_file_name = None
 
 # Функция парсинга аргументов командной строки пути к файлу по акциям
 def get_actions_file_path(arg_path: str | None, default_dir: Path, default_name: str | None) -> Path | None:
@@ -363,7 +363,7 @@ def get_available_products_for_actions(df_action_list, headers):
                     action_end = df_action_list['date_end'][i],
                     potential_products_count = df_action_list['potential_products_count'][i],
                     participating_products_count = df_action_list['participating_products_count'][i],
-                    )
+                )
                 # Объединяем с предыдущим проходом цикла
                 products_available_for_actions = pd.concat([products_available_for_actions, tmp_df])
                 # Получаем количество всех товаров по акции
@@ -379,9 +379,19 @@ def get_available_products_for_actions(df_action_list, headers):
                     f"Всего товаров: {total_products_count}\n"
                     f"Выгружено {uploaded_products_count } товаров\n"
                 )
+        # Если есть товары для участия в акциях считаем доп. колонки
+        if products_available_for_actions.shape[0] > 0:
+            products_available_for_actions.rename(columns={"id": "Ozon Product ID"}, inplace=True)
+            products_available_for_actions['Скидка_по_акции'] = products_available_for_actions['max_action_price'] / products_available_for_actions['price'] - 1.0
+        # Если нет, то создаем пустой df
+        else:
+            products_available_for_actions = pd.DataFrame(columns=[
+                'Ozon Product ID', 'price', 'action_price', 'max_action_price',
+                'add_mode', 'stock', 'min_stock', 'action_id', 'action_title',
+                'action_start', 'action_end', 'potential_products_count',
+                'participating_products_count', 'Скидка_по_акции'
+            ])
 
-        products_available_for_actions.rename(columns={"id": "Ozon Product ID"}, inplace=True)
-        products_available_for_actions['Скидка_по_акции'] = products_available_for_actions['max_action_price'] / products_available_for_actions['price'] - 1.0
     return products_available_for_actions
 
 
@@ -574,117 +584,13 @@ def union_products_actions_from_api_file(
     return df_products_candidates_all, df_products_in_actions_all
 
 
-# Различные варианты цен
-def get_prices(catalog, headers):
-    catalog_ = catalog.copy()
-    if 'РРЦ' in catalog_.columns:
-        catalog_.drop(columns=['РРЦ'], inplace=True)
-    # df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
-    # df для РРЦ
-    df_products_prices = pd.DataFrame()
-    # Диапазоны выгрузок (с шагом 1000 до кол-ва товаров)
-    step = 1000
-    last_id = ''
-    catalog_['chunks'] = catalog_.index.map(lambda x: int(x/step) + 1)
-    for chunk in catalog_['chunks'].unique():
-        # Выборка 1000 id товаров из df с товарами
-        product_list = catalog_.loc[catalog_['chunks'] == chunk, 'Ozon Product ID'].to_list()
-        product_list_string = [str(element) for element in product_list]
-        # Передача списка товаров в параметры запроса
-        params = json.dumps({
-            "filter": {
-                "offer_id": [],
-                "product_id": product_list_string,
-                "visibility": "ALL"
-                },
-            "cursor": last_id,
-            "limit": 1000
-        })
-        resp_data = requests.post("https://api-seller.ozon.ru/v5/product/info/prices", headers=headers, data=params).json()
-        # if 'result' in resp_data.keys():
-        #     product_id = resp_data['result']['items'][0]['product_id']
-        #     product_price = resp_data['result']['items'][0]['price']['marketing_price']
-        #     df_products.loc[df_products['Ozon Product ID'] == product_id, 'РРЦ'] = product_price
-        # по last_id будет выгружаться следующая страница в следующем проходе цикла
-        last_id = resp_data['cursor']
-        # В промежуточный df складываем данные текущей страницы
-        tmp_df = pd.DataFrame(resp_data['items'])
-        # Добавляем строки предыдущей страницы к текущей (по ходу цикла)
-        df_products_prices = pd.concat([tmp_df, df_products_prices])
-    # Получаем нужные цены ('price' должен быть всегда последним в цикле)
-    for col in ['marketing_price','old_price', 'min_price', 'price']: # 'marketing_price исключена 26.08.2024
-        df_products_prices[col] = [d.get(col) for d in df_products_prices.price]
-        df_products_prices[col] = pd.to_numeric(df_products_prices[col], errors='coerce')
-        df_products_prices[col] = df_products_prices[col].astype(float)
-    # Объединяем с df товаров
-    catalog_ = catalog_.merge(
-        df_products_prices[['product_id', 'old_price', 'price', 'min_price']], # 'marketing_price исключена 26.08.2024
-        how='left',
-        left_on='Ozon Product ID',
-        right_on='product_id'
-    )
-    # Удаляем ненужные колонки
-    catalog_.drop(columns=['product_id'], inplace=True)
-    catalog_ = catalog_.rename(columns={
-        "marketing_price": "Цена для покупателя",
-        "old_price": "Цена до скидки",
-        "price": "Цена после скидки",
-        "min_price": "Мин. цена Ozon"
-    })
-
-    return catalog_
-
-
-# Получение каталога
-def get_catalog(date_report_created, headers):
-    # Имя файла со списком товаров
-    products_file_name = (
-        marketplace_dir_path
-        / f"Clients"
-        / f"{client_name}"
-        / "UploadFiles"
-        / f"UploadFiles_{date_report_created}/{date_report_created}_Товары.csv"
-    )
-    # Считываем список товаров, который пришел по апи
-    catalog = pd.read_csv(products_file_name, sep=';')
-    # Убираем ненужные колонки
-    catalog = catalog.loc[:, ~catalog.columns.isin([
-        'FBS OZON SKU ID', 'Контент-рейтинг', 'Бренд', 'Размер', 'Цвет',
-        'Статус товара', 'Видимость FBO', 'Причины скрытия FBO (при наличии)',
-        'Видимость FBS', 'Причины скрытия FBS (при наличии)', 'Дата создания',
-        'Категория комиссии', 'Объем товара, л', 'Объемный вес, кг',
-        'Доступно к продаже по схеме FBO, шт.',
-        'Вывезти и нанести КИЗ (кроме Твери), шт', 'Зарезервировано, шт',
-        'Доступно к продаже по схеме FBS, шт.',
-        'Доступно к продаже по схеме realFBS, шт.',
-        'Зарезервировано на моих складах, шт',
-        'Актуальная ссылка на рыночную цену', 'Размер НДС, %'
-       ])]
-    # Переименовываем колонки с ценами, которые приходят из отчета по товарам из апи
-    # чтобы потом не было путаницы с ценами, которые мы получаем из отдельного метода
-    catalog = catalog.rename(columns={
-        'Текущая цена с учетом скидки, ₽': 'Текущая цена с учетом скидки (из отчета по товарам)',
-        'Цена до скидки (перечеркнутая цена), ₽': 'Цена до скидки (перечеркнутая цена) (из отчета по товарам)',
-        'Рыночная цена, ₽': 'Рыночная цена (из отчета по товарам)'
-        })
-    # Переименовываем столбец с артикулом
-    catalog = catalog.rename(columns={
-        'Артикул': 'Артикул продавца'
-    })
-    # catalog_ = get_prices(catalog, headers)
-    # catalog_['№'] = catalog_.index + 1
-    # catalog_['Артикул'] = catalog_['Артикул'].str.replace("'", "", regex=False)
-    # catalog_ = catalog_.rename(columns={'Артикул': 'Артикул продавца'})
-    return catalog
-
-
 # Обработка данных каталога
 def process_catalog_data(catalog):
     # Создаем копию для избежания изменений в оригинальном df
     catalog_processed = catalog.copy()
     # Убираем ненужные колонки
     catalog_processed = catalog_processed.loc[:, ~catalog_processed.columns.isin([
-        'FBS OZON SKU ID', 'Контент-рейтинг', 'Бренд', 'Размер', 'Цвет',
+        'FBS OZON SKU ID', 'Контент-рейтинг', 'Категория', 'Бренд', 'Размер', 'Цвет',
         'Статус товара', 'Видимость FBO', 'Причины скрытия FBO (при наличии)',
         'Видимость FBS', 'Причины скрытия FBS (при наличии)', 'Дата создания',
         'Категория комиссии', 'Объем товара, л', 'Объемный вес, кг',
