@@ -94,17 +94,20 @@ def get_realization_report(headers, date_start, date_end):
     # date_start_ = datetime.fromisoformat(date_start).strftime('%Y-%m-%d')
     # date_end_ = datetime.fromisoformat(date_end).strftime('%Y-%m-%d')
     # Получение отчета о реализации по АПИ
-    df_realization_report = upload_realization_report(headers, date_start, date_end)
-    # Переименование колонок отчета о реализации в русские названия
-    df_realization_report_renamed = rename_report_columns(df_realization_report)
-    # Расчет некоторых дополнительных колонок, которые будут участвовать в расчетах
-    df_realization_report_new_columns = add_new_columns(df_realization_report_renamed)
-    # Фильтр по переходным неделям
-    df_realization_report_date_filtered = filter_report_dates(
-        date_start, date_end,
-        df_realization_report_new_columns,
-        filter_dates=True
-    )
+    df_realization_report = upload_realization_report(headers, date_start, date_end, verbose=True)
+    if not df_realization_report.empty:
+        # Переименование колонок отчета о реализации в русские названия
+        df_realization_report_renamed = rename_report_columns(df_realization_report)
+        # Расчет некоторых дополнительных колонок, которые будут участвовать в расчетах
+        df_realization_report_new_columns = add_new_columns(df_realization_report_renamed)
+        # Фильтр по переходным неделям
+        df_realization_report_date_filtered = filter_report_dates(
+            date_start, date_end,
+            df_realization_report_new_columns,
+            filter_dates=True
+        )
+    else:
+        df_realization_report_date_filtered = pd.DataFrame()
 
     return df_realization_report_date_filtered
 
@@ -298,10 +301,10 @@ if __name__ == '__main__':
 
     # Формируем диапазон дат
     date_start, date_end = generate_date_range(
-        date_start=dates_cli['start_date'],
-        date_end=dates_cli['end_date'],
-        # start_date='2025-08-27',
-        # end_date='2025-09-02'
+        # date_start=dates_cli['start_date'],
+        # date_end=dates_cli['end_date'],
+        date_start='2025-01-01',
+        date_end='2025-11-30'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
@@ -312,7 +315,6 @@ if __name__ == '__main__':
         date_end=date_end,
         # date_start='2025-10-01',
         # date_end='2025-10-31'
-
     )
     # Считаем продажи возвраты и прочую лабуду
     df_sales_returns_wb = calc_sales_returns(
@@ -331,3 +333,5 @@ if __name__ == '__main__':
         f"Отчет реализации WB по клиенту {client_name} в буфере обмена. "
         "Скопируйте его в Excel"
     )
+
+# %%
