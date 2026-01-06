@@ -1,5 +1,9 @@
 import pandas as pd
 import warnings
+import json
+import ast
+# from loguru import logger
+
 
 def move_columns(df, columns_to_move, position, insert_type='after'):
     """
@@ -110,3 +114,149 @@ def add_element_to_list(lst, search, new_value, after=True, by_index=False):
 
     insert_at = idx + 1 if after else idx
     return lst[:insert_at] + values_to_insert + lst[insert_at:]
+
+
+def _to_list_or_dict(val):
+    """
+    Если в ячейке строка, пытаемся преобразовать её в Python‑объект.
+    При неудаче возвращаем пустой список (для list‑case) либо
+    пустой словарь (для dict‑case).
+    """
+    if isinstance(val, str):
+        try:
+            # JSON‑строка
+            parsed = json.loads(val)
+        except Exception:
+            try:
+                # «Python‑строка» (например: "[{'a':1}]" или "{'a':1}")
+                parsed = ast.literal_eval(val)
+            except Exception:
+                parsed = []          # fallback – пустой список
+        return parsed
+    return val
+
+def custom_pd_explode(df,
+                      column,
+                      meta_columns=None,
+                      drop_original=True,
+                      errors="ignore"):
+    """
+    Разворачивает колонку, содержащую список словарей **или** одиночный словарь.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Исходный датафрейм. Функция не модифицирует его напрямую – создаёт копию.
+    column : str
+        Название колонки, которую нужно «разворачивать».
+    meta_columns : list | None
+        Список колонок‑мета, которые «приклеить» к каждому развернутому словарю.
+        Если `None`, то добавляются все оставшиеся колонки из `df`
+        (за исключением колонки, которую разворачиваем).
+    drop_original : bool, default True
+        Удалять ли из результата исходную колонку `column`.
+    errors : str, default "ignore"
+        Параметр, который передаётся в `pd.json_normalize`.
+        Позволяет задать, как обрабатывать ошибки при распаковке.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Развёрнутый датафрейм с колонками из словарей (с префиксом `column.`)
+        и мета‑полями.
+
+    Notes
+    -----
+    1. Если в колонке находятся списки словарей – используется
+       `df.explode()` + `pd.json_normalize()`.
+    2. Если в колонке находятся одиночные словари – используется только
+       `pd.json_normalize()`.
+    3. В обоих случаях колонка `column` может быть удалена (по умолчанию).
+    4. Логируются два ключевых момента:
+       * выбранный режим (`EXPLODE` или `DIRECT NORMALIZE`);
+       * имя колонки, которую обрабатываем.
+    """
+    # Создаём копию df, чтобы не менять оригинал
+    df = df.copy()
+ # ------------------------------------------------------------------
+    # 1. Приводим все строки в колонке к Python‑объекту
+    # ------------------------------------------------------------------
+    df[column] = df[column].apply(_to_list_or_dict)
+
+    # ------------------------------------------------------------------
+    # 2. Определяем тип содержимого колонки
+    #    Берём первое НЕ‑NaN значение, чтобы избежать ошибок
+    # ------------------------------------------------------------------
+    first_val = next((x for x in df[column] if pd.notna(x)), None)
+
+    # Если первое значение – список → нужен explode + normalize
+    use_explode = isinstance(first_val, list)
+
+    # Если первое значение – словарь или None → только normalize
+    use_direct  = isinstance(first_val, dict) or first_val is None
+
+    # ------------------------------------------------------------------
+    # 3. Выбираем режим распаковки и логируем
+    # ------------------------------------------------------------------
+    if use_explode:
+        print(f"[custom_pd_explode] Using EXPLODE mode for column '{column}'.")
+    else:
+        print(f"[custom_pd_explode] Using DIRECT NORMALIZE mode for column '{column}'.")
+
+    # ------------------------------------------------------------------
+    # 4. Реализация выбранного режима
+    # ------------------------------------------------------------------
+    if use_explode:
+        # 4.1 explode – каждая строка списка превращается в отдельную строку
+        df_exp = df.explode(column).reset_index(drop=True)
+
+        # 4.2 normalize – раскладываем словарь в отдельные колонки
+        prod_df = pd.json_normalize(
+            df_exp[column],
+            errors=errors,
+        )
+        prod_df = prod_df.add_prefix(column + ".")
+
+        # 4.3 удаляем исходную колонку, если требуется
+        if drop_original:
+            df_exp = df_exp.drop(columns=column)
+
+        # 4.4 meta‑поля: если не заданы – берём все остальные колонки
+        if meta_columns is None:
+            df_result = pd.concat([df_exp, prod_df], axis=1)
+        else:
+            meta_df = df_exp[meta_columns]
+            df_result = pd.concat([df_exp.drop(columns=meta_columns), prod_df, meta_df], axis=1)
+
+    else:  # DIRECT NORMALIZE
+        # 4.1 не делаем explode – каждый словарь остаётся в той же строке
+        prod_df = pd.json_normalize(
+            df[column],
+            errors=errors,
+        )
+        prod_df = prod_df.add_prefix(column + ".")
+
+        if drop_original:
+            # 4.2 Удаляем колонку `column` и собираем результат
+            df_no_col = df.drop(columns=[column])
+
+            # Если мета‑поля не заданы – берём всё, что осталось
+            if meta_columns is None:
+                meta_df = df_no_col
+            else:
+                meta_df = df_no_col[meta_columns]
+
+            # Формируем итоговый DataFrame
+            df_result = pd.concat([meta_df, prod_df], axis=1)
+        else:
+            # Если не удаляем колонку – включаем её в итоговый DataFrame
+            if meta_columns is None:
+                meta_df = df
+            else:
+                meta_df = df[meta_columns]
+            df_result = pd.concat([df.drop(columns=[column]), prod_df, meta_df], axis=1)
+
+    # ------------------------------------------------------------------
+    # 5. Возвращаем результат без индекса (как в оригинале)
+    # ------------------------------------------------------------------
+    return df_result.reset_index(drop=True)
