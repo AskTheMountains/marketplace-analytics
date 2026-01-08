@@ -49,6 +49,96 @@ elif client_name in ['Water_Power']:
 elif client_name in ['Neva_Metall']:
     shop_type = 'dishes'
 
+# Список колонок для некоторых эндпоинтов АПИ, на случай, если придут пустые данные
+api_columns = {
+    'postings': [
+        'Схема доставки',
+        'Идентификатор заказа',
+        'Номер заказа',
+        'Номер отправления',
+        'Дата создания',
+        'Дата и время начала обработки отправления',
+        'Статус',
+        'Кластер отправления',
+        'Кластер доставки',
+        'SKU',
+        'Наименование товара',
+        'Количество',
+        'Артикул',
+        'Цена товара',
+        'Сумма отправления',
+    ],
+    'transactions': [
+        'operation_id',
+        'operation_type',
+        'operation_date',
+        'operation_type_name',
+        'delivery_charge',
+        'return_delivery_charge',
+        'accruals_for_sale',
+        'sale_commission',
+        'amount',
+        'type',
+        'items',
+        'services',
+        'dt_start',
+        'dt_end',
+        'posting.delivery_schema',
+        'posting.order_date',
+        'posting.posting_number',
+        'posting.warehouse_id',
+    ],
+    'returns': [
+        'Схема',
+        'Причина возврата',
+        'Тип возврата',
+        'Номер отправления',
+        'Склад находжения возврата',
+        'SKU',
+        'Артикул',
+        'Наименование товара',
+        'Количество',
+        'Цена товара',
+        'Стоимость возврата',
+        'Дата, когда покупатель вернул товар',
+    ],
+    'reminders_fbo': [
+        'SKU',
+        'Артикул',
+        'Наименование товара',
+        'Кластер',
+        'Склад',
+        'Товары в процессе возврата',
+        'Товары в заявках на поставку',
+        'Товары в пути',
+        'Доступный к продаже товар'
+    ],
+    'reminders_fbs': [
+        'Идентификатор склада',
+        'Название склада',
+        'Артикул',
+        'Наименование товара',
+        'Доступно на моем складе, шт',
+        'Зарезервировано на моем складе, шт'
+    ],
+    'supplies': [
+        'Артикул',
+        'SKU',
+        'Наименование товара',
+        'Ozon Product ID',
+        'Количество',
+        'order_id',
+        'order_number',
+        'dropoff_warehouse_id',
+        'dropoff_warehouse_name',
+        'storage_warehouse_id',
+        'storage_warehouse_name',
+        'supply_id',
+        'warehouse_id',
+        'Кластер',
+    ]
+}
+
 # Нужно ли объединять кластеры
 replace_clusters_for_client = True
 # if client_name in ['SENS', 'SENS_IP', 'Water_Power', 'Neva_Metall']:
