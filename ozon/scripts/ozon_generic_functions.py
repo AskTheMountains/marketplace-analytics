@@ -18,6 +18,7 @@ from ozon.scripts.constants import (
 # Функции выгрузки данных по API Seller
 from ozon.scripts.uploadDataFromOzon import (
     getOrders,
+    getOrders_v2,
     getStockReminders_fbo_v2,
     getStockReminders_fbs
 )
@@ -26,13 +27,14 @@ from ozon.scripts.uploadDataFromOzon import (
 # Функция выгрузки отчета о заказах
 def get_orders(headers, date_start, date_end):
     # Выгружаем отчет об отправлениях fbo и fbs
-    df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
-    df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
-    # Убираем лишние колонки из отчета fbo
-    df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
+    # df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
+    # df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
+    # # Убираем лишние колонки из отчета fbo
+    # df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
 
+    df_orders_fbo, df_orders_fbs = getOrders_v2(headers, date_start, date_end, to_save=False)
     # Объединяем два отчета в один
-    common_columns = ['Артикул', 'Название товара', 'OZON id', 'Статус', 'Принят в обработку', 'Сумма отправления']
+    common_columns = ['Схема доставки', 'Артикул', 'Наименование товара', 'SKU', 'Статус', 'Дата и время начала обработки отправления', 'Сумма отправления']
 
     # GPT START----
     dfs = []
@@ -50,7 +52,10 @@ def get_orders(headers, date_start, date_end):
     # GPT END----
 
     # Переводим колонку с датой заказа в datetime
-    df_orders_all['datetime_orders'] = pd.to_datetime(df_orders_all['Принят в обработку'])
+    df_orders_all['datetime_orders'] = (
+        pd.to_datetime(df_orders_all['Дата и время начала обработки отправления'], format='mixed')
+        .dt.tz_localize(None)
+    )
     # Указываем, какие колонки считаем за заказы в штуках и рублях
     df_orders_all['Заказы шт'] = 1
     df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
