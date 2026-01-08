@@ -1,0 +1,81 @@
+{
+  "faca4bd7-0e36-450f-85b4-970fc4d0cede": {
+    "label": "Ozon Scripts",
+    "items": [
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\constants.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\command_args_parser.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_dirs.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\calcMetrics.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_supply_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\format_supply_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_actions_svod_v2.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\format_svod_actions.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_sales_and_orders_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_orders_svod_by_days.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_campaigns_report.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\create_rk_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\calc_svod_finance_report_new.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\ozon_logger.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\update_clusters.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\update_reference_table.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\uploadDataFromOzonPerformance.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\uploadDataFromOzon.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\get_realization.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\ozon\\scripts\\ozon_generic_functions.py"
+    ],
+    "creationTime": "2025-12-09T10:10:44.487Z",
+    "colorName": "terminal.ansiBlue"
+  },
+  "9281eb21-dc8f-434c-bc89-80862aea7753": {
+    "label": "WB Scripts",
+    "items": [
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\constants.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\command_args_parser.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_dirs.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\calcMetrics.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_supply_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\format_supply_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_actions_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\format_actions_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_sales_and_orders_svod.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_orders_svod_by_days.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_campaigns_report_common.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\create_article_report.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\calc_svod_finance_report_WB_v3.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\calc_svod_finance_report_WB_v2.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\update_reference_table.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\get_realization.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\wb_logger.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\uploadDataFromWB.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\uploadDataPerformanceWB.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\wb\\scripts\\wb_generic_functions.py"
+    ],
+    "creationTime": "2025-12-07T08:55:16.952Z",
+    "colorName": "terminal.ansiMagenta"
+  },
+  "9bb2edc8-9c34-4501-8cff-3e35512f606f": {
+    "label": "Application",
+    "items": [
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\main_window.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\report_base.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\ozon_reports.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\wb_reports.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\paths.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\widgets\\calendar.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\widgets\\dates_defaults.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\widgets\\update_reference_table_button.py",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\application\\build_app.bat"
+    ],
+    "creationTime": "2025-12-08T08:40:05.907Z",
+    "colorName": "terminal.ansiYellow"
+  },
+  "576981ca-0b15-4f1b-a937-216eece3abd5": {
+    "label": "Settings",
+    "items": [
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\settings.json",
+      "i:\\artem\\work\\1Bit\\Задачи\\Маркетплейсы\\options.py"
+    ],
+    "creationTime": "2025-12-07T08:41:05.051Z",
+    "colorName": "terminal.ansiRed"
+  }
+}
