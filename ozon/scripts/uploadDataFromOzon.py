@@ -25,8 +25,13 @@ pd.set_option('future.no_silent_downcasting', True)
 # Функция парсинга аргумента количества дней выгрузки
 from ozon.scripts.command_args_parser import cli_days_ago
 # Файл с некоторыми константами
-from ozon.scripts.constants import (client_name, headers, marketplace_dir_path,
-                                    ozon_seller_api_url)
+from ozon.scripts.constants import (
+    client_name,
+    headers,
+    marketplace_dir_path,
+    ozon_seller_api_url,
+    api_columns
+)
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
 # Некоторые доп. функции
@@ -940,14 +945,16 @@ def get_ozon_fbo_list(
         logger.error(f"Ошибка преобразования заказов в DataFrame: {exc}")
         df_all_orders_fbo = pd.DataFrame()
 
-    # Получаем кластеры отправлений
-    df_all_orders_fbo = custom_pd_explode(
-        df_all_orders_fbo,
-        column='financial_data'
-    )
-
-    # Добавляем схему доставки
-    df_all_orders_fbo['delivery_schema'] = 'FBO'
+    if not df_all_orders_fbo.empty:
+        # Получаем кластеры отправлений
+        df_all_orders_fbo = custom_pd_explode(
+            df_all_orders_fbo,
+            column='financial_data'
+        )
+        # Добавляем схему доставки
+        df_all_orders_fbo['delivery_schema'] = 'FBO'
+    else:
+        df_all_orders_fbo = pd.DataFrame()
 
 
     return df_all_orders_fbo
@@ -1046,7 +1053,7 @@ def process_fbo_list(
     )
     if df_all_orders_fbo.empty:
         logger.warning("DataFrame заказов FBO пуст.")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=api_columns.get('postings', []))
 
     # Базовые колонки для выбора
     order_columns = [
@@ -1181,14 +1188,17 @@ def get_ozon_fbs_list(
         logger.error(f"Ошибка преобразования заказов в DataFrame: {exc}")
         df_all_orders_fbs = pd.DataFrame()
 
-    # Добавляем схему доставки
-    df_all_orders_fbs['delivery_schema'] = 'FBS'
 
-    # Распаковываем financial_data
-    df_all_orders_fbs = custom_pd_explode(
-        df_all_orders_fbs,
-        column='financial_data'
-    )
+    if not df_all_orders_fbs.empty:
+        # Распаковываем financial_data
+        df_all_orders_fbs = custom_pd_explode(
+            df_all_orders_fbs,
+            column='financial_data'
+        )
+        # Добавляем схему доставки
+        df_all_orders_fbs['delivery_schema'] = 'FBS'
+    else:
+        df_all_orders_fbs = pd.DataFrame()
 
     return df_all_orders_fbs
 
@@ -1285,11 +1295,13 @@ def process_fbs_list(
         f"{str(date.today())}_Заказы_fbs.csv"
     )
     if df_all_orders_fbs.empty:
-        logger.warning("DataFrame заказов fbs пуст.")
-        return pd.DataFrame()
+        logger.warning("DataFrame заказов FBS пуст.")
+        return pd.DataFrame(columns=api_columns.get('postings', []))
+
     # Сравниваем длины products и financial_data.products
     # df_all_orders_fin_fbs['len_products'] = df_all_orders_fin_fbs['products'].apply(lambda x: len(x) if isinstance(x, list) else 0)
     # df_all_orders_fin_fbs['len_financial_products'] = df_all_orders_fin_fbs['financial_data.products'].apply(lambda x: len(x) if isinstance(x, list) else 0)
+
     # Выбираем нужные колонки
     order_columns = [
         'delivery_schema',
@@ -1451,6 +1463,7 @@ def uploadTransactionReport(headers, date_start, date_end):
         logger.info(f"Выгрузка транзакций завершена. Найдено {df_transactions_list.shape[0]} транзакций.")
     else:
         logger.info("Транзакции не найдены по указанному периоду.")
+        return pd.DataFrame(columns=api_columns.get("transactions", []))
 
 
     return df_transactions_list
@@ -1461,15 +1474,18 @@ def process_transaction_list(df_transactions_list):
     Обрабатывает DataFrame со списком транзакций,
     извлекая информацию об отправлениях.
     """
-    # Создаем копию для избежания изменений оригинала
-    df_transactions_list_processed = df_transactions_list.copy()
-    # Распаковываем колонку информации об отправлениях
-    df_fin_postings = custom_pd_explode(
-        df_transactions_list_processed,
-        column='posting'
-    )
+    if not df_transactions_list.empty:
+        # Создаем копию для избежания изменений оригинала
+        df_transactions_list_processed = df_transactions_list.copy()
+        # Распаковываем колонку информации об отправлениях
+        df_fin_postings = custom_pd_explode(
+            df_transactions_list_processed,
+            column='posting'
+        )
 
-    return df_fin_postings
+        return df_fin_postings
+    else:
+        return pd.DataFrame(columns=api_columns.get("transactions", []))
 
 # Функция получения и обработки отчета по транзакциям
 def get_transactions_report(headers, date_start, date_end, to_save=True):
@@ -1531,14 +1547,19 @@ def get_sales_fbo_by_products(
             :
         ]
     )
+    # Если не нашли отправлений FBO, возвращаем пустой df
+    if df_sales_fbo_transactions.empty:
+        logger.info("Продажи FBO не найдены по указанному периоду.")
+        return pd.DataFrame(columns=api_columns.get("postings", []))
+
     # Выбираем нужные колонки
     df_sales_fbo_transactions = df_sales_fbo_transactions[[
-                'operation_id',
-                'operation_date',
-                'accruals_for_sale',
-                'posting.posting_number',
-                'posting.order_date',
-                'posting.delivery_schema',
+        'operation_id',
+        'operation_date',
+        'accruals_for_sale',
+        'posting.posting_number',
+        'posting.order_date',
+        'posting.delivery_schema',
     ]]
     # Переименовываем колонки
     df_sales_fbo_transactions = df_sales_fbo_transactions.rename(columns={
@@ -1570,6 +1591,9 @@ def get_sales_fbo_by_products(
         date_start=min_date_sales_fbo,
         date_end=max_date_sales_fbo
     )
+    # Удаляем колонку со схемой доставки, т.к. она уже есть в списке транзакций
+    df_fbo_list_for_sales = df_fbo_list_for_sales.drop(columns=['delivery_schema'])
+
     # Получаем товары в заказах fbo
     # df_fbo_orders_for_sales_processed = process_fbo_list(
     #     df_all_orders_fbo=df_fbo_list_for_sales,
@@ -1590,10 +1614,13 @@ def get_sales_fbo_by_products(
             headers=headers,
             posting_numbers=unmatched_postings
         )
+        # Удаляем колонку со схемой доставки, т.к. она уже есть в списке транзакций
+        df_unmatched_fbo_info = df_unmatched_fbo_info.drop(columns=['delivery_schema'])
         # df_unmatched_fbo_processed = process_fbo_list(
         #     df_all_orders_fbo=df_unmatched_fbo_info,
         #     to_save=False
         # )
+
         # Объединяем с основными отправлениями
         df_all_postings_for_sales_fbo = pd.concat([df_fbo_list_for_sales, df_unmatched_fbo_info], ignore_index=True)
     else:
@@ -1653,6 +1680,11 @@ def get_sales_fbs_by_products(
             :
         ]
     )
+    # Если не нашли отправлений FBS, возвращаем пустой df
+    if df_sales_fbs_transactions.empty:
+        logger.info("Продажи FBS не найдены по указанному периоду.")
+        return pd.DataFrame(columns=api_columns.get("postings", []))
+
     # Выбираем нужные колонки
     df_sales_fbs_transactions = df_sales_fbs_transactions[[
                 'operation_id',
@@ -1692,6 +1724,8 @@ def get_sales_fbs_by_products(
         date_start=min_date_sales_fbs,
         date_end=max_date_sales_fbs
     )
+    # Удаляем колонку со схемой доставки, т.к. она уже есть в списке транзакций
+    df_fbs_list_for_sales = df_fbs_list_for_sales.drop(columns=['delivery_schema'])
     # Получаем товары в заказах fbs
     # df_fbs_orders_for_sales_processed = process_fbs_list(
     #     df_all_orders_fbs=df_fbs_list_for_sales,
@@ -1712,6 +1746,8 @@ def get_sales_fbs_by_products(
             headers=headers,
             posting_numbers=unmatched_postings
         )
+        # Удаляем колонку со схемой доставки, т.к. она уже есть в списке транзакций
+        df_unmatched_fbs_info = df_unmatched_fbs_info.drop(columns=['delivery_schema'])
         # df_unmatched_fbs_processed = process_fbs_list(
         #     df_all_orders_fbs=df_unmatched_fbs_info,
         #     to_save=False
@@ -1785,13 +1821,16 @@ def getSalesFBO_v2(
             if col in df_transactions_list_processed.columns:
                 df_transactions_list_processed[col] = df_transactions_list_processed[col].apply(literal_eval)
 
-    # Считаем продажи FBO из отправлений в списке транзакций
-    df_sales_fbo_final = get_sales_fbo_by_products(
-        headers,
-        df_transactions_list_processed,
-    )
-
-    logger.info('Выгрузка продаж FBO завершена.')
+    if not df_transactions_list_processed.empty:
+        # Считаем продажи FBO из отправлений в списке транзакций
+        df_sales_fbo_final = get_sales_fbo_by_products(
+            headers,
+            df_transactions_list_processed,
+        )
+        logger.info('Выгрузка продаж FBO завершена.')
+    else:
+        logger.info('Продажи FBO не найдены по указанному периоду.')
+        df_sales_fbo_final = pd.DataFrame(columns=api_columns.get("postings", []))
 
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
@@ -1853,13 +1892,16 @@ def getSalesFBS_v2(
             if col in df_transactions_list_processed.columns:
                 df_transactions_list_processed[col] = df_transactions_list_processed[col].apply(literal_eval)
 
-    # Считаем продажи FBS из отправлений в списке транзакций
-    df_sales_fbs_final = get_sales_fbs_by_products(
-        headers,
-        df_transactions_list_processed,
-    )
-
-    logger.info('Выгрузка продаж FBS завершена.')
+    if not df_transactions_list_processed.empty:
+        # Считаем продажи FBS из отправлений в списке транзакций
+        df_sales_fbs_final = get_sales_fbs_by_products(
+            headers,
+            df_transactions_list_processed,
+        )
+        logger.info('Выгрузка продаж FBS завершена.')
+    else:
+        logger.info('Продажи FBS не найдены по указанному периоду.')
+        df_sales_fbs_final = pd.DataFrame(columns=api_columns.get("postings", []))
 
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
@@ -1995,7 +2037,7 @@ def process_returns_list(
     """
     if df_all_returns.empty:
         logger.warning("DataFrame возвратов пуст.")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=api_columns.get('returns', []))
 
     # Выбираем нужные колонки
     return_columns = [
@@ -2051,6 +2093,8 @@ def process_returns_list(
         'logistic.return_date': 'Дата, когда покупатель вернул товар',
         'logistic.barcode': 'Штрихкод этикетки возврата',
     })
+    # Считаем итоговую стоимость возврата
+    df_returns_processed['Стоимость возврата'] = df_returns_processed['Количество'] * df_returns_processed['Цена товара']
 
     # Делаем фильтр по типу возврата (только возвраты от покупателей)
     df_returns_processed = (
@@ -2235,18 +2279,23 @@ def getReturns_v2(
         date_start=date_start,
         date_end=date_end
     )
-    # Обрабатываем список возвратов
-    df_returns_processed = process_returns_list(
-        df_all_returns=df_all_returns
-    )
-    if add_clusters:
-        df_returns_processed = add_clusters_to_returns(
-            headers=headers,
-            date_start=date_start,
-            date_end=date_end,
-            df_returns_processed,
-            upload_orders=False
+    if not df_all_returns.empty:
+        # Обрабатываем список возвратов
+        df_returns_processed = process_returns_list(
+            df_all_returns=df_all_returns
         )
+        if add_clusters:
+            df_returns_processed = add_clusters_to_returns(
+                headers=headers,
+                date_start=date_start,
+                date_end=date_end,
+                df_returns_processed=df_returns_processed,
+                upload_orders=False
+            )
+    else:
+        logger.info("Возвраты за указанный период не найдены.")
+        df_returns_processed = pd.DataFrame(columns=api_columns.get('returns', []))
+
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
         df_returns_processed.to_csv(
@@ -2649,6 +2698,8 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
     for chunk in df_products_['chunks'].unique():
         # Делаем выборку одного интервала
         df_products_chunk = df_products_.loc[df_products_['chunks'] == chunk, :]
+        # Считаем, сколько товаров в данном интервале
+        products_count_in_chunk = df_products_chunk.shape[0]
         # Формируем лист с SKU
         sku_list = df_products_chunk['SKU'].to_list()
         # Переводим SKU в строку
@@ -2673,7 +2724,7 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
             # Объединяем с предыдущим проходом цикла
             df_fbo_reminders_api = pd.concat([df_fbo_reminders_api, tmp_df_fbo_reminders])
 
-            logger.info(f"Загружены остатки FBO для интервала {chunk} из {df_products_['chunks'].nunique()}")
+            logger.info(f"Загружены остатки FBO для интервала {chunk} из {df_products_['chunks'].unique().max()}: {products_count_in_chunk} товаров из {df_products_.shape[0]}")
 
             # Делаем паузу между запросами
             logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
@@ -3358,7 +3409,7 @@ if __name__ == '__main__':
         # start_date_str=cli_start_date,
         # end_date_str=cli_end_date,
         days_ago=None,
-        start_date_str = '2025-11-01',
+        start_date_str = '2025-11-30',
         end_date_str = '2025-11-30',
     )
     # date_end = '2025-07-12T23:59:59.000Z'
