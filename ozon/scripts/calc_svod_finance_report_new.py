@@ -37,7 +37,6 @@ from ozon.scripts.constants import (
     )
 # Функция выгрузки товаров в поставках
 from ozon.scripts.uploadDataFromOzon import (
-    get_supply_orders,
     get_supply_order_list,
     get_supply_orders_details,
     get_supply_bundle_items,
@@ -1308,6 +1307,7 @@ def calc_final_costs(df_all_costs_with_catalog):
         'Баллы за отзывы',
         'Продвижение бренда',
         'Закрепление отзыва',
+        'Рассылка пуш-уведомлений',
     ]
     # Находим колонки по рекламе, которые реально есть в отчете реализации
     existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
@@ -1553,7 +1553,7 @@ def save_finance_svod_to_excel(
     # Путь для сохранения файла (с именем)
     filepath_finance_svod = (
         current_report_dir
-        / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
+        / f'{date_report}_Отчет_маржинальности_Ozon_{client_name}.xlsx'
     )
     # Сохраняем отчет
     with pd.ExcelWriter(filepath_finance_svod) as w:
@@ -1589,7 +1589,7 @@ def format_excel(
     # Формируем путь к итоговому файлу Excel
     filepath_finance_svod = (
         current_report_dir
-        / f'{date_report}_Свод_из_фин_отчета_Озон_{client_name}.xlsx'
+        / f'{date_report}_Отчет_маржинальности_Ozon_{client_name}.xlsx'
     )
     # Открываем итоговый Excel-файл
     wb = openpyxl.load_workbook(filepath_finance_svod)
@@ -1820,7 +1820,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет_по_начислениям_01_12_2025_25_12_2025.xlsx"
+    report_file_name = "Отчет_по_начислениям_01_01_2026_22_01_2026.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -1834,10 +1834,10 @@ if __name__ == "__main__":
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        # date_start,
-        # date_end,
-        date_start = '2025-12-01',
-        date_end='2025-12-24'
+        date_start,
+        date_end,
+        # date_start = '2026-01-01',
+        # date_end='2026-01-31'
     )
 
     # Создаем директорию для текущего отчета
