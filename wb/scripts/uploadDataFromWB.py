@@ -110,94 +110,72 @@ def save_dates_to_csv(date_start, date_end):
 
 # Список товаров
 def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
-    # Начальные значения для цикла
-    # limit = 100
-    # products_loaded = 0
-    # total = 101
-    # df_products = pd.DataFrame()
-    # cursor = {"limit" : limit}
-    # logger.info("Uploading products list")
-    # # Выгружаем товары, пока не выгрузим все товары, которые содержатся в переменной total
-    # while products_loaded < total:
-    #     params = json.dumps({
-    #     "settings": {
-    #         "cursor": cursor,
-    #         "filter": {
-    #             "withPhoto": -1
-    #         }
-    #     }
-    #     })
-    #     resp_data = requests.post("https://content-api.wildberries.ru/content/v2/get/cards/list", headers=headers, data=params).json()
-    #     # Если товаров больше 100, передаем данным переменным значения из предыдущей итерации цикла
-    #     cursor = {"limit" : limit,
-    #               # "updatedAt": resp_data['cursor']['updatedAt'],
-    #               "nmID": resp_data['cursor']['nmID']
-    #               }
-    #     # Добавляем товары в df на каждом проходе цикла
-    #     tmp_df = pd.DataFrame(resp_data['cards'])
-    #     df_products = pd.concat([tmp_df, df_products])
-    #     # Сколько было выгружено товаров
-    #     products_loaded = len(df_products)
-    #     # Сколько осталось выгрузить товаров
-    #     total = resp_data['cursor']['total']
+    """
+    Выгрузка карточек товаров через API Wildberries с поддержкой пагинации.
+    Возвращает результат в виде pandas DataFrame.
+    """
+    file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
+    url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 
-    # Настройки параметров запроса отдельно для товаров из корзины и не из корзины
-    if type_products == 'not_from_recycle':
-        products_url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
-        updated_name = 'updatedAt'
-        start_params = {
+    # Пустой список для сохранения всех карточек
+    all_cards = []
+
+    # Начальные параметры пагинации
+    cursor = {
+        "limit": 100  # Запрашиваем по 100 карточек за раз
+    }
+
+    logger.info("Начало выгрузки карточек товаров")
+
+    while True:
+        # Подготовка тела запроса
+        payload = {
             "settings": {
-                "cursor": {},
+                "sort": {
+                    "ascending": True  # Сортировка по возрастанию
+                },
+                "cursor": cursor,
                 "filter": {
-                    "withPhoto": -1
+                    "withPhoto": -1  # Фильтр по карточкам с фото
                 }
             }
         }
-        file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
-    else:
-        products_url = "https://content-api.wildberries.ru/content/v2/get/cards/trash"
-        updated_name = 'trashedAt'
-        start_params = {
-            "settings": {
-                "cursor": {}
-            }
-        }
-        file_name_products = uploaddir_today / f"{str(date.today())}_Товары_Корзина.csv"
-    # Начальные значения для цикла
-    page_number = 1
-    limit = 100
-    # products_loaded = 0
-    total = 101
-    df_products = pd.DataFrame()
-    cursor = {"limit" : limit}
-    logger.info("Uploading products list")
-    # Выгружаем товары, пока не выгрузим все товары, которые содержатся в переменной total
-    while total >= limit:
-        logger.info(f"Uploading page {page_number}")
-        params = start_params
-        params['settings']['cursor'] = cursor
-        params = json.dumps(params)
-        resp_data = requests.post(products_url, headers=headers, data=params).json()
-        # Если есть товары
-        if len(resp_data['cards']) > 0:
-            # Если товаров больше 100, передаем данным переменным значения из предыдущей итерации цикла
-            cursor = {"limit" : limit,
-                    updated_name: resp_data['cursor'][updated_name],
-                    "nmID": resp_data['cursor']['nmID']
-                    }
-            # Добавляем товары в df на каждом проходе цикла
-            tmp_df = pd.DataFrame(resp_data['cards'])
-            df_products = pd.concat([tmp_df, df_products])
-            # Сколько было выгружено товаров
-            # products_loaded = len(df_products)
-            # Сколько осталось выгрузить товаров
-            total = resp_data['cursor']['total']
-            logger.info(f"Uploaded page {page_number}, products count: {total}")
-            page_number = page_number + 1
-        # Если нет товаров, то пустой df
+
+        logger.info(f"Выполняем запрос к API с параметрами курсора: {cursor}")
+
+        # Выполняем POST запрос к API Wildberries
+        response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"Запрос выполнен успешно. Количество карточек в ответе: {len(data.get('cards', []))}")
+
+            # Добавляем карточки в общий список
+            all_cards.extend(data.get('cards', []))
+
+            # Проверяем, достигли ли мы конца данных
+            if len(data['cards']) < cursor['limit']:
+                logger.info("Все карточки выгружены.")
+                break
+
+            # Обновляем курсор для следующего запроса
+            cursor.update({
+                "updatedAt": data['cursor']['updatedAt'],
+                "nmID": data['cursor']['nmID']
+            })
         else:
-            df_products = pd.DataFrame(columns=['cards'])
-    logger.info("Done uploading product list")
+            logger.error(f"Ошибка при выполнении запроса: {response.status_code}, {response.text}")
+            raise Exception(f"Ошибка: {response.status_code}, {response.text}")
+
+        # Пауза между запросами, чтобы не перегружать API
+        pause_interval = 0.7
+        logger.info(f"Пауза {pause_interval} секунды перед следующим запросом")
+        time.sleep(pause_interval)
+
+    # Конвертируем данные в DataFrame
+    logger.info("Конвертация данных в pandas DataFrame")
+    df_products = pd.DataFrame(all_cards)
+    logger.info("Выгрузка успешно завершена.")
 
     # Если есть товары, начинаем получение нужных атрибутов товаров
     if df_products.shape[0] > 0:
@@ -265,58 +243,109 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         df_products_unpacked['Размер'] = df_products_unpacked['Размер'].fillna(0)
         # Сохранение в csv нужных колонок
         df_products_unpacked_csv = df_products_unpacked[["nmID", "imtID", "chrtID", "Артикул продавца", "barcode", "last_barcode", "Наименование товара", "Предмет", "Размер", "Цвет"]]
-        return df_products_unpacked_csv
 
-    else:
-        df_products.to_csv(file_name_products, sep=';', index=False)
+        if to_save:
+            # Сохраняем df с товарами через pathlib
+            df_products_unpacked_csv.to_csv(file_name_products, sep=';', index=False)
+        else:
+            return df_products_unpacked
 
 
-# Цены товаров
-def get_prices_WB(headers, df_products, to_save=True):
+def get_prices_WB(headers: dict, df_products: pd.DataFrame, to_save: bool = True) -> pd.DataFrame:
+    """
+    Выгрузка цен товаров с Wildberries API с постраничной обработкой данных.
+
+    :param headers: Заголовки для API запросов.
+    :param df_products: DataFrame с данными по товарам.
+    :param to_save: Если True, данные сохраняются в файл CSV, иначе возвращаются DataFrame.
+    :return: DataFrame с объединенной информацией о товарах и ценах (если to_save=False).
+    """
+    logger.info("Начало выгрузки цен товаров с Wildberries API.")
+
     df_prices = pd.DataFrame()
-    # Диапазоны выгрузок (с шагом 1000 до кол-ва товаров)
-    l = list(range(0, len(df_products), 1000)) + [len(df_products)]
-    offset = 0
-    logger.info("Uploading products prices")
-    for z in zip(l[:-1], l[1:]):
-        params = {
-            "limit": 1000,
-            "offset": z[0],
-            # "filterNmID": ""
-        }
-        resp_data = requests.get("https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter",
-                                 headers=headers, params=params).json()
-        tmp_df = pd.DataFrame(resp_data['data']['listGoods'])
-        df_prices = pd.concat([df_prices, tmp_df])
-        time.sleep(5)
-    # Распаковываем данные по каждому размеру
-    df_prices = df_prices.explode(column=['sizes'])
-    # Получаем id размера и цену
-    df_prices = df_prices.assign(
-        # ID размера
-        chrtID=[d.get('sizeID') for d in df_prices.sizes],
-        # Базовая цена
-        price=[d.get('price') for d in df_prices.sizes],
-        # Цена со скидкой
-        discount_price=[d.get('discountedPrice') for d in df_prices.sizes],
-        # Цена со скидкой клуба
-        club_discount_price=[d.get('clubDiscountedPrice') for d in df_prices.sizes],
-    )
-    # Объединяем с df по товарам
-    df_products_prices = df_products.merge(
-        df_prices[['chrtID', 'price', 'discount', 'discount_price', 'club_discount_price']],
-        on='chrtID',
-        how='left'
-    )
-    # На всякий случай удаляем дубликаты
-    df_products_prices = df_products_prices.drop_duplicates(subset=['nmID', 'chrtID'], keep='first')
-    # На всякий случай заполнение nan в размере
-    df_products_prices['Размер'] = df_products_prices['Размер'].fillna(0)
-    if to_save:
-        # Сохраняем df с ценами через pathlib
-        products_prices_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
-        df_products_prices.to_csv(products_prices_file, sep=';', index=False)
-    else:  return df_products_prices
+    try:
+        # Создаем диапазоны индексов для пагинации
+        index_ranges = list(range(0, len(df_products), 1000)) + [len(df_products)]
+        logger.info(f"Всего диапазонов для обработки: {len(index_ranges) - 1}")
+
+        # Обрабатываем каждый диапазон в цикле
+        for start, end in zip(index_ranges[:-1], index_ranges[1:]):
+            params = {
+                "limit": 1000,
+                "offset": start,
+            }
+            logger.info(f"Запрос цен товаров с offset={start}, limit=1000")
+
+            # Выполняем запрос
+            response = requests.get(
+                "https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter",
+                headers=headers,
+                params=params,
+            )
+
+            if response.status_code == 200:
+                logger.info(f"Данные успешно получены для диапазона {start}-{end}")
+                resp_data = response.json()
+
+                # Создаем временный DataFrame
+                tmp_df = pd.DataFrame(resp_data.get('data', {}).get('listGoods', []))
+                df_prices = pd.concat([df_prices, tmp_df], ignore_index=True)
+            else:
+                logger.error(f"Ошибка при запросе: {response.status_code} - {response.text}")
+                break  # Прерываем цикл при ошибке
+
+            time.sleep(5)  # Делаем паузу между запросами
+
+        # Проверка, если нет данных
+        if df_prices.empty:
+            logger.warning("Цены не выгружены. Результат пустой.")
+            return None
+
+        # Распаковываем данные по колонке sizes
+        logger.info("Раскрытие данных по размерам товаров.")
+        df_prices = df_prices.explode('sizes')
+
+        # Убираем строки с пустыми размерами
+        df_prices.dropna(subset=['sizes'], inplace=True)
+
+        # Извлекаем данные о ценах
+        price_data = pd.json_normalize(df_prices['sizes'])
+        df_prices = pd.concat([df_prices.drop(columns=['sizes']), price_data], axis=1)
+
+        df_prices.rename(
+            columns={
+                'sizeID': 'chrtID',
+                'price': 'price',
+                'discountedPrice': 'discount_price',
+                'clubDiscountedPrice': 'club_discount_price',
+            },
+            inplace=True,
+        )
+
+        # Объединяем выгрузку с основным DataFrame
+        logger.info("Объединение данных о товарах и ценах.")
+        df_products_prices = df_products.merge(
+            df_prices[['chrtID', 'price', 'discount_price', 'club_discount_price']],
+            on='chrtID',
+            how='left'
+        )
+
+        # Удаляем дубликаты и заполняем пропущенные данные
+        df_products_prices.drop_duplicates(subset=['nmID', 'chrtID'], keep='first', inplace=True)
+        df_products_prices['Размер'] = df_products_prices['Размер'].fillna(0)
+
+        # Сохраняем или возвращаем результат
+        if to_save:
+            products_prices_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
+            logger.info(f"Сохраняем результаты в файл: {products_prices_file}")
+            df_products_prices.to_csv(products_prices_file, sep=';', index=False)
+        else:
+            logger.info("Возврат результирующего DataFrame.")
+            return df_products_prices
+
+    except Exception as e:
+        logger.error(f"Произошла ошибка при выгрузке цен: {e}")
+        return None
 
 
 # Функция объединения списка товаров
