@@ -591,7 +591,7 @@ def wildberries_get_report_detail(
         'dateTo': date_to,
         'rrdid': rrdid,
         'limit': limit,
-        'period': 'daily',
+        'period': 'weekly',
     }
 
     attempt = 0  # счетчик попыток при 429
