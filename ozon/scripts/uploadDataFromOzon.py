@@ -2,6 +2,7 @@
 import argparse
 import csv
 import json
+from multiprocessing import current_process
 import os
 import re
 import time
@@ -167,12 +168,15 @@ def getOzonProduct(headers, to_save=True):
     "visibility": "ALL"
     })
 
+    logger.info(f'Выгрузка списка товаров')
+
     # Отправляем запроса на создание отчета по товарам
+    logger.info('Получаем ссылку на отчет по товарам')
     result = requests.post(f"{ozon_seller_api_url}/v1/report/products/create",headers=headers, data=params).json()
-    logger.info('Get name product report')
     code_id = json.dumps({
     "code": result["result"]["code"]
     })
+    logger.info(f'Получен код отчета по товарам: {result["result"]["code"]}')
 
     # Ждем 5 секунд, пока отчет будет создаваться
     time.sleep(5)
@@ -180,13 +184,13 @@ def getOzonProduct(headers, to_save=True):
     # Делаем запросы получения информации об отчете до тех пор, пока не получим ссылку на отчет
     while not resp_data["result"]["file"]:
         resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers,data=code_id).json()
+        logger.info('Отчет по товарам еще не готов, ждем 5 секунд...')
 
     # Получаем ссылку на отчет по товарам
     path_csv = resp_data["result"]["file"]
-    logger.info('Get link on product report')
+    logger.info('Отчет по товарам готов, получаем файл')
 
     r = requests.get(path_csv, stream=True)
-    logger.info('Upload products on '+ str(date.today()))
     if r.status_code == 200:
         # Считываем отчет по товарам (список товаров)
         df_products = pd.read_csv(path_csv, sep=';')
@@ -198,31 +202,34 @@ def getOzonProduct(headers, to_save=True):
         else:
             return df_products
     else:
-        logger.error('Error getting products report')
-
-        # with open(f"{uploaddir_today}/{str(date.today())}_Товары.csv", 'wb') as f:
-        # # with open(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Товары'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv', 'wb') as f:
-        #     r.raw.decode_content = True
-        #     shutil.copyfileobj(r.raw, f)
-        # f.close()
+        logger.error(f'Ошибка при получении отчета по товарам, info: {r.text}')
 
 
 # Информация о товарах
 def get_products_info(headers, df_products=None):
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
+        logger.info("Получаем доп. информацию о товарах (задан локальный файл)")
         df_products_ = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
     # Если список товаров задан, берем его из переданного аргумента
     else:
+        logger.info("Получаем доп. информацию о товарах (передан список товаров)")
         df_products_ = df_products.copy()
 
     # Разбиваем список товаров на диапазоны по 1000 товаров
     df_products_ = df_products_.reset_index(drop=True)
     step = 1000
     df_products_['chunks'] = df_products_.index // step + 1
+    # Создаем переменные для прогресса выгрузки информации о товарах
+    total_products = df_products_.shape[0]
+    total_chunks = df_products_['chunks'].nunique()
+    uploaded_products = 0
 
     # Убираем скрытые товары
+    df_hidden_products = df_products_.loc[df_products_['SKU'] <= 0, :]
     df_products_ = df_products_.loc[df_products_['SKU'] > 0, :]
+    if not df_hidden_products.empty:
+        logger.info(f"Найдено {len(df_hidden_products)} скрытых товаров")
 
     # df для информации о товарах
     df_products_info_api = pd.DataFrame()
@@ -241,6 +248,14 @@ def get_products_info(headers, df_products=None):
             "offer_id": product_ids,
             # "visibility": "ALL"
         })
+
+        current_progress = min(uploaded_products + step, total_products)
+
+        logger.info(
+            f"Выгружаем информацию о товарах: "
+            f"{current_progress}/{total_products} товаров (чанк {chunk} из {total_chunks})"
+        )
+
         # Делаем запрос
         resp_data_products_info = requests.post(f"{ozon_seller_api_url}/v3/product/info/list", headers=headers, data=params)
         # Если запрос прошел успешно, формируем df из ответа АПИ
@@ -248,8 +263,13 @@ def get_products_info(headers, df_products=None):
             tmp_df_products_info = pd.DataFrame(resp_data_products_info.json()['items'])
             # Объединяем с предыдущим чанком товаров
             df_products_info_api = pd.concat([df_products_info_api, tmp_df_products_info])
+            # Обновляем прогресс выгрузки
+            uploaded_products += step
         else:
-            logger.error(f"Error getting products info for chunk {chunk} of {df_products_['chunks'].max()}: {resp_data_products_info.text}")
+            logger.error(
+                f"Ошибка получения информации о товарах: "
+                f"чанк {chunk} из {df_products_['chunks'].max()}, инфо: {resp_data_products_info.text}"
+            )
 
     # Сбрасываем index после concat
     df_products_info_api = df_products_info_api.reset_index(drop=True)
@@ -275,9 +295,11 @@ def get_products_info(headers, df_products=None):
 def get_products_prices(headers, df_products=None):
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
+        logger.info("Получаем цены на товары (задан локальный файл)")
         df_products_ = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
     # Если список товаров задан, берем его из переданного аргумента
     else:
+        logger.info("Получаем цены на товары (передан список товаров)")
         df_products_ = df_products.copy()
 
     if 'РРЦ' in df_products_.columns:
@@ -285,17 +307,20 @@ def get_products_prices(headers, df_products=None):
     # df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
     # df для цен
     df_products_prices = pd.DataFrame()
-    # Разбиваем df с товарами на равные части по 100 товаров
-    # l = list(range(0, len(df_products), 1000)) + [len(df_products)]
+    # Разбиваем df с товарами на равные части по 1000 товаров
     df_products_ = df_products_.reset_index(drop=True)
     step = 1000
     df_products_['chunks'] = df_products_.index // step + 1
     last_id = ''
-    logger.info("Get products prices")
-    # for z in zip(l[:-1], l[1:]):
+
+    # Создаем переменные для отслеживания прогресса
+    total_products = df_products_.shape[0]
+    total_chunks = df_products_['chunks'].nunique()
+    uploaded_products = 0
+
+
     for chunk in df_products_['chunks'].unique():
         # Выборка 1000 id товаров из df с товарами
-        # product_list = df_products.iloc[z[0]:z[1], df_products.columns.get_loc('Ozon Product ID')].to_list()
         product_list = df_products_.loc[df_products_['chunks'] == chunk, 'Ozon Product ID'].to_list()
         product_list_string = [str(element) for element in product_list]
         # Передача списка товаров в параметры запроса
@@ -308,17 +333,33 @@ def get_products_prices(headers, df_products=None):
             "cursor": last_id,
             "limit": 1000
         })
-        resp_data = requests.post(f"{ozon_seller_api_url}/v5/product/info/prices", headers=headers,data=params).json()
-        # if 'result' in resp_data.keys():
-        #     product_id = resp_data['result']['items'][0]['product_id']
-        #     product_price = resp_data['result']['items'][0]['price']['marketing_price']
-        #     df_products.loc[df_products['Ozon Product ID'] == product_id, 'РРЦ'] = product_price
-        # по last_id будет выгружаться следующая страница в следующем проходе цикла
-        last_id = resp_data['cursor']
-        # В промежуточный df складываем данные текущей страницы
-        tmp_df = pd.DataFrame(resp_data['items'])
-        # Добавляем строки предыдущей страницы к текущей (по ходу цикла)
-        df_products_prices = pd.concat([df_products_prices, tmp_df])
+
+        current_progress = min(uploaded_products + step, total_products)
+
+        logger.info(
+            f"Выгружаем цены на товары: "
+            f"{current_progress}/{total_products} товаров (чанк {chunk} из {total_chunks})"
+        )
+
+        resp_data = requests.post(f"{ozon_seller_api_url}/v5/product/info/prices", headers=headers,data=params)
+
+        if resp_data.status_code != 200:
+            logger.error(
+                f"Ошибка получения цен на товары: "
+                f"чанк {chunk} из {df_products_['chunks'].max()}, инфо: {resp_data.text}"
+            )
+            continue
+        else:
+            resp_data = resp_data.json()
+            # по last_id будет выгружаться следующая страница в следующем проходе цикла
+            last_id = resp_data['cursor']
+            # В промежуточный df складываем данные текущей страницы
+            tmp_df = pd.DataFrame(resp_data['items'])
+            # Добавляем строки предыдущей страницы к текущей (по ходу цикла)
+            df_products_prices = pd.concat([df_products_prices, tmp_df])
+
+        # Обновляем прогресс выгрузки
+        uploaded_products += step
 
     # Сбрасываем index после concat
     df_products_prices = df_products_prices.reset_index(drop=True)
@@ -370,13 +411,13 @@ def get_products_prices(headers, df_products=None):
 # Характеристики товаров
 def get_products_attributes(headers, df_products=None):
 
-    logger.info("Getting products attributes")
-
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
+        logger.info("Получаем характеристики товаров (задан локальный файл)")
         df_products_ = pd.read_csv(f"{uploaddir_today}/{str(date.today())}_Товары.csv", sep=';')
     # Если список товаров задан, берем его из переданного аргумента
     else:
+        logger.info("Получаем характеристики товаров (передан список товаров)")
         df_products_ = df_products.copy()
 
     # df, в который будем помещать результаты метода АПИ
@@ -388,6 +429,12 @@ def get_products_attributes(headers, df_products=None):
     df_products_['chunks'] = df_products_.index // step + 1
     # Пагинация
     last_id = ''
+
+    # Создаем переменные для отслеживания прогресса
+    total_products = df_products_.shape[0]
+    total_chunks = df_products_['chunks'].nunique()
+    uploaded_products = 0
+
     # Цикл по каждому интервалу
     for chunk in df_products_['chunks'].unique():
         # Выборка 1000 id товаров из df с товарами
@@ -406,12 +453,31 @@ def get_products_attributes(headers, df_products=None):
             "sort_id": 'asc',
             "limit": 1000
         })
-        resp_data = requests.post(f"{ozon_seller_api_url}/v4/product/info/attributes", headers=headers,data=params).json()
-        last_id = resp_data['last_id']
-        # В промежуточный df складываем данные текущей страницы
-        tmp_df = pd.DataFrame(resp_data['result'])
-        # Добавляем строки предыдущей страницы к текущей (по ходу цикла)
-        df_products_attributes = pd.concat([df_products_attributes, tmp_df])
+
+        current_progress = min(uploaded_products + step, total_products)
+        logger.info(
+            f"Выгружаем характеристики товаров: "
+            f"{current_progress}/{total_products} товаров (чанк {chunk} из {total_chunks})"
+        )
+
+        resp_data = requests.post(f"{ozon_seller_api_url}/v4/product/info/attributes", headers=headers,data=params)
+        if resp_data.status_code != 200:
+            logger.error(
+                f"Ошибка получения характеристик товаров: "
+                f"чанк {chunk} из {df_products_['chunks'].max()}, инфо: {resp_data.text}"
+            )
+            continue
+        else:
+            resp_data = resp_data.json()
+            # по last_id будет выгружаться следующая страница в следующем проходе цикла
+            last_id = resp_data['last_id']
+            # В промежуточный df складываем данные текущей страницы
+            tmp_df = pd.DataFrame(resp_data['result'])
+            # Добавляем строки предыдущей страницы к текущей (по ходу цикла)
+            df_products_attributes = pd.concat([df_products_attributes, tmp_df])
+
+        # Обновляем прогресс выгрузки
+        uploaded_products += step
 
     # Сбрасываем index после concat
     df_products_attributes = df_products_attributes.reset_index(drop=True)
@@ -559,6 +625,9 @@ def get_products_attributes(headers, df_products=None):
 
 # Описание характеристик товаров (не используется, вспомогательно для справки)
 def get_attributes_description(headers, df_attributes_all):
+
+    logger.info("Выгружаем описания характеристик товаров")
+
     # Создаем уникальные значение id описание и id типа товара
     df_attributes_descriptions_ids = (
         df_attributes_all
@@ -571,6 +640,10 @@ def get_attributes_description(headers, df_attributes_all):
     # df, куда будем помещать описания характеристик
     df_attributes_descriptions_api = pd.DataFrame()
 
+    # Переменная для прогресса выгрузки
+    total_descriptions = df_attributes_descriptions_ids.shape[0]
+    uploaded_descriptions = 0
+
     # Цикл по каждой характеристике
     for idx, row in df_attributes_descriptions_ids.iterrows():
         # Выбираем id типа товара
@@ -582,6 +655,13 @@ def get_attributes_description(headers, df_attributes_all):
             'description_category_id':  description_category_id,
             'type_id': type_id
         })
+
+        current_progress = uploaded_descriptions + 1
+
+        logger.info(
+            f"Выгружаем описание характеристики {current_progress} из {total_descriptions}"
+        )
+
         # Отправляем запрос
         resp_data_description_category = requests.post(
             f'{ozon_seller_api_url}/v1/description-category/attribute',
@@ -600,7 +680,11 @@ def get_attributes_description(headers, df_attributes_all):
         # Если запрос прошел с ошибкой, выводим текст ошибки:
         else:
             error_text = resp_data_description_category.text
-            logger.error(f"\nError getting attributes descriptions:\n {error_text}")
+            logger.error(f"Ошибка получения описания характеристики товаров, инфо: {error_text}")
+            continue
+
+        # Обновляем прогресс выгрузки
+        uploaded_descriptions += 1
 
 
 
@@ -682,21 +766,33 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
         "language": "DEFAULT"
     })
 
+    logger.info(f'Запрос отчета по заказам: Даты: {date_start} - {date_end}, Схема доставки: {delivery_schema.upper()}')
+
     result = requests.post(f"{ozon_seller_api_url}/v1/report/postings/create",headers=headers, data=params).json()
     code_id = json.dumps({
     "code": result["result"]["code"]
     })
-    logger.info('Get name orders report')
-    logger.info(result["result"]["code"])
+    logger.info(f'Получен код отчета по заказам: {result["result"]["code"]}')
     time.sleep(5)
 
-    # забираем ссылку на отчет с закзами
+    # забираем ссылку на отчет с заказами
     resp_data = {"result":{"file":""}}
     while not resp_data["result"]["file"]:
         resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers,data=code_id).json()
-    time.sleep(5)
+        logger.info('Отчет по заказам еще не готов, ждем 5 секунд...')
+        time.sleep(5)
+    logger.info('Отчет по заказам готов, получаем ссылку на файл')
     path_csv = resp_data["result"]["file"]
-    logger.info('Get link on orders report')
+
+    # Считываем отчет по заказам в датафрейм
+    r = requests.get(path_csv, stream=True)
+    if r.status_code == 200:
+        df_orders = pd.read_csv(path_csv, sep=';')
+    else:
+        logger.error(f'Ошибка при получении отчета по заказам, info: {r.text}')
+
+    # Добавляем схему доставки в датафрейм
+    df_orders['Схема доставки'] = delivery_schema.upper()
 
     # Если стоит флаг сохранения, то сохраняем файл
     if to_save:
@@ -705,24 +801,288 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
             uploaddir_today /
             f"{str(date.today())}_Заказы_temp_{delivery_schema}.csv"
         )
-        # Пишем заказы во временнй файлик
-        r = requests.get(path_csv, stream=True)
-        if r.status_code == 200:
-            df_orders = pd.read_csv(path_csv, sep=';')
-            df_orders.to_csv(
-                file_name_orders,
-                sep=';',
-                encoding='utf-8-sig',
-                index=False
-            )
+        df_orders.to_csv(
+            file_name_orders,
+            sep=';',
+            encoding='utf-8-sig',
+            index=False
+        )
             # with open(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_{delivery_schema}.csv", 'wb') as f:
             #     r.raw.decode_content = True
             #     shutil.copyfileobj(r.raw, f)
             # f.close()
     # Если флаг сохранения False, возвращаем df с заказами
     else:
-        df_orders = pd.read_csv(path_csv, sep=';')
         return df_orders
+
+
+# Дополнительная информация по отправлениям
+def add_orders_info_fbo(
+        headers,
+        date_start,
+        date_end,
+        df_orders_fbo
+    ):
+
+    logger.info('Выгружаем доп. информацию по отправлениям FBO')
+
+    # Выгружаем доп. информацию по отправлениям FBO
+    df_all_orders_fbo = get_ozon_fbo_list(
+        headers=headers,
+        date_start=date_start,
+        date_end=date_end
+    )
+    # Получаем товары в заказах FBO
+    df_fbo_orders_processed = process_fbo_list(
+        df_all_orders_fbo=df_all_orders_fbo,
+    )
+    # Удаляем дубликаты по номеру отправления
+    df_fbo_orders_processed = df_fbo_orders_processed.drop_duplicates(
+        subset=['Номер отправления'],
+        keep='first'
+    ).reset_index(drop=True)
+
+    # Добавляем информацию об отправлениях к отчету по заказам
+    columns_fbo_info = [
+        'Номер отправления',
+        'Кластер отправления',
+        'Кластер доставки',
+    ]
+    df_orders_fbo_enriched = (
+        df_orders_fbo
+        .merge(
+            df_fbo_orders_processed[columns_fbo_info],
+            how='left',
+            on='Номер отправления',
+            indicator='Наличие в списке отправлений'
+        )
+    )
+    # Находим отправления, по которым не удалось найти доп. информацию
+    df_missing_fbo_postings = df_orders_fbo_enriched.loc[
+        df_orders_fbo_enriched['Наличие в списке отправлений'] == 'left_only',
+        :
+    ]
+    # Если такие отправления есть, выгружаем по ним информацию отдельно
+    if not df_missing_fbo_postings.empty:
+        missing_posting_numbers = df_missing_fbo_postings['Номер отправления'].tolist()
+        logger.info(
+            f"Не удалось найти доп. информацию по {len(missing_posting_numbers)} отправлениям FBO"
+        )
+        # Выгружаем доп. информацию по отсутствующим отправлениям
+        df_missing_fbo_info = get_ozon_fbo_info(
+            headers=headers,
+            posting_numbers=missing_posting_numbers
+        )
+        # Обрабатываем полученный список отсутствующих отправлений
+        df_missing_fbo_info_processed = process_fbo_list(
+            df_all_orders_fbo=df_missing_fbo_info,
+        )
+        # Удаляем дубликаты по номеру отправления
+        df_missing_fbo_info_processed = df_missing_fbo_info_processed.drop_duplicates(
+            subset=['Номер отправления'],
+            keep='first'
+        ).reset_index(drop=True)
+
+        # Добавляем отсутствующую информацию в df с пропущенными отправлениями
+        df_missing_fbo_postings_enriched = (
+            df_missing_fbo_postings
+            .drop(columns=['Кластер отправления', 'Кластер доставки'])
+            .merge(
+                df_missing_fbo_info_processed[columns_fbo_info],
+                how='left',
+                on='Номер отправления'
+            )
+        )
+        # Находим отправления, у которых изначально был кластер
+        df_fbo_postings_not_missing = df_orders_fbo_enriched.loc[
+            df_orders_fbo_enriched['Наличие в списке отправлений'] == 'both',
+            :
+        ]
+        # Объединяем два df обратно
+        df_orders_fbo_enriched = pd.concat([
+            df_fbo_postings_not_missing,
+            df_missing_fbo_postings_enriched
+        ]).reset_index(drop=True)
+    else:
+        logger.success("Вся доп. информация по отправлениям FBO найдена в основном списке")
+
+    return df_orders_fbo_enriched
+
+# Функция выгрузки заказов FBO с кластерами
+def getOrdersFBO(
+        headers: dict[str, str],  # словарь заголовков HTTP
+        date_start: str,          # ISO‑8601 начало периода
+        date_end: str,            # ISO‑8601 конец периода
+        add_clusters: bool = True,  # флаг добавления кластеров
+        to_save: bool = True      # флаг сохранения файла
+):
+
+    # Выгружаем заказы FBO
+    df_orders_fbo = getOrders(
+        headers,
+        date_start,
+        date_end,
+        delivery_schema="fbo",
+        to_save=False
+    )
+    # Добавляем кластеры, если стоит флаг
+    if add_clusters:
+        df_orders_fbo = add_orders_info_fbo(
+            headers,
+            date_start,
+            date_end,
+            df_orders_fbo
+        )
+    # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
+    if to_save:
+        file_name_orders_fbo = (
+            uploaddir_today /
+            f"{str(date.today())}_Заказы_fbo.csv"
+        )
+        df_orders_fbo.to_csv(
+            file_name_orders_fbo,
+            sep=';',
+            encoding='utf-8-sig',
+            index=False
+        )
+    # иначе - возвращаем df с заказами FBO
+    else:
+        return df_orders_fbo
+
+
+# Дополнительная информация по отправлениям
+def add_orders_info_fbs(
+        headers,
+        date_start,
+        date_end,
+        df_orders_fbs
+    ):
+
+    logger.info('Выгружаем доп. информацию по отправлениям FBS')
+
+    # Выгружаем доп. информацию по отправлениям FBS
+    df_all_orders_fbs = get_ozon_fbs_list(
+        headers=headers,
+        date_start=date_start,
+        date_end=date_end
+    )
+    # Получаем товары в заказах FBS
+    df_fbs_orders_processed = process_fbs_list(
+        df_all_orders_fbs=df_all_orders_fbs,
+    )
+    # Удаляем дубликаты по номеру отправления
+    df_fbs_orders_processed = df_fbs_orders_processed.drop_duplicates(
+        subset=['Номер отправления'],
+        keep='first'
+    ).reset_index(drop=True)
+
+    # Добавляем информацию об отправлениях к отчету по заказам
+    columns_fbs_info = [
+        'Номер отправления',
+        'Кластер отправления',
+        'Кластер доставки',
+    ]
+    df_orders_fbs_enriched = (
+        df_orders_fbs
+        .merge(
+            df_fbs_orders_processed[columns_fbs_info],
+            how='left',
+            on='Номер отправления',
+            indicator='Наличие в списке отправлений'
+        )
+    )
+    # Находим отправления, по которым не удалось найти доп. информацию
+    df_missing_fbs_postings = df_orders_fbs_enriched.loc[
+        df_orders_fbs_enriched['Наличие в списке отправлений'] == 'left_only',
+        :
+    ]
+    # Если такие отправления есть, выгружаем по ним информацию отдельно
+    if not df_missing_fbs_postings.empty:
+        missing_posting_numbers = df_missing_fbs_postings['Номер отправления'].tolist()
+        logger.info(
+            f"Не удалось найти доп. информацию по {len(missing_posting_numbers)} отправлениям FBS"
+        )
+        # Выгружаем доп. информацию по отсутствующим отправлениям
+        df_missing_fbs_info = get_ozon_fbs_info(
+            headers=headers,
+            posting_numbers=missing_posting_numbers
+        )
+        # Обрабатываем полученный список отсутствующих отправлений
+        df_missing_fbs_info_processed = process_fbs_list(
+            df_all_orders_fbs=df_missing_fbs_info,
+        )
+        # Удаляем дубликаты по номеру отправления
+        df_missing_fbs_info_processed = df_missing_fbs_info_processed.drop_duplicates(
+            subset=['Номер отправления'],
+            keep='first'
+        ).reset_index(drop=True)
+
+        # Добавляем отсутствующую информацию в df с пропущенными отправлениями
+        df_missing_fbs_postings_enriched = (
+            df_missing_fbs_postings
+            .drop(columns=['Кластер отправления', 'Кластер доставки'])
+            .merge(
+                df_missing_fbs_info_processed[columns_fbs_info],
+                how='left',
+                on='Номер отправления'
+            )
+        )
+        # Находим отправления, у которых изначально был кластер
+        df_fbs_postings_not_missing = df_orders_fbs_enriched.loc[
+            df_orders_fbs_enriched['Наличие в списке отправлений'] == 'both',
+            :
+        ]
+        # Объединяем два df обратно
+        df_orders_fbs_enriched = pd.concat([
+            df_fbs_postings_not_missing,
+            df_missing_fbs_postings_enriched
+        ]).reset_index(drop=True)
+    else:
+        logger.success("Вся доп. информация по отправлениям FBS найдена в основном списке")
+
+    return df_orders_fbs_enriched
+
+# Функция выгрузки заказов FBS с кластерами
+def getOrdersFBS(
+        headers: dict[str, str],  # словарь заголовков HTTP
+        date_start: str,          # ISO‑8601 начало периода
+        date_end: str,            # ISO‑8601 конец периода
+        add_clusters: bool = True,  # флаг добавления кластеров
+        to_save: bool = True      # флаг сохранения файла
+):
+
+    # Выгружаем заказы FBS
+    df_orders_fbs = getOrders(
+        headers,
+        date_start,
+        date_end,
+        delivery_schema="fbs",
+        to_save=False
+    )
+    # Добавляем кластеры, если стоит флаг
+    if add_clusters:
+        df_orders_fbs = add_orders_info_fbs(
+            headers,
+            date_start,
+            date_end,
+            df_orders_fbs
+        )
+    # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
+    if to_save:
+        file_name_orders_fbs = (
+            uploaddir_today /
+            f"{str(date.today())}_Заказы_fbs.csv"
+        )
+        df_orders_fbs.to_csv(
+            file_name_orders_fbs,
+            sep=';',
+            encoding='utf-8-sig',
+            index=False
+        )
+    # иначе - возвращаем df с заказами FBS
+    else:
+        return df_orders_fbs
+
 
 
 # Кластеры отправлений (FBO)
@@ -878,26 +1238,39 @@ def getFinalOrders_fbs(headers):
     #os.remove(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbs.csv")
 
 
+
+
+
+
 # Функция выгрузки списка отправлений FBO
 def get_ozon_fbo_list(
     headers: dict[str, str],   # словарь заголовков HTTP
     date_start: str,           # ISO‑8601 начало периода
     date_end: str,             # ISO‑8601 конец периода
-    limit: int = 1000,          # объём одной страницы
+    limit: int = 1000,         # объём одной страницы
+    retry_count: int = 5,      # сколько раз повторить запрос при ошибке
+    offset_limit: int = 21000,  # число отправлений
 ) -> pd.DataFrame:
     """
     Загрузка всех заказов FBO из Ozon Seller API.
+
     Возвращает DataFrame: строка = товар + поля заказа.
     Поля заказа: order_id, order_number, posting_number,
                  status, substatus, cluster_from, cluster_to.
+
+    При ошибке запроса выполняется до ``retry_count`` повторных попыток.
+    Если запрос остаётся неудачным – переходим к следующему смещению/странице.
     """
     endpoint = f"{ozon_seller_api_url}/v2/posting/fbo/list"
     offset = 0
     all_orders_fbo = []
-    logger.info(f"Начало выгрузки отправлений FBO с {date_start} по {date_end}")
+
+    logger.info(
+        f"Начало выгрузки отправлений FBO с {date_start} по {date_end}"
+    )
 
     # ------- Пагинация ----------
-    while True:
+    while offset < offset_limit:
         payload = {
             "dir": "ASC",
             "filter": {
@@ -916,12 +1289,32 @@ def get_ozon_fbo_list(
         }
 
         logger.info(f"Запрос к Ozon: offset={offset}, limit={limit}")
-        try:
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-        except Exception as exc:
-            logger.error(f"Ошибка запроса: {exc}")
-            break
+
+        # -------- 5‑разовые попытки -----------
+        for attempt in range(1, retry_count + 1):
+            try:
+                response = requests.post(
+                    endpoint, headers=headers, json=payload, timeout=30
+                )
+                response.raise_for_status()
+                break   # успешный запрос – выходим из цикла попыток
+            except Exception as exc:
+                logger.warning(
+                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                    f"Скоро будет выполнен повторный запрос."
+                )
+                time.sleep(2)  # небольшая пауза перед повтором
+                if attempt == retry_count:
+                    logger.error(
+                        f"Ошибка запроса: {exc}. "
+                        f"Пропускаем текущую страницу и переходим к следующей."
+                    )
+                    response = None
+
+        # Если после всех попыток ответ не получен – переходим к следующему offset
+        if response is None:
+            offset += limit
+            continue
 
         data = response.json()
         orders = data.get("result", [])
@@ -930,7 +1323,9 @@ def get_ozon_fbo_list(
             break
 
         all_orders_fbo.extend(orders)
-        logger.info(f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbo)}")
+        logger.info(
+            f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbo)}"
+        )
 
         offset += limit
         if len(orders) < limit:   # конец списка
@@ -949,31 +1344,34 @@ def get_ozon_fbo_list(
         # Получаем кластеры отправлений
         df_all_orders_fbo = custom_pd_explode(
             df_all_orders_fbo,
-            column='financial_data'
+            column="financial_data",
         )
         # Добавляем схему доставки
-        df_all_orders_fbo['delivery_schema'] = 'FBO'
+        df_all_orders_fbo["delivery_schema"] = "FBO"
     else:
         df_all_orders_fbo = pd.DataFrame()
-
 
     return df_all_orders_fbo
 
 # Функция выгрузки информации о конкретных отправлениях FBO
-def get_ozon_fbo_info(headers, posting_numbers):
+def get_ozon_fbo_info(
+    headers: dict[str, str],   # словарь заголовков HTTP
+    posting_numbers: list[str],  # список номеров отправлений
+    retry_count: int = 5,      # сколько раз повторить запрос при ошибке
+):
     """
     Загрузка информации по конкретным отправлениям FBO.
-
     В ответе теперь НЕ список – это один объект в поле ``result``.
     Функция всё равно собирает каждый объект в список, выводит прогресс
     в виде ``Progress: XX.XX% (N/M)`` и возвращает DataFrame.
+    При возникновении ошибки запроса выполняется до 5 повторных попыток;
+    если запрос остаётся неудачным, цикл продолжается с следующим
+    отправлением, а в логгере печатается сообщение о повторе.
     """
     endpoint = f"{ozon_seller_api_url}/v2/posting/fbo/get"
     all_orders_fbo = []
-
     total_count = len(posting_numbers)
     logger.info(f"Начало выгрузки информации по {total_count} отправлениям FBO")
-
     for idx, posting_number in enumerate(posting_numbers, start=1):
         payload = {
             "posting_number": posting_number,
@@ -984,53 +1382,52 @@ def get_ozon_fbo_info(headers, posting_numbers):
                 "legal_info": False,
             },
         }
-
-        logger.info(f"Запрос к Ozon: posting_number={posting_number}")
-
-        try:
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=30
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            # Если сервер вернул тело ошибки – логируем его
-            logger.error(f"Ошибка запроса: {response.text}")
-            break
-
-        data = response.json()
-
-        # В новой версии API в ответе ровно один объект – ``result``.
-        order = data.get("result")
-        if not order:
-            logger.info("В ответе нет данных по этому отправлению.")
-            break
-
-        all_orders_fbo.append(order)
-
         # Прогресс в процентах
         percent = (idx / total_count) * 100
         logger.info(
-            f"Progress: {percent:5.2f}% ({idx}/{total_count}) – "
-            # f"получено 1 заказ; общее число: {len(all_orders_fbo)}"
+            f"Запрос к Ozon: {percent:5.2f}% ({idx}/{total_count}) posting: {posting_number}"
         )
+        # ----------- 5‑разовые попытки -----------
+        for attempt in range(1, retry_count + 1):
+            try:
+                response = requests.post(
+                    endpoint, headers=headers, json=payload, timeout=30
+                )
+                response.raise_for_status()
+                break   # успешный запрос – выходим из цикла попыток
+            except Exception as exc:
+                # Если сервер вернул тело ошибки – логируем его
+                logger.warning(
+                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                    f"Скоро будет выполнен повторный запрос."
+                )
+                if attempt == retry_count:
+                    logger.error(f"Ошибка запроса: {exc}. Пропускаем это отправление.")
+                    response = None
+        # Если после {retry_count} попыток ответ не получен – переходим к следующему отправлению
+        if response is None:
+            continue
+        data = response.json()
+        # В новой версии API в ответе ровно один объект – ``result``.
+        order = data.get("result")
+        if not order:
+            logger.warning("В ответе нет данных по этому отправлению.")
+            continue
+        all_orders_fbo.append(order)
 
     logger.info(f"Собрано {len(all_orders_fbo)} заказов.")
-
     # Превращаем список словарей в DataFrame
     try:
         df_all_orders_fbo = pd.DataFrame(all_orders_fbo)
     except Exception as exc:
         logger.error(f"Ошибка преобразования заказов в DataFrame: {exc}")
         df_all_orders_fbo = pd.DataFrame()
-
     # Если требуется разворачивать вложенную колонку «financial_data»
     df_all_orders_fbo = custom_pd_explode(
         df_all_orders_fbo, column="financial_data"
     )
-
     # Добавляем схему доставки
     df_all_orders_fbo["delivery_schema"] = "FBO"
-
     return df_all_orders_fbo
 
 # Функция получения товаров в отправлениях FBO (заказы)
@@ -1120,23 +1517,31 @@ def process_fbo_list(
 
 # Функция выгрузки списка отправлений FBS
 def get_ozon_fbs_list(
-        headers,
-        date_start,
-        date_end,
-        limit=1000
+        headers : dict[str, str],   # словарь заголовков HTTP
+        date_start : str,           # ISO‑8601 начало периода
+        date_end : str,             # ISO‑8601 конец периода
+        limit=1000 ,                # объём одной страницы
+        retry_count=5,              # сколько раз повторить запрос при ошибке
+        offset_limit=21000,         # максимальное число отправлений
     ) -> pd.DataFrame:
     """
     Загрузка всех заказов FBS (Fulfillment by Seller) из Ozon Seller API.
+
     Возвращает DataFrame: строка = товар + поля заказа.
     Поля заказа: posting_number, order_id, order_number,
                  status, substatus, cluster_from, cluster_to.
+
+    При ошибке запроса выполняется до ``retry_count`` повторных попыток.
+    Если запрос остаётся неудачным – переходим к следующему смещению/странице.
     """
     endpoint = f"{ozon_seller_api_url}/v3/posting/fbs/list"
     offset = 0
     all_orders_fbs = []
+
     logger.info(f"Начало выгрузки отправлений FBS с {date_start} по {date_end}")
 
-    while True:
+    # ------- Пагинация ----------
+    while offset < offset_limit:
         payload = {
             "dir": "ASC",
             "filter": {
@@ -1156,16 +1561,35 @@ def get_ozon_fbs_list(
 
         logger.info(f"Запрос списка отправлений FBS: offset={offset}, limit={limit}")
 
-        try:
-            response = requests.post(endpoint, headers=headers,
-                                     json=payload, timeout=30)
-            response.raise_for_status()
-        except Exception as exc:
-            logger.error(f"Ошибка запроса: {exc}")
-            break
+        # -------- 5‑разовые попытки ----------
+        for attempt in range(1, retry_count + 1):
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
+                response.raise_for_status()
+                break   # успешный запрос – выходим из цикла попыток
+            except Exception as exc:
+                logger.warning(
+                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                    f"Скоро будет выполнен повторный запрос."
+                )
+                if attempt == retry_count:
+                    logger.error(
+                        f"Ошибка запроса: {exc}. "
+                        f"Пропускаем текущую страницу и переходим к следующей."
+                    )
+                    response = None
+
+        # Если после всех попыток ответ не получен – переходим к следующему offset
+        if response is None:
+            offset += limit
+            continue
 
         data = response.json()
-
         orders = data.get("result", {}).get("postings", [])
         has_next = data.get("result", {}).get("has_next", False)
 
@@ -1174,7 +1598,9 @@ def get_ozon_fbs_list(
             break
 
         all_orders_fbs.extend(orders)
-        logger.info(f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbs)}")
+        logger.info(
+            f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbs)}"
+        )
 
         offset += limit
         if not has_next or len(orders) < limit:   # конец списка
@@ -1182,40 +1608,45 @@ def get_ozon_fbs_list(
 
     logger.info(f"Собрано {len(all_orders_fbs)} заказов.")
 
+    # Перевод в DataFrame
     try:
         df_all_orders_fbs = pd.DataFrame(all_orders_fbs)
     except Exception as exc:
         logger.error(f"Ошибка преобразования заказов в DataFrame: {exc}")
         df_all_orders_fbs = pd.DataFrame()
 
-
     if not df_all_orders_fbs.empty:
         # Распаковываем financial_data
         df_all_orders_fbs = custom_pd_explode(
             df_all_orders_fbs,
-            column='financial_data'
+            column="financial_data",
         )
         # Добавляем схему доставки
-        df_all_orders_fbs['delivery_schema'] = 'FBS'
+        df_all_orders_fbs["delivery_schema"] = "FBS"
     else:
         df_all_orders_fbs = pd.DataFrame()
 
     return df_all_orders_fbs
 
 # Функция выгрузки информации о конкретных отправлениях FBS
-def get_ozon_fbs_info(headers, posting_numbers):
+def get_ozon_fbs_info(
+    headers : dict[str, str],   # словарь заголовков HTTP
+    posting_numbers: list[str],  # список номеров отправлений
+    retry_count: int = 5,          # сколько раз повторить запрос при ошибке
+) -> pd.DataFrame:
     """
     Загрузка информации по конкретным отправлениям FBS.
 
     В ответе теперь НЕ список – это один объект в поле ``result``.
     Функция всё равно собирает каждый объект в список, выводит прогресс
     в виде ``Progress: XX.XX% (N/M)`` и возвращает DataFrame.
+
+    При ошибке запроса выполняется до ``retry_count`` повторных попыток.
+    Если запрос остаётся неудачным – переходим к следующему отправлению.
     """
     endpoint = f"{ozon_seller_api_url}/v3/posting/fbs/get"
     all_orders_fbs = []
-
     total_count = len(posting_numbers)
-    logger.info(f"Начало выгрузки информации по {total_count} отправлениям fbs")
 
     for idx, posting_number in enumerate(posting_numbers, start=1):
         payload = {
@@ -1227,35 +1658,52 @@ def get_ozon_fbs_info(headers, posting_numbers):
                 "legal_info": False,
             },
         }
+        # Прогресс в процентах
+        percent = (idx / total_count) * 100
+        logger.info(
+            f"Запрос к Ozon: {percent:5.2f}% ({idx}/{total_count}) posting: {posting_number}"
+        )
 
-        logger.info(f"Запрос к Ozon: posting_number={posting_number}")
+        # -------- 5‑разовые попытки ----------
+        for attempt in range(1, retry_count + 1):
+            try:
+                response = requests.post(
+                    endpoint, headers=headers, json=payload, timeout=30
+                )
+                response.raise_for_status()
+                break   # успешный запрос – выходим из цикла попыток
+            except Exception as exc:
+                logger.warning(
+                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                    f"Скоро будет выполнен повторный запрос."
+                )
+                if attempt == retry_count:
+                    logger.error(
+                        f"Ошибка запроса для posting {posting_number}: {exc}. "
+                        f"Пропускаем это отправление."
+                    )
+                    response = None
 
+        # Если после всех попыток ответ не получен – переходим к следующему
+        if response is None:
+            continue
+
+        # Пытаемся разобрать JSON
         try:
-            response = requests.post(
-                endpoint, headers=headers, json=payload, timeout=30
-            )
-            response.raise_for_status()
+            data = response.json()
         except Exception as exc:
-            # Если сервер вернул тело ошибки – логируем его
-            logger.error(f"Ошибка запроса: {response.text}")
-            break
-
-        data = response.json()
+            logger.error(
+                f"Не удалось разобрать JSON ответа для posting {posting_number}: {exc}"
+            )
+            continue
 
         # В новой версии API в ответе ровно один объект – ``result``.
         order = data.get("result")
         if not order:
-            logger.info("В ответе нет данных по этому отправлению.")
-            break
+            logger.warning(f"В ответе нет данных по отправлению {posting_number}.")
+            continue
 
         all_orders_fbs.append(order)
-
-        # Прогресс в процентах
-        percent = (idx / total_count) * 100
-        logger.info(
-            f"Progress: {percent:5.2f}% ({idx}/{total_count}) – "
-            # f"получено 1 заказ; общее число: {len(all_orders_fbs)}"
-        )
 
     logger.info(f"Собрано {len(all_orders_fbs)} заказов.")
 
@@ -1268,13 +1716,13 @@ def get_ozon_fbs_info(headers, posting_numbers):
 
     # Если требуется разворачивать вложенную колонку «financial_data»
     df_all_orders_fbs = custom_pd_explode(
-        df_all_orders_fbs, column="financial_data"
+        df_all_orders_fbs,
+        column="financial_data",
     )
-
     # Добавляем схему доставки
-    df_all_orders_fbs['delivery_schema'] = 'FBS'
-
+    df_all_orders_fbs["delivery_schema"] = "FBS"
     return df_all_orders_fbs
+
 
 # Функция получения товаров в отправлениях fbs (заказы)
 def process_fbs_list(
@@ -1365,6 +1813,84 @@ def process_fbs_list(
     )
 
     return df_products_fbs
+
+# Функция выгрузки заказов
+def getOrders_v2(
+        headers,
+        date_start,
+        date_end,
+        to_save=True,
+    ):
+    """
+    Выгружает заказы по API Ozon.
+
+    Параметры:
+        - headers: заголовки для запросов к API.
+        - date_start: дата начала периода выгрузки (строка в формате ISO 8601).
+        - date_end: дата окончания периода выгрузки (строка в формате ISO 8601).
+        - to_save: флаг, указывающий, нужно ли сохранить файл с заказами.
+    """
+    logger.info(f"Выгрузка заказов с {date_start} по {date_end} начата.")
+
+    # Выгружаем заказы FBO
+    df_all_orders_fbo = get_ozon_fbo_list(
+        headers=headers,
+        date_start=date_start,
+        date_end=date_end
+    )
+    # Получаем товары в заказах FBO
+    df_fbo_orders_processed = process_fbo_list(
+        df_all_orders_fbo=df_all_orders_fbo,
+    )
+
+    # Выгружаем заказы FBS
+    df_all_orders_fbs = get_ozon_fbs_list(
+        headers=headers,
+        date_start=date_start,
+        date_end=date_end
+    )
+    # Получаем товары в заказах FBS
+    df_fbs_orders_processed = process_fbs_list(
+        df_all_orders_fbs=df_all_orders_fbs,
+    )
+    # Если стоит флаг сохранения, сохраняем файлы с заказами
+    if to_save:
+        file_name_orders_fbo = (
+            Path(uploaddir_today) /
+            f"{str(date.today())}_Заказы_fbo.csv"
+        )
+
+        file_name_orders_fbs = (
+            Path(uploaddir_today) /
+            f"{str(date.today())}_Заказы_fbs.csv"
+        )
+        # Удаляем столбец с financial_data.products перед сохранением (для уменьшения размера файла)
+        columns_to_remove = ['financial_data.products']
+        for df in [df_fbo_orders_processed, df_fbs_orders_processed]:
+            for col in columns_to_remove:
+                if col in df.columns:
+                    df.drop(columns=[col], inplace=True)
+
+        df_fbo_orders_processed.to_csv(
+            file_name_orders_fbo,
+            sep=';',
+            index=False,
+            encoding='utf-8-sig'
+        )
+        df_fbs_orders_processed.to_csv(
+            file_name_orders_fbs,
+            sep=';',
+            index=False,
+            encoding='utf-8-sig'
+        )
+    else:
+        return df_fbo_orders_processed, df_fbs_orders_processed
+
+
+
+    logger.info("Выгрузка заказов завершена.")
+
+    # return
 
 
 def generate_monthly_intervals(date_start: str, date_end: str):
@@ -1827,7 +2353,7 @@ def getSalesFBO_v2(
             headers,
             df_transactions_list_processed,
         )
-        logger.info('Выгрузка продаж FBO завершена.')
+        logger.success('Выгрузка продаж FBO завершена.')
     else:
         logger.info('Продажи FBO не найдены по указанному периоду.')
         df_sales_fbo_final = pd.DataFrame(columns=api_columns.get("postings", []))
@@ -1898,7 +2424,7 @@ def getSalesFBS_v2(
             headers,
             df_transactions_list_processed,
         )
-        logger.info('Выгрузка продаж FBS завершена.')
+        logger.success('Выгрузка продаж FBS завершена.')
     else:
         logger.info('Продажи FBS не найдены по указанному периоду.')
         df_sales_fbs_final = pd.DataFrame(columns=api_columns.get("postings", []))
@@ -2184,69 +2710,75 @@ def add_clusters_to_returns(
         df_returns_with_orders_info
         .loc[df_returns_with_orders_info['Наличие в заказах'] == 'left_only', :]
     )
-    # Разделяем возвраты без кластеров на FBO и FBS
-    df_returns_with_missing_clusters_fbo = (
-        df_returns_with_missing_clusters
-        .loc[df_returns_with_missing_clusters['Схема'] == 'FBO', :]
-        .reset_index(drop=True)
-    )
-    df_returns_with_missing_clusters_fbs = (
-        df_returns_with_missing_clusters
-        .loc[df_returns_with_missing_clusters['Схема'] == 'FBS', :]
-        .reset_index(drop=True)
-    )
-    # Формируем список уникальных номеров отправлений для FBO и FBS
-    fbo_returns_postings = df_returns_with_missing_clusters_fbo['Номер отправления'].unique().tolist()
-    fbs_returns_postings = df_returns_with_missing_clusters_fbs['Номер отправления'].unique().tolist()
-
-    # Выгружаем информацию по отправлениям FBO и FBS, если есть
-    if fbo_returns_postings:
-        df_fbo_missing_postings_info = get_ozon_fbo_info(
-            headers=headers,
-            posting_numbers=fbo_returns_postings
+    if not df_returns_with_missing_clusters.empty:
+        logger.info(f"Найдены возвраты без информации о кластерах: {df_returns_with_missing_clusters.shape[0]} шт.")
+        # Разделяем возвраты без кластеров на FBO и FBS
+        df_returns_with_missing_clusters_fbo = (
+            df_returns_with_missing_clusters
+            .loc[df_returns_with_missing_clusters['Схема'] == 'FBO', :]
+            .reset_index(drop=True)
         )
+        df_returns_with_missing_clusters_fbs = (
+            df_returns_with_missing_clusters
+            .loc[df_returns_with_missing_clusters['Схема'] == 'FBS', :]
+            .reset_index(drop=True)
+        )
+        # Формируем список уникальных номеров отправлений для FBO и FBS
+        fbo_returns_postings = df_returns_with_missing_clusters_fbo['Номер отправления'].unique().tolist()
+        fbs_returns_postings = df_returns_with_missing_clusters_fbs['Номер отправления'].unique().tolist()
+
+        # Выгружаем информацию по отправлениям FBO и FBS, если есть
+        if fbo_returns_postings:
+            df_fbo_missing_postings_info = get_ozon_fbo_info(
+                headers=headers,
+                posting_numbers=fbo_returns_postings
+            )
+        else:
+            df_fbo_missing_postings_info = pd.DataFrame()
+
+        if fbs_returns_postings:
+            df_fbs_missing_postings_info = get_ozon_fbs_info(
+                headers=headers,
+                posting_numbers=fbs_returns_postings
+            )
+        else:
+            df_fbs_missing_postings_info = pd.DataFrame()
+
+        # Объединяем информацию по FBO и FBS
+        df_missing_postings_info = pd.concat([df_fbo_missing_postings_info, df_fbs_missing_postings_info], ignore_index=True)
+        # Переименовываем некоторые колонки
+        df_missing_postings_info = df_missing_postings_info.rename(columns={
+            'delivery_schema': 'Схема',
+            'posting_number': 'Номер отправления',
+            'financial_data.cluster_from': 'Кластер отправления',
+            'financial_data.cluster_to': 'Кластер доставки',
+        })
+
+        # Добавляем информацию о кластерах к возвратам с пропусками
+        df_returns_with_added_clusters = (
+            df_returns_with_missing_clusters
+            .drop(columns=['Кластер доставки'])
+            .merge(
+                df_missing_postings_info[['Схема', 'Номер отправления', 'Кластер доставки']],
+                how='left',
+                on=['Схема', 'Номер отправления']
+            )
+        )
+
+        # Находим возвраты, у которых изначально был кластер
+        df_returns_with_clusters = (
+            df_returns_with_orders_info
+            .loc[df_returns_with_orders_info['Наличие в заказах'] == 'both', :]
+        )
+
+        # Объединяем их с датафреймом добавленных кластеров
+        df_returns_with_clusters = pd.concat([df_returns_with_clusters, df_returns_with_added_clusters], ignore_index=True)
+    # Если информация по возвратам была найдена в заказах, просто копируем датафрейм
     else:
-        df_fbo_missing_postings_info = pd.DataFrame()
+        logger.info("Информация по всем возвратам найдена в заказах.")
+        df_returns_with_clusters = df_returns_with_orders_info.copy()
 
-    if fbs_returns_postings:
-        df_fbs_missing_postings_info = get_ozon_fbs_info(
-            headers=headers,
-            posting_numbers=fbs_returns_postings
-        )
-    else:
-        df_fbs_missing_postings_info = pd.DataFrame()
-
-    # Объединяем информацию по FBO и FBS
-    df_missing_postings_info = pd.concat([df_fbo_missing_postings_info, df_fbs_missing_postings_info], ignore_index=True)
-    # Переименовываем некоторые колонки
-    df_missing_postings_info = df_missing_postings_info.rename(columns={
-        'delivery_schema': 'Схема',
-        'posting_number': 'Номер отправления',
-        'financial_data.cluster_from': 'Кластер отправления',
-        'financial_data.cluster_to': 'Кластер доставки',
-    })
-
-    # Добавляем информацию о кластерах к возвратам с пропусками
-    df_returns_with_added_clusters = (
-        df_returns_with_missing_clusters
-        .drop(columns=['Кластер доставки'])
-        .merge(
-            df_missing_postings_info[['Схема', 'Номер отправления', 'Кластер доставки']],
-            how='left',
-            on=['Схема', 'Номер отправления']
-        )
-    )
-
-    # Находим возвраты, у которых изначально был кластер
-    df_returns_with_clusters = (
-        df_returns_with_orders_info
-        .loc[df_returns_with_orders_info['Наличие в заказах'] == 'both', :]
-    )
-
-    # Объединяем их с датафреймом добавленных кластеров
-    df_returns_with_clusters = pd.concat([df_returns_with_clusters, df_returns_with_added_clusters], ignore_index=True)
-
-
+    logger.success("Добавление кластеров к возвратам завершено.")
     return df_returns_with_clusters
 
 
@@ -2296,6 +2828,8 @@ def getReturns_v2(
         logger.info("Возвраты за указанный период не найдены.")
         df_returns_processed = pd.DataFrame(columns=api_columns.get('returns', []))
 
+    logger.success('Выгрузка возвратов завершена.')
+
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
         df_returns_processed.to_csv(
@@ -2307,85 +2841,6 @@ def getReturns_v2(
     # Иначе возвращаем DataFrame с возвратами
     else:
         return df_returns_processed
-
-
-# Функция выгрузки заказов
-def getOrders_v2(
-        headers,
-        date_start,
-        date_end,
-        to_save=True,
-    ):
-    """
-    Выгружает заказы по API Ozon.
-
-    Параметры:
-        - headers: заголовки для запросов к API.
-        - date_start: дата начала периода выгрузки (строка в формате ISO 8601).
-        - date_end: дата окончания периода выгрузки (строка в формате ISO 8601).
-        - to_save: флаг, указывающий, нужно ли сохранить файл с заказами.
-    """
-    logger.info(f"Выгрузка заказов с {date_start} по {date_end} начата.")
-
-    # Выгружаем заказы FBO
-    df_all_orders_fbo = get_ozon_fbo_list(
-        headers=headers,
-        date_start=date_start,
-        date_end=date_end
-    )
-    # Получаем товары в заказах FBO
-    df_fbo_orders_processed = process_fbo_list(
-        df_all_orders_fbo=df_all_orders_fbo,
-    )
-
-    # Выгружаем заказы FBS
-    df_all_orders_fbs = get_ozon_fbs_list(
-        headers=headers,
-        date_start=date_start,
-        date_end=date_end
-    )
-    # Получаем товары в заказах FBS
-    df_fbs_orders_processed = process_fbs_list(
-        df_all_orders_fbs=df_all_orders_fbs,
-    )
-    # Если стоит флаг сохранения, сохраняем файлы с заказами
-    if to_save:
-        file_name_orders_fbo = (
-            Path(uploaddir_today) /
-            f"{str(date.today())}_Заказы_fbo.csv"
-        )
-
-        file_name_orders_fbs = (
-            Path(uploaddir_today) /
-            f"{str(date.today())}_Заказы_fbs.csv"
-        )
-        # Удаляем столбец с financial_data.products перед сохранением (для уменьшения размера файла)
-        columns_to_remove = ['financial_data.products']
-        for df in [df_fbo_orders_processed, df_fbs_orders_processed]:
-            for col in columns_to_remove:
-                if col in df.columns:
-                    df.drop(columns=[col], inplace=True)
-
-        df_fbo_orders_processed.to_csv(
-            file_name_orders_fbo,
-            sep=';',
-            index=False,
-            encoding='utf-8-sig'
-        )
-        df_fbs_orders_processed.to_csv(
-            file_name_orders_fbs,
-            sep=';',
-            index=False,
-            encoding='utf-8-sig'
-        )
-    else:
-        return df_fbo_orders_processed, df_fbs_orders_processed
-
-
-
-    logger.info("Выгрузка заказов завершена.")
-
-    # return
 
 
 # Продажи FBO
@@ -2694,6 +3149,10 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
     # df, куда будем помещать результаты выгрузки АПИ
     df_fbo_reminders_api = pd.DataFrame()
 
+    # Переменная для отслеживания количества товаров
+    uploaded_products_count = 0
+    total_products_count = df_products_.shape[0]
+
     # Цикл по каждому интервалу
     for chunk in df_products_['chunks'].unique():
         # Делаем выборку одного интервала
@@ -2724,7 +3183,13 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
             # Объединяем с предыдущим проходом цикла
             df_fbo_reminders_api = pd.concat([df_fbo_reminders_api, tmp_df_fbo_reminders])
 
-            logger.info(f"Загружены остатки FBO для интервала {chunk} из {df_products_['chunks'].unique().max()}: {products_count_in_chunk} товаров из {df_products_.shape[0]}")
+            # Обновляем количество загруженных товаров
+            uploaded_products_count += products_count_in_chunk
+
+            logger.info(
+                f"Выгружены остатки для {uploaded_products_count} из {total_products_count} товаров "
+                f"(интервал {chunk}/{df_products_['chunks'].max()})"
+            )
 
             # Делаем паузу между запросами
             logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
@@ -3299,7 +3764,7 @@ def get_supply_orders_full(
         "IN_TRANSIT",
         "ACCEPTED_AT_SUPPLY_WAREHOUSE",
         "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
-        # "DATA_FILLING"
+        "DATA_FILLING"
     ],
     timeslot_from: str = None,
     timeslot_to: str = None,
@@ -3405,12 +3870,12 @@ if __name__ == '__main__':
     days_ago, cli_start_date, cli_end_date = cli_days_ago(parser)
 
     date_start, date_end = generate_dates_new(
-        # days_ago=days_ago,
-        # start_date_str=cli_start_date,
-        # end_date_str=cli_end_date,
-        days_ago=None,
-        start_date_str = '2025-11-30',
-        end_date_str = '2025-11-30',
+        days_ago=days_ago,
+        start_date_str=cli_start_date,
+        end_date_str=cli_end_date,
+        # days_ago=None,
+        # start_date_str = '2025-11-30',
+        # end_date_str = '2025-11-30',
     )
     # date_end = '2025-07-12T23:59:59.000Z'
     # date_start = '2025-06-13T00:00:00.000Z'
@@ -3422,6 +3887,14 @@ if __name__ == '__main__':
     # Обновление кластеров Озон
     update_cluster_list(headers)
 
+    # Список товаров
+    get_ozon_product(headers)
+
+    # Заказы FBO
+    getOrdersFBO(headers, date_start, date_end)
+    # Заказы FBS
+    getOrdersFBS(headers, date_start, date_end)
+
     # # Заказы FBO
     # getOrders(headers, date_start, date_end, delivery_schema="fbo")
     # # Заказы FBS
@@ -3431,11 +3904,9 @@ if __name__ == '__main__':
     # # Кластер доставки заказов FBS
     # getFinalOrders_fbs(headers)
 
-    # Список товаров
-    get_ozon_product(headers)
 
     # Заказы
-    getOrders_v2(headers, date_start, date_end)
+    # getOrders_v2(headers, date_start, date_end)
 
     # Список транзакций
     get_transactions_report(headers, date_start, date_end)
