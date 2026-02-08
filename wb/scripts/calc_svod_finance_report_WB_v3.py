@@ -320,6 +320,10 @@ def add_new_columns(df_realization_report_renamed):
             'К перечислению продавцу за реализованный товар',
             'Вознаграждение WB без НДС',
             'НДС с вознаграждения WB',
+            'Размер кВВ без НДС, % базовый',
+            'Итоговый кВВ без НДС, %',
+            'Размер снижения кВВ из-за рейтинга',
+            'Размер снижения кВВ из-за акции',
             'Стоимость логистики',
             'Тип платежа за Эквайринг/Комиссии за организацию платежей',
             'Возмещение издержек по эквайрингу',
@@ -376,6 +380,10 @@ def add_new_columns(df_realization_report_renamed):
     # Заменяем пустые строки в размере на пропуски
     df_realization_report_new_columns['Размер'] = df_realization_report_new_columns['Размер'].replace('', np.nan)
 
+    # Считаем НДС в долях
+    df_realization_report_new_columns['НДС'] = (
+        df_realization_report_new_columns['НДС с вознаграждения WB'] / df_realization_report_new_columns['Вознаграждение WB без НДС']
+    )
 
     # Колонки, по которым считаем прочие расходы
     other_costs_columns = [
@@ -457,6 +465,17 @@ def calc_sku_costs_v3(df_realization_report_date_filtered, groupby_cols = ['Ар
     # Формируем id строк с расходами по артикулам
     sku_costs_ids = df_sku_costs['id'].to_list()
 
+    # Пересчитываем столбцы с НДС
+    # df_sku_costs['Вознаграждение WB без НДС'] = (
+    #     (-1) * df_sku_costs['Итоговый кВВ без НДС, %'] / 100
+    #     * df_sku_costs['Цена розничная с учетом согласованной скидки']
+    # )
+    # df_sku_costs['НДС'] = (
+    #     df_sku_costs['НДС с вознаграждения WB'] / df_sku_costs['Вознаграждение WB без НДС']
+    # )
+    # df_sku_costs['НДС с вознаграждения WB'] = (
+    #     df_sku_costs['Вознаграждение WB без НДС'] * df_sku_costs['НДС']
+    # )
     # Выбираем расходы, где есть размер
     df_sku_sizes_costs = df_sku_costs.loc[df_sku_costs['Размер'].notna(), :]
     # Формируем id строк с расходами по размерам
@@ -848,7 +867,7 @@ def calc_paid_storage_costs(
         min_date = min(paid_storage_dates['date_from'])
         # Считаем разницу с минимальной датой в днях
         paid_storage_dates['days_diff'] = abs(paid_storage_dates['date_to'] - min_date).dt.days + 1
-        # Разбиваем на интервалы по 30 дней
+        # Разбиваем на интервалы по 7 дней
         paid_storage_dates['chunks'] = paid_storage_dates['days_diff'].apply(lambda x: int(x / 7) + 1)
         # Сколько всего получилось интервалов
         total_chunks = max(paid_storage_dates['chunks'])
@@ -2646,8 +2665,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2025-12-22',
-        date_end='2025-12-23'
+        date_start = '2026-01-01',
+        date_end='2026-01-31'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
@@ -2671,7 +2690,7 @@ if __name__ == '__main__':
         date_start,
         date_end,
         df_realization_report_new_columns,
-        filter_dates=False
+        filter_dates=True
     )
     # Получаем список дат отчета
     report_dates = get_report_dates(
