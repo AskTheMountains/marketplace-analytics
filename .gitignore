@@ -176,3 +176,4 @@ docs/
 docs-mkdocs/
 # application/
 /logs
+clusters_and_warehouses.csv
