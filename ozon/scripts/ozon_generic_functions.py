@@ -26,15 +26,35 @@ from ozon.scripts.uploadDataFromOzon import (
 
 # Функция выгрузки отчета о заказах
 def get_orders(headers, date_start, date_end):
-    # Выгружаем отчет об отправлениях fbo и fbs
-    # df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
-    # df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
-    # # Убираем лишние колонки из отчета fbo
-    # df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
+    """
+    Выгружает отчет о заказах за указанный период (FBO + FBS)
 
-    df_orders_fbo, df_orders_fbs = getOrders_v2(headers, date_start, date_end, to_save=False)
+    Параметры:
+    - headers: заголовки для запросов к API Ozon
+    - date_start: дата начала периода (строка в формате ISO 8601)
+    - date_end: дата окончания периода (строка в формате ISO 8601)
+    Возвращает объединенный датафрейм с заказами
+    """
+    # Выгружаем отчет об отправлениях fbo и fbs
+    df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
+    df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
+    # Убираем лишние колонки из отчета fbo
+    df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
+
     # Объединяем два отчета в один
-    common_columns = ['Схема доставки', 'Артикул', 'Наименование товара', 'SKU', 'Статус', 'Дата и время начала обработки отправления', 'Сумма отправления']
+    common_columns = ['Артикул', 'Название товара', 'OZON id', 'Статус', 'Принят в обработку', 'Сумма отправления']
+
+    # df_orders_fbo, df_orders_fbs = getOrders_v2(headers, date_start, date_end, to_save=False)
+    # # Объединяем два отчета в один
+    # common_columns = [
+    #     'Схема доставки',
+    #     'Артикул',
+    #     'Наименование товара',
+    #     'SKU',
+    #     'Статус',
+    #     'Дата и время начала обработки отправления',
+    #     'Сумма отправления'
+    # ]
 
     # GPT START----
     dfs = []
@@ -53,7 +73,7 @@ def get_orders(headers, date_start, date_end):
 
     # Переводим колонку с датой заказа в datetime
     df_orders_all['datetime_orders'] = (
-        pd.to_datetime(df_orders_all['Дата и время начала обработки отправления'], format='mixed')
+        pd.to_datetime(df_orders_all['Принят в обработку'], format='mixed')
         .dt.tz_localize(None)
     )
     # Указываем, какие колонки считаем за заказы в штуках и рублях
