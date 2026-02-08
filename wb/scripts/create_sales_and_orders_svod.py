@@ -181,7 +181,7 @@ def get_realization_report(headers, date_start, date_end):
     df_realization_report_date_filtered = filter_report_dates(
         date_start_, date_end_,
         df_realization_report_new_columns,
-        filter_dates=False
+        filter_dates=True
     )
 
     return df_realization_report_date_filtered
