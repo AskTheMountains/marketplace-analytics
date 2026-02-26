@@ -445,8 +445,17 @@ def check_companies_costs(df_finance_report):
 
 # Функция нахождения id строк с расходами по РК
 def get_companies_costs_ids(df_finance_report):
+    companies_str_pattern = (
+            'Оплата за клик'
+            '|Продвижение с оплатой за заказ'
+            # '|Продвижение в поиске'
+            # '|Трафареты'
+    )
     df_companies_costs = df_finance_report.loc[
-        df_finance_report['Тип начисления'].str.contains('Оплата за клик|Продвижение с оплатой за заказ', na=False),
+        df_finance_report['Тип начисления'].str.contains(
+            companies_str_pattern,
+            na=False
+            ),
         ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
     ]
     # id строк с расходами, которые относим к РК
@@ -1820,7 +1829,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет_по_начислениям_01_01_2026_22_01_2026.xlsx"
+    report_file_name = "Отчет_по_начислениям_01_01_2026_31_01_2026.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -1834,10 +1843,10 @@ if __name__ == "__main__":
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        date_start,
-        date_end,
-        # date_start = '2026-01-01',
-        # date_end='2026-01-31'
+        # date_start,
+        # date_end,
+        date_start = '2026-01-01',
+        date_end='2026-01-31'
     )
 
     # Создаем директорию для текущего отчета
@@ -1858,7 +1867,9 @@ if __name__ == "__main__":
     # Расчет расходов по поставкам с разбивкой на SKU
     result_supplies_costs = calc_supplies_costs(df_finance_report)
     # Выгружаем список товаров (текущий)
+
     df_products_processed = get_ozon_product(headers, to_save=False)
+
     # Формируем список SKU с артикулами из расходов, которые уже разбиты по SKU
     # df_sku_list_all = create_all_sku_df(
     #     result_sku_costs,
