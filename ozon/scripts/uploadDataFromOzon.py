@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pandas as pd
 from io import BytesIO
+from xlsx2csv import Xlsx2csv
 import requests
 # from loguru import logger
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
-from wb.scripts.create_sales_and_orders_svod import get_sales
 
 pd.set_option('future.no_silent_downcasting', True)
 
@@ -156,54 +156,96 @@ def save_dates_to_csv(date_start, date_end):
     path_save = uploaddir_today / f"{str(date.today())}_dates_from_to.csv"
     df_dates.to_csv(path_save, sep=';', index=False, encoding='utf-8-sig')
 
-
-# Отчет по товарам (список товаров)
+# Основная функция для получения данных о товарах
 def getOzonProduct(headers, to_save=True):
+    # Определяем имена файлов для сохранения данных о товарах
+    file_name_products = uploaddir_today / f"{date.today()}_Товары.csv"
+    tmp_file_name_products_xlsx = uploaddir / f"{date.today()}_Товары_tmp.xlsx"
+    tmp_file_name_products_csv = uploaddir / f"{date.today()}_Товары_tmp.csv"
+
     # Параметры запроса на создание отчета по товарам
     params = json.dumps({
-    "language": "DEFAULT",
-    "offer_id": [],
-    "search": "",
-    "sku": [],
-    "visibility": "ALL"
+        "language": "DEFAULT",
+        "offer_id": [],
+        "search": "",
+        "sku": [],
+        "visibility": "ALL"
     })
 
-    logger.info(f'Выгрузка списка товаров')
+    logger.info('Выгрузка списка товаров')
 
-    # Отправляем запроса на создание отчета по товарам
+    # Отправляем запрос на создание отчета по товарам
     logger.info('Получаем ссылку на отчет по товарам')
-    result = requests.post(f"{ozon_seller_api_url}/v1/report/products/create",headers=headers, data=params).json()
+    result = requests.post(f"{ozon_seller_api_url}/v1/report/products/create", headers=headers, data=params).json()
     code_id = json.dumps({
-    "code": result["result"]["code"]
+        "code": result["result"]["code"]
     })
     logger.info(f'Получен код отчета по товарам: {result["result"]["code"]}')
 
     # Ждем 5 секунд, пока отчет будет создаваться
     time.sleep(5)
-    resp_data = {"result":{"file":""}}
-    # Делаем запросы получения информации об отчете до тех пор, пока не получим ссылку на отчет
+    resp_data = {"result": {"file": ""}}
+
+    # Делаем запросы для получения информации об отчете, пока не получим ссылку
     while not resp_data["result"]["file"]:
-        resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers,data=code_id).json()
+        resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers, data=code_id).json()
         logger.info('Отчет по товарам еще не готов, ждем 5 секунд...')
+        time.sleep(5)
 
-    # Получаем ссылку на отчет по товарам
-    path_csv = resp_data["result"]["file"]
-    logger.info('Отчет по товарам готов, получаем файл')
+    # Получаем ссылку на файл отчета
+    file_url = resp_data["result"]["file"]
+    logger.info('Отчет по товарам готов, загружаем файл')
 
-    r = requests.get(path_csv, stream=True)
+    # Определяем тип файла по расширению
+    file_extension = os.path.splitext(file_url)[-1].lower()
+
+    # Скачиваем файл отчета
+    r = requests.get(file_url, stream=True)
     if r.status_code == 200:
-        # Считываем отчет по товарам (список товаров)
-        df_products = pd.read_csv(path_csv, sep=';')
-        # Убираем лишние символы из артикула
-        df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
-        if to_save:
-            file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
-            df_products.to_csv(file_name_products, sep=';', index=False, encoding='utf-8-sig')
-        else:
-            return df_products
-    else:
-        logger.error(f'Ошибка при получении отчета по товарам, info: {r.text}')
+        try:
+            if file_extension == ".xlsx":
+                logger.info("Обнаружен файл с расширением .xlsx")
+                # Сохраняем загруженный Excel во временный файл
+                with open(tmp_file_name_products_xlsx, 'wb') as tmp_file:
+                    tmp_file.write(r.content)
 
+                # Конвертируем временный Excel в CSV
+                Xlsx2csv(tmp_file_name_products_xlsx, outputencoding="utf-8-sig", delimiter=";").convert(tmp_file_name_products_csv)
+                # Считываем только что созданный CSV в DataFrame
+                df_products = pd.read_csv(tmp_file_name_products_csv, sep=";", encoding="utf-8-sig", skiprows=1)
+
+            elif file_extension == ".csv":
+                logger.info("Обнаружен файл с расширением .csv")
+                tmp_file_name_products_csv.parent.mkdir(parents=True, exist_ok=True)
+                # Сохраняем загруженный CSV во временный файл
+                with open(tmp_file_name_products_csv, 'wb') as tmp_file:
+                    tmp_file.write(r.content)
+
+                # Считываем файл CSV без конвертации
+                df_products = pd.read_csv(tmp_file_name_products_csv, sep=";", encoding="utf-8-sig")
+
+            else:
+                raise ValueError(f"Неподдерживаемый формат файла: {file_extension}")
+
+            # Убираем лишние символы из 'Артикул'
+            if 'Артикул' in df_products.columns:
+                df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
+
+            # Сохраняем финальный результат или возвращаем DataFrame
+            if to_save:
+                df_products.to_csv(file_name_products, sep=';', index=False, encoding='utf-8-sig')
+            else:
+                logger.info("Возвращаем обработанный DataFrame")
+                return df_products
+        except Exception as e:
+            logger.error(f'Ошибка при обработке файла: {e}')
+        finally:
+            # Удаляем временные файлы
+            for file_path in [tmp_file_name_products_xlsx, tmp_file_name_products_csv]:
+                if file_path.exists():
+                    file_path.unlink()
+    else:
+        logger.error(f'Ошибка при скачивании отчета по товарам, статус: {r.status_code}, информация: {r.text}')
 
 # Информация о товарах
 def get_products_info(headers, df_products=None):
@@ -736,9 +778,7 @@ def get_ozon_product(headers, to_save=True):
             encoding='utf-8-sig',
             index=False
         )
-    # иначе - возвращаем df с товарами
-    else:
-        return df_products_all_data
+    return df_products_all_data
 
 
 # Отчет по отправлениям (заказы)
@@ -945,9 +985,7 @@ def getOrdersFBO(
             encoding='utf-8-sig',
             index=False
         )
-    # иначе - возвращаем df с заказами FBO
-    else:
-        return df_orders_fbo
+    return df_orders_fbo
 
 
 # Дополнительная информация по отправлениям
@@ -1079,9 +1117,8 @@ def getOrdersFBS(
             encoding='utf-8-sig',
             index=False
         )
-    # иначе - возвращаем df с заказами FBS
-    else:
-        return df_orders_fbs
+
+    return df_orders_fbs
 
 
 
@@ -2024,11 +2061,6 @@ def get_transactions_report(headers, date_start, date_end, to_save=True):
         - date_end: конец периода в формате ISO-8601.
         - to_save: флаг сохранения результата в файл.
     """
-    # Задаем имя файла для транзакций
-    file_name_transactions = (
-        uploaddir_today /
-        f"{str(date.today())}_Транзакции.csv"
-    )
     # Выгружаем список транзакций
     df_transactions_list = uploadTransactionReport(
         headers=headers,
@@ -2041,15 +2073,18 @@ def get_transactions_report(headers, date_start, date_end, to_save=True):
     )
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
+        # Задаем имя файла для транзакций
+        file_name_transactions = (
+            uploaddir_today /
+            f"{str(date.today())}_Транзакции.csv"
+        )
         df_transactions_list_processed.to_csv(
             file_name_transactions,
             sep=';',
             index=False,
             encoding='utf-8-sig'
         )
-    # Иначе возвращаем DataFrame с транзакциями
-    else:
-        return df_transactions_list_processed
+    return df_transactions_list_processed
 
 # Функция получения продаж FBO (потоварно)
 def get_sales_fbo_by_products(
@@ -2376,8 +2411,8 @@ def getSalesFBO_v2(
             index=False,
             encoding='utf-8-sig'
         )
-    else:
-        return df_sales_fbo_final
+
+    return df_sales_fbo_final
 
 # Функция получения продаж FBS
 def getSalesFBS_v2(
@@ -2447,8 +2482,8 @@ def getSalesFBS_v2(
             index=False,
             encoding='utf-8-sig'
         )
-    else:
-        return df_sales_fbs_final
+
+    return df_sales_fbs_final
 
 
 # Функция выгрузки списка возвратов
@@ -2800,11 +2835,6 @@ def getReturns_v2(
         - add_clusters: флаг добавления кластеров к возвратам.
         - to_save: флаг сохранения результата в файл.
     """
-    # Задаем имя файла для возвратов
-    file_name_returns = (
-        uploaddir_today /
-        f"{str(date.today())}_Возвраты.csv"
-    )
     # Выгружаем список возвратов
     df_all_returns = get_ozon_returns_list(
         headers=headers,
@@ -2832,15 +2862,20 @@ def getReturns_v2(
 
     # Если стоит флаг сохранения, сохраняем файл
     if to_save:
+        # Задаем имя файла для возвратов
+        file_name_returns = (
+            uploaddir_today /
+            f"{str(date.today())}_Возвраты.csv"
+        )
+
         df_returns_processed.to_csv(
             file_name_returns,
             sep=';',
             index=False,
             encoding='utf-8-sig'
         )
-    # Иначе возвращаем DataFrame с возвратами
-    else:
-        return df_returns_processed
+
+    return df_returns_processed
 
 
 # Продажи FBO
@@ -3034,84 +3069,6 @@ def getSalesFBS(headers):
         sales_fbs = pd.DataFrame(columns=colnames_sales_fbs)
     sales_fbs.to_csv(file_name_sales_fbs, sep=';', index=False, encoding='utf-8-sig')
 
-# Остатки fbo (старый метод)
-def getStockRemainders_fbo(headers):
-
-    # Задаем имя файла для сохранения
-    file_name_stock_rem_fbo = (
-        uploaddir_today /
-        f"{str(date.today())}_Остатки_fbo.csv"
-    )
-    # Задаем имя файла для временных остатков
-    file_name_stock_rem_fbo_temp = (
-        uploaddir_today /
-        f"{str(date.today())}_Остатки_fbo_temp.csv"
-    )
-    # Задаем имя файла для обработанных данных по остаткам
-    file_name_stock_rem_fbo_processed = (
-        uploaddir_today /
-        f"{str(date.today())}_Остатки_fbo_all.csv"
-    )
-
-
-    logger.info("Upload stock remainders on  "+ str(date.today()))
-    # df, куда будет помещаться итоговый результат
-    df_stock_rem_fbo = pd.DataFrame()
-    # забираем остатки во временный файл
-    for i in range(0,10000,1000):
-        params = json.dumps({
-        "limit": 1000,
-        "offset": i,
-        "warehouse_type": "ALL"
-        })
-
-        result = requests.post(f"{ozon_seller_api_url}/v2/analytics/stock_on_warehouses",headers=headers, data=params)
-        # Если есть остатки, то сохраняем результат запроса в файл и начинаем обработку файла
-        if result.status_code == 200 and result.json()['result']['rows']:
-            remind = result.json()
-            with open(file_name_stock_rem_fbo_temp, "a", newline="",encoding="utf-8-sig") as f:
-            # with open(f"UploadFiles/UploadFiles_"+str(date.today())+'/'+str(date.today())+'_Остатки_temp'+'_from_'+date_start_file+'_to_'+date_end_file+'.csv', "a", newline="",encoding="utf-8-sig") as f:
-                w = csv.DictWriter(f, remind['result']['rows'][0].keys(), delimiter =',')
-                w.writeheader()
-                for row in remind['result']['rows']:
-                    w.writerow(row)
-                f.close()
-        # Если остатков нет, сохраняем пустой файл
-        else:
-            df_stock_rem_fbo = pd.DataFrame(columns=['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв'])
-            df_stock_rem_fbo.to_csv(file_name_stock_rem_fbo, sep=";", index=False, encoding='utf-8-sig')
-
-    # Если есть остатки, начинаем обработку файла с остатками
-    if os.path.exists(file_name_stock_rem_fbo_temp):
-        headerList = ['sku','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв']
-        df = pd.read_csv(file_name_stock_rem_fbo_temp, delimiter=",")
-        if 'idc' in df.columns:
-            df.drop(columns=['idc'], inplace=True)
-        df = df[df['sku'] != 'sku']
-        df.to_csv(file_name_stock_rem_fbo_processed, sep=";",header=headerList)
-        # джойним остатки с кластерами и записываем в файл с остатками
-        colnames=['sku','warehouse_name','item_code','item_name','promised_amount','free_to_sell_amount','reserved_amount']
-        df_stok_rem = pd.read_csv(file_name_stock_rem_fbo_temp, delimiter=";",names=colnames,skiprows=1)
-        colnames_df2 = ['warehouse_name', 'cluster']
-        df_cluster = pd.read_csv('clasters_warehouse.csv',delimiter=";", names=colnames_df2,skiprows=1)
-        data_with_cluster = df_stok_rem.merge(df_cluster, left_on='warehouse_name',right_on='warehouse_name',how='left')
-        new_df = data_with_cluster[['sku','cluster','warehouse_name','item_code','item_name','promised_amount','free_to_sell_amount','reserved_amount']]
-        headerList = ['sku','Кластер','Название склада','Артикул','Название товара','Товары в пути','Доступный к продаже товар','Резерв']
-        # Кластеры, которых нет в списке, помечаем как "Неизвестный кластер"
-        new_df['cluster'] = new_df['cluster'].fillna('Неизвестный кластер')
-        new_df.to_csv(file_name_stock_rem_fbo,sep=";",header=headerList, index=False, encoding='utf-8-sig')
-        os.remove(file_name_stock_rem_fbo_temp)
-        os.remove(file_name_stock_rem_fbo_processed)
-        # Выводим предупреждение, если есть кластеры, отсутствующие в файле
-        warehouse_list_stock_rem = pd.DataFrame({'warehouse_name':df_stok_rem['warehouse_name'].unique()})
-        df_all_clusters = pd.merge(df_cluster, warehouse_list_stock_rem,
-                                on='warehouse_name',
-                                how='outer',
-                                indicator=True)
-        missing_clusters = df_all_clusters.loc[df_all_clusters['_merge'] == 'right_only', 'warehouse_name'].to_list()
-        if len(missing_clusters) > 0:
-            logger.warning(f"No cluster found for warehouses {missing_clusters}")
-
 
 # Остатки FBO
 def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
@@ -3120,18 +3077,14 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
 
     # Интервал между запросами (в секундах)
     sleep_interval = 5
-    # Задаем имя файла для товаров
-    file_name_products = (
-        uploaddir_today /
-        f"{str(date.today())}_Товары.csv"
-    )
-    # Задаем имя файла для сохранения остатков
-    file_name_stock_rem_fbo = (
-        uploaddir_today /
-        f"{str(date.today())}_Остатки_fbo.csv"
-    )
+
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
+        # Задаем имя файла для товаров
+        file_name_products = (
+            uploaddir_today /
+            f"{str(date.today())}_Товары.csv"
+        )
         df_products_ = pd.read_csv(file_name_products, sep=';')
     # Если список товаров задан, берем его из переданного аргумента
     else:
@@ -3231,86 +3184,253 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
         df_fbo_reminders = pd.DataFrame(columns=list(rename_dict.values()))
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
+        # Задаем имя файла для сохранения остатков
+        file_name_stock_rem_fbo = (
+            uploaddir_today /
+            f"{str(date.today())}_Остатки_fbo.csv"
+        )
         df_fbo_reminders.to_csv(file_name_stock_rem_fbo, sep=";", index=False, encoding='utf-8-sig')
 
-    # иначе - возвращаем df с товарами
-    else:
-        return df_fbo_reminders
+    return df_fbo_reminders
+
+# Список складов FBS
+def get_ozon_warehouses_fbs(
+    headers: dict,
+    warehouse_ids: list[int] | None = None,
+    limit: int = 200,
+) -> pd.DataFrame:
+    """
+    Получить список складов через Ozon Seller API v2/warehouse/list и вернуть в виде pandas.DataFrame.
+    """
+
+    url = f"{ozon_seller_api_url}/v2/warehouse/list"
+    all_warehouses: list[dict] = []
+
+    cursor: str | None = None
+
+    while True:
+        payload = {"limit": limit}
+
+        if warehouse_ids:
+            payload["warehouse_ids"] = warehouse_ids
+        if cursor:
+            payload["cursor"] = cursor
+
+        logger.debug(f"Запрос складов: url={url}, payload={payload}")
+
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            logger.error(f"Ошибка при запросе складов: {exc}. Ответ: {getattr(resp, 'text', '')}")
+            raise
+
+        data = resp.json()
+        warehouses_batch = data.get("warehouses", [])
+
+        logger.info(
+            f"Получено складов в батче: {len(warehouses_batch)} "
+            f"(всего накоплено: {len(all_warehouses) + len(warehouses_batch)})"
+        )
+
+        all_warehouses.extend(warehouses_batch)
+
+        # В документации обычно has_next — bool, но на всякий случай берём как есть
+        has_next = data.get("has_next")
+        cursor = data.get("cursor")
+
+        if not has_next or not cursor:
+            break
+
+    if not all_warehouses:
+        logger.warning("API не вернуло ни одного склада.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_warehouses)
+    logger.info(f"Итоговый DataFrame по складам: shape={df.shape}")
+
+    return df
 
 
 # Остатки FBS
-def getStockReminders_fbs(headers, to_save=True):
+def getStockReminders_fbs(headers: dict, to_save: bool = True) -> pd.DataFrame:
+    """
+    Получить отчет по остаткам на FBS-складах Ozon, сохранить (опционально) в CSV
+    и вернуть как pandas.DataFrame.
 
-    # Задаем имя файла для остатков FBS
+    :param headers: Заголовки для Ozon Seller API (Client-Id, Api-Key, Content-Type).
+    :param to_save: Если True — сохраняет файл в uploaddir_today, в любом случае
+                    возвращает DataFrame.
+    """
+    logger.info("Запуск формирования отчета по остаткам FBS")
+
+    # Имя файла для сохранения
     file_name_stock_rem_fbs = (
         uploaddir_today /
         f"{str(date.today())}_Остатки_fbs.csv"
     )
 
-    # Колонки, которые всегда возвращаются по апи в таком порядке
-    fbs_reminders_columns = ['Идентификатор склада', 'Название склада', 'Артикул', 'Наименование товара', 'Доступно на моем складе, шт', 'Зарезервировано на моем складе, шт']
-    # Получаем список складов FBS
-    resp_data_fbs_warehouses= requests.post(f"{ozon_seller_api_url}/v1/warehouse/list", headers=headers).json()
-    fbs_warehouses = pd.DataFrame(resp_data_fbs_warehouses['result'])
-    # Если нет складов fbs, то сохраняем пустой df
-    if fbs_warehouses.shape[0] == 0:
+    # Колонки итогового DataFrame
+    fbs_reminders_columns = [
+        "Идентификатор склада",
+        "Название склада",
+        "Артикул",
+        "Наименование товара",
+        "Доступно на моем складе, шт",
+        "Зарезервировано на моем складе, шт",
+    ]
+
+    # Получаем список FBS-складов
+    logger.info("Получаем список FBS-складов")
+    fbs_warehouses = get_ozon_warehouses_fbs(headers)  # <- твоя функция получения складов FBS
+
+    if fbs_warehouses.empty:
+        logger.warning("Не найдено ни одного FBS-склада. Возвращаем пустой DataFrame.")
         df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
-    # Если есть склады FBS, забираем по ним остатки
-    else:
-        params_warehouses = json.dumps({
-            "language": "DEFAULT",
-            "warehouseId": fbs_warehouses['warehouse_id'].to_list()
-        })
-        result = requests.post(f"{ozon_seller_api_url}/v1/report/warehouse/stock", headers=headers, data=params_warehouses).json()
-        code_id = json.dumps({
-        "code": result["result"]["code"]
-        })
-        logger.info('Get name of fbs warehouses report')
-        logger.info(result["result"]["code"])
-        time.sleep(5)
+        if to_save:
+            df_fbs_reminders.to_csv(
+                file_name_stock_rem_fbs,
+                sep=";",
+                encoding="utf-8-sig",
+                index=False,
+            )
+            logger.info(f"Пустой отчет по остаткам FBS сохранен в файл: {file_name_stock_rem_fbs}")
 
-        # забираем ссылку на отчет с остатками на складе fbs
-        resp_data = {"result":{"file":""}}
-        while not resp_data["result"]["file"]:
-            resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers, data=code_id).json()
-            time.sleep(2)  # добавьте небольшую задержку, чтобы избежать лишних запросов
-
-        time.sleep(5)  # дайте пару секунд на саму генерацию отчета
-        path_csv = resp_data["result"]["file"]
-        logger.info('Get link on FBS warehouses report')
-        # logger.info(f"FBS stock reminders report link: {path_csv}")
-
-        # Качаем файл
-        MAX_TRIES = 20
-        DELAY = 3  # секунд между попытками
-
-        for i in range(MAX_TRIES):
-            resp = requests.get(path_csv, stream=True)
-            if resp.status_code == 200:
-            # and int(resp.headers.get("Content-Length", 0)) > 5000:
-                break
-            time.sleep(DELAY)
-        else:
-            raise Exception("Файл так и не стал доступен для скачивания")
-
-        # Читаем в pandas из памяти
-        df_fbs_reminders = pd.read_excel(BytesIO(resp.content))
-
-
-        # Если на складах есть остатки, то переименовываем колонки в нормальные и сохраняем в csv
-        if df_fbs_reminders.shape[0] > 0:
-            df_fbs_reminders.columns = fbs_reminders_columns
-        # Если нет, то создаём пустой DataFrame с нужными колонками
-        else:
-            df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
-    # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
-    if to_save:
-        df_fbs_reminders.to_csv(file_name_stock_rem_fbs, sep=";", encoding='utf-8-sig', index=False)
-    # иначе - возвращаем df с товарами
-    else:
         return df_fbs_reminders
 
+    # Формируем запрос на генерацию отчёта по остаткам
+    warehouse_ids = fbs_warehouses["warehouse_id"].tolist()
+    logger.info(f"Формируем отчет по остаткам для {len(warehouse_ids)} FBS-складов")
 
+    payload_stock_report = {
+        "language": "DEFAULT",
+        "warehouseId": warehouse_ids,
+    }
+
+    try:
+        resp = requests.post(
+            f"{ozon_seller_api_url}/v1/report/warehouse/stock",
+            headers=headers,
+            json=payload_stock_report,
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.error(f"Ошибка при запросе генерации отчета по остаткам FBS: {exc}")
+        raise
+
+    stock_report_data = resp.json()
+    report_code = stock_report_data.get("result", {}).get("code")
+
+    if not report_code:
+        logger.error(f"Не удалось получить код отчета из ответа: {stock_report_data}")
+        raise RuntimeError("Ozon API не вернул код отчета по остаткам FBS")
+
+    logger.info(f"Код отчета по остаткам FBS: {report_code}")
+
+    # Ожидаем готовности отчета и получаем ссылку на файл
+    payload_report_info = {"code": report_code}
+    report_file_url: str | None = None
+
+    MAX_INFO_TRIES = 30
+    INFO_DELAY_SEC = 2
+
+    logger.info("Ожидаем генерацию отчета по остаткам FBS")
+
+    for attempt in range(1, MAX_INFO_TRIES + 1):
+        try:
+            info_resp = requests.post(
+                f"{ozon_seller_api_url}/v1/report/info",
+                headers=headers,
+                json=payload_report_info,
+                timeout=30,
+            )
+            info_resp.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning(
+                f"Попытка {attempt}/{MAX_INFO_TRIES}: ошибка при запросе info по отчету FBS: {exc}"
+            )
+            time.sleep(INFO_DELAY_SEC)
+            continue
+
+        info_data = info_resp.json()
+        report_file_url = info_data.get("result", {}).get("file")
+
+        if report_file_url:
+            logger.info("Получена ссылка на отчет по остаткам FBS")
+            break
+
+        logger.debug(
+            f"Попытка {attempt}/{MAX_INFO_TRIES}: отчет ещё не готов, ссылки нет. Ждём {INFO_DELAY_SEC} сек."
+        )
+        time.sleep(INFO_DELAY_SEC)
+    else:
+        logger.error("Не удалось получить ссылку на отчет по остаткам FBS в отведенное число попыток")
+        raise RuntimeError("Не удалось получить ссылку на отчет по остаткам FBS")
+
+    # Небольшая пауза «на всякий случай», чтобы файл точно появился на стороне Ozon
+    time.sleep(5)
+
+    # Качаем файл отчёта
+    MAX_DOWNLOAD_TRIES = 20
+    DOWNLOAD_DELAY_SEC = 3
+    report_content: bytes | None = None
+
+    logger.info("Скачиваем файл отчета по остаткам FBS")
+
+    for attempt in range(1, MAX_DOWNLOAD_TRIES + 1):
+        try:
+            download_resp = requests.get(
+                report_file_url,
+                stream=True,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            logger.warning(
+                f"Попытка {attempt}/{MAX_DOWNLOAD_TRIES}: ошибка при скачивании отчета FBS: {exc}"
+            )
+            time.sleep(DOWNLOAD_DELAY_SEC)
+            continue
+
+        if download_resp.status_code == 200:
+            report_content = download_resp.content
+            logger.info(f"Файл отчета FBS успешно скачан на попытке {attempt}")
+            break
+
+        logger.warning(
+            f"Попытка {attempt}/{MAX_DOWNLOAD_TRIES}: файл еще не доступен "
+            f"(status_code={download_resp.status_code}). Ждем {DOWNLOAD_DELAY_SEC} сек."
+        )
+        time.sleep(DOWNLOAD_DELAY_SEC)
+    else:
+        logger.error("Файл отчета по остаткам FBS так и не стал доступен для скачивания")
+        raise RuntimeError("Файл отчета по остаткам FBS так и не стал доступен для скачивания")
+
+    # Читаем Excel-отчет в pandas
+    df_fbs_reminders = pd.read_excel(BytesIO(report_content))
+
+    if df_fbs_reminders.empty:
+        logger.warning("Отчет по остаткам FBS пуст. Формируем пустой DataFrame с нужными колонками.")
+        df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
+    else:
+        # Переименовываем колонки в желаемый вид
+        df_fbs_reminders.columns = fbs_reminders_columns
+        logger.info(
+            f"Получен отчет по остаткам FBS: {df_fbs_reminders.shape[0]} строк, "
+            f"{df_fbs_reminders.shape[1]} колонок"
+        )
+
+    # Сохраняем при необходимости
+    if to_save:
+        df_fbs_reminders.to_csv(
+            file_name_stock_rem_fbs,
+            sep=";",
+            encoding="utf-8-sig",
+            index=False,
+        )
+        logger.info(f"Отчет по остаткам FBS сохранен в файл: {file_name_stock_rem_fbs}")
+
+    return df_fbs_reminders
 
 # Функция выгрузки списка заявок на поставку
 def get_supply_order_list(
@@ -3760,7 +3880,7 @@ def get_supply_orders_full(
     dropoff_warehouse_ids: list = None,
     order_number_search: list = None,
     states: list = [
-        # "READY_TO_SUPPLY",
+        "READY_TO_SUPPLY",
         "IN_TRANSIT",
         "ACCEPTED_AT_SUPPLY_WAREHOUSE",
         "ACCEPTANCE_AT_STORAGE_WAREHOUSE",
@@ -3856,8 +3976,8 @@ def get_supply_orders_full(
             index=False,
             encoding='utf-8-sig'
         )
-    else:
-        return df_supply_order_items_with_clusters
+
+    return df_supply_order_items_with_clusters
 
 
 # %% Вызов всех функций
@@ -3888,12 +4008,12 @@ if __name__ == '__main__':
     update_cluster_list(headers)
 
     # Список товаров
-    get_ozon_product(headers)
+    df_products = get_ozon_product(headers)
 
     # Заказы FBO
-    getOrdersFBO(headers, date_start, date_end)
+    df_orders_fbo = getOrdersFBO(headers, date_start, date_end)
     # Заказы FBS
-    getOrdersFBS(headers, date_start, date_end)
+    df_orders_fbs = getOrdersFBS(headers, date_start, date_end)
 
     # # Заказы FBO
     # getOrders(headers, date_start, date_end, delivery_schema="fbo")
@@ -3909,24 +4029,24 @@ if __name__ == '__main__':
     # getOrders_v2(headers, date_start, date_end)
 
     # Список транзакций
-    get_transactions_report(headers, date_start, date_end)
+    df_transaction_report = get_transactions_report(headers, date_start, date_end)
     # Продажи FBO
     # getSalesFBO(headers)
-    getSalesFBO_v2(headers, date_start, date_end, upload_transactions=False)
+    df_sales_fbo = getSalesFBO_v2(headers, date_start, date_end, upload_transactions=False)
     # Продажи FBS
     # getSalesFBS(headers)
-    getSalesFBS_v2(headers, date_start, date_end, upload_transactions=False)
+    df_sales_fbs = getSalesFBS_v2(headers, date_start, date_end, upload_transactions=False)
 
     # Возвраты (FBO + FBS)
-    getReturns_v2(headers, date_start, date_end)
+    df_returns = getReturns_v2(headers, date_start, date_end)
 
     # Остатки FBS
-    getStockReminders_fbs(headers)
+    df_stock_rem_fbs = getStockReminders_fbs(headers)
     # Остатки FBO
-    getStockReminders_fbo_v2(headers)
+    df_stock_rem_fbo = getStockReminders_fbo_v2(headers)
 
     # Поставки FBO
-    get_supply_orders_full(headers, uploaddir_today=uploaddir_today)
+    df_supply_orders = get_supply_orders_full(headers, uploaddir_today=uploaddir_today)
 
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
     logger.info(f"Uploaded files saved in: {uploaddir_today}")
