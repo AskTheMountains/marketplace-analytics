@@ -623,7 +623,7 @@ class ClientWorkspace(QWidget):
 
         # Обновляем статус в лейбле — тоже для key!
         if key in self.status_labels:
-            contains_warning = "WARNING" in log_text
+            contains_warning = "WARNING" in log_text or "ERROR" in log_text
             if success:
                 if contains_warning:
                     text = "<span style='color:#e67e22; font-weight:bold;'>⚠️ Отчет сформирован с предупреждениями!</span>"
