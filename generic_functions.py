@@ -187,7 +187,8 @@ def custom_pd_explode(df,
     # 2. Определяем тип содержимого колонки
     #    Берём первое НЕ‑NaN значение, чтобы избежать ошибок
     # ------------------------------------------------------------------
-    first_val = next((x for x in df[column] if pd.notna(x)), None)
+    dropped = df[column].dropna()
+    first_val = dropped.iloc[0] if not dropped.empty else None
 
     # Если первое значение – список → нужен explode + normalize
     use_explode = isinstance(first_val, list)
