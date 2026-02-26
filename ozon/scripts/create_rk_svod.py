@@ -37,8 +37,10 @@ from ozon.scripts.constants import (client_id_performance, client_name,
 from ozon.scripts.create_campaigns_report import \
     create_campaigns_report as upload_campaigns_report
 # Функции выгрузки данных по API Seller (доп.)
-from ozon.scripts.ozon_generic_functions import (get_orders,
-                                                 get_reminders_by_product)
+from ozon.scripts.ozon_generic_functions import (
+    get_orders,
+    get_reminders_by_product,
+)
 # Функции выгрузки данных по API Seller
 from ozon.scripts.uploadDataFromOzon import get_ozon_product
 
