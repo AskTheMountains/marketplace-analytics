@@ -22,6 +22,7 @@ BASE_DIR = Path(__file__).parent.parent
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
 from ozon.scripts.ozon_generic_functions import (
+    get_common_article,
     get_orders,
     msk_boundary_to_utc
 )
@@ -776,41 +777,41 @@ def process_product_list(df_products):
     # Переводим Артикул в строку
     df_products_processed['Артикул'] = df_products_processed['Артикул'].astype(str)
     # Создаем колонку основного артикула для определения модельного ряда
-    df_products_processed['Артикул размера'] = df_products_processed['Артикул']
+    df_products_processed['Артикул размера'] = get_common_article(df_products_processed)
 
-    if client_name in ['SENS_IP']:
-        # GPT START----
-        # Разделяем с конца через rsplit, берем суффикс
-        last = df_products_processed['Артикул'].str.rsplit('_', n=1, expand=True)
-        # (если нет "_", во второй части будет NaN)
-        if last.shape[1] < 2:
-            last = last.reindex(columns=[0,1], fill_value=None)
-        # Явно приводим второй столбец к строке
-        last[1] = last[1].astype(str).fillna('')
-        # Проверка: есть ли буквы (русские/латинские) во второй части
-        mask = last[1].str.contains(r'[A-Za-zА-Яа-я]', na=False)
-        # Если есть буквы — берем оригинал, иначе — часть до последнего '_'
-        df_products_processed['Артикул размера'] = (
-            df_products_processed['Артикул']
-            .where(mask, last[0])
-        )
-    elif client_name in ['SENS']:
-        pattern = (
-            r'^(?:'
-            r'([^/\s]+?)(?=[/\s]\d)'             # 1) короткий артикул типа УБ24 перед / или пробелом+число
-            r'|'
-            r'(.+?)(?:(?<=\S)(?=[_\-\s]\d))'      # 2) длинный артикул до разделителя перед размером
-            r')'
-        )
+    # if client_name in ['SENS_IP']:
+    #     # GPT START----
+    #     # Разделяем с конца через rsplit, берем суффикс
+    #     last = df_products_processed['Артикул'].str.rsplit('_', n=1, expand=True)
+    #     # (если нет "_", во второй части будет NaN)
+    #     if last.shape[1] < 2:
+    #         last = last.reindex(columns=[0,1], fill_value=None)
+    #     # Явно приводим второй столбец к строке
+    #     last[1] = last[1].astype(str).fillna('')
+    #     # Проверка: есть ли буквы (русские/латинские) во второй части
+    #     mask = last[1].str.contains(r'[A-Za-zА-Яа-я]', na=False)
+    #     # Если есть буквы — берем оригинал, иначе — часть до последнего '_'
+    #     df_products_processed['Артикул размера'] = (
+    #         df_products_processed['Артикул']
+    #         .where(mask, last[0])
+    #     )
+    # elif client_name in ['SENS']:
+    #     pattern = (
+    #         r'^(?:'
+    #         r'([^/\s]+?)(?=[/\s]\d)'             # 1) короткий артикул типа УБ24 перед / или пробелом+число
+    #         r'|'
+    #         r'(.+?)(?:(?<=\S)(?=[_\-\s]\d))'      # 2) длинный артикул до разделителя перед размером
+    #         r')'
+    #     )
 
-        df_products_processed['Артикул размера'] = (
-            df_products_processed['Артикул']
-            .str.extract(pattern, expand=False)   # даст DF из двух колонок
-            .bfill(axis=1)                        # заполняет NaN справа на основе непустой
-            .iloc[:, 0]                           # выбираем полученный артикул
-            .fillna(df_products_processed['Артикул'])  # если не совпало — возвращаем оригинал
+    #     df_products_processed['Артикул размера'] = (
+    #         df_products_processed['Артикул']
+    #         .str.extract(pattern, expand=False)   # даст DF из двух колонок
+    #         .bfill(axis=1)                        # заполняет NaN справа на основе непустой
+    #         .iloc[:, 0]                           # выбираем полученный артикул
+    #         .fillna(df_products_processed['Артикул'])  # если не совпало — возвращаем оригинал
 
-        )
+    #     )
 
     # Делаем сортировку
     df_products_processed = df_products_processed.sort_values(by='Артикул', ignore_index=True)
