@@ -8,6 +8,7 @@ from colorama import Fore, Back, Style, init
 
 import pandas as pd
 import requests
+from requests import RequestException
 # from loguru import logger
 from wb.scripts.wb_logger import wb_client_logger as logger
 from rich_argparse import RichHelpFormatter
@@ -114,7 +115,6 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
     Выгрузка карточек товаров через API Wildberries с поддержкой пагинации.
     Возвращает результат в виде pandas DataFrame.
     """
-    file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
     url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 
     # Пустой список для сохранения всех карточек
@@ -245,10 +245,13 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         df_products_unpacked_csv = df_products_unpacked[["nmID", "imtID", "chrtID", "Артикул продавца", "barcode", "last_barcode", "Наименование товара", "Предмет", "Размер", "Цвет"]]
 
         if to_save:
+            file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
             # Сохраняем df с товарами через pathlib
-            df_products_unpacked_csv.to_csv(file_name_products, sep=';', index=False)
-        else:
-            return df_products_unpacked
+            df_products_unpacked_csv.to_csv(file_name_products, sep=';', encoding='utf-8-sig', index=False)
+
+        logger.success(f"Выгрузка карточек товаров успешно завершена, всего товаров: {len(df_products_unpacked)}.")
+
+        return df_products_unpacked
 
 
 def get_prices_WB(headers: dict, df_products: pd.DataFrame, to_save: bool = True) -> pd.DataFrame:
@@ -306,20 +309,19 @@ def get_prices_WB(headers: dict, df_products: pd.DataFrame, to_save: bool = True
         df_prices = df_prices.explode('sizes')
 
         # Убираем строки с пустыми размерами
-        df_prices.dropna(subset=['sizes'], inplace=True)
+        df_prices = df_prices.dropna(subset=['sizes'], ignore_index=True)
 
         # Извлекаем данные о ценах
         price_data = pd.json_normalize(df_prices['sizes'])
         df_prices = pd.concat([df_prices.drop(columns=['sizes']), price_data], axis=1)
 
-        df_prices.rename(
+        df_prices = df_prices.rename(
             columns={
                 'sizeID': 'chrtID',
                 'price': 'price',
                 'discountedPrice': 'discount_price',
                 'clubDiscountedPrice': 'club_discount_price',
             },
-            inplace=True,
         )
 
         # Объединяем выгрузку с основным DataFrame
@@ -331,17 +333,17 @@ def get_prices_WB(headers: dict, df_products: pd.DataFrame, to_save: bool = True
         )
 
         # Удаляем дубликаты и заполняем пропущенные данные
-        df_products_prices.drop_duplicates(subset=['nmID', 'chrtID'], keep='first', inplace=True)
+        df_products_prices = df_products_prices.drop_duplicates(subset=['nmID', 'chrtID'], keep='first', ignore_index=True)
         df_products_prices['Размер'] = df_products_prices['Размер'].fillna(0)
 
         # Сохраняем или возвращаем результат
         if to_save:
             products_prices_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
             logger.info(f"Сохраняем результаты в файл: {products_prices_file}")
-            df_products_prices.to_csv(products_prices_file, sep=';', index=False)
-        else:
-            logger.info("Возврат результирующего DataFrame.")
-            return df_products_prices
+            df_products_prices.to_csv(products_prices_file, sep=';', encoding='utf-8-sig', index=False)
+
+        logger.success("Выгрузка цен товаров успешно завершена.")
+        return df_products_prices
 
     except Exception as e:
         logger.error(f"Произошла ошибка при выгрузке цен: {e}")
@@ -366,150 +368,625 @@ def get_wb_product(headers, to_save=True):
 
 
 # Заказы
-def getOrdersWB(headers, date_start, date_end, to_save=True):
+def getOrdersWB(
+    headers: dict,
+    date_start: str,
+    date_end: str,
+    to_save: bool = True,
+    max_retries: int = 2,
+    retry_delay: int = 65,
+):
+    """
+    Загрузка заказов Wildberries за указанный период.
+
+    :param headers: Заголовки запроса (должен содержать токен авторизации).
+    :param date_start: Начальная дата периода (строка, как в API WB).
+    :param date_end: Конечная дата периода (строка, как в API WB).
+    :param to_save: Сохранять ли результат в CSV.
+    :param max_retries: Кол-во попыток при ошибке 429 или сетевых ошибках.
+    :param retry_delay: Пауза между попытками (сек).
+    :return: DataFrame с заказами.
+    :raises: RequestException, ValueError, RuntimeError при неуспехе.
+    """
+    orders_endpoint = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
     params = {
         "dateFrom": date_start,
         "dateTo": date_end,
-        # "flag": 0
     }
-    logger.info("Uploading orders")
+
+    logger.info(
+        "Загрузка заказов WB с {} по {} (max_retries={}, retry_delay={})".format(
+            date_start, date_end, max_retries, retry_delay
+        )
+    )
+
+    attempt = 0
+    while attempt < max_retries:
+        attempt += 1
+        try:
+            logger.debug("Отправка запроса к WB (попытка {} из {})", attempt, max_retries)
+            response = requests.get(
+                orders_endpoint,
+                headers=headers,
+                params=params,
+                timeout=30,
+            )
+        except RequestException as exc:
+            logger.error(
+                "Сетевая ошибка при запросе заказов WB (попытка {} из {}): {}",
+                attempt, max_retries, exc
+            )
+            if attempt >= max_retries:
+                raise
+            logger.info("Ожидание {} секунд перед повторной попыткой...", retry_delay)
+            time.sleep(retry_delay)
+            continue
+
+        # Обработка статусов
+        if response.status_code == 200:
+            logger.debug("Успешный ответ WB (статус 200)")
+            break
+
+        if response.status_code == 429 and attempt < max_retries:
+            logger.warning(
+                "Получен статус 429 Too Many Requests (попытка {} из {}). "
+                "Ожидание {} секунд перед повтором...",
+                attempt, max_retries, retry_delay
+            )
+            time.sleep(retry_delay)
+            continue
+
+        # Любой другой неожиданный статус
+        logger.error(
+            "Неожиданный статус ответа WB: {}. Тело ответа: {}",
+            response.status_code,
+            response.text[:1000],
+        )
+        response.raise_for_status()
+
+    # Если после цикла статус всё ещё не 200 — это ошибка логики
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Не удалось получить заказы WB после {max_retries} попыток. "
+            f"Последний статус: {response.status_code}"
+        )
+
+    # Разбор JSON
     try:
-        resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/orders",
-                                headers=headers, params=params)
+        data = response.json()
+    except ValueError as exc:
+        logger.error(
+            "Ошибка парсинга JSON от WB: {}. Тело ответа: {}",
+            exc,
+            response.text[:1000],
+        )
+        raise
 
-        # Если ошибка, что много запросов, ждем 1 минуту, потом пробуем снова
-        if resp_data.status_code == 429:
-            logger.info("Waiting 1 minute for next attempt")
-            time.sleep(65)
-            resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/orders",
-                                    headers=headers, params=params)
-        # Если запрос выполнен успешно, забираем отчет из ответа
-        if resp_data.status_code == 200:
-            result = resp_data.json()
-            df_orders = pd.DataFrame(result)
-            df_orders = df_orders[(df_orders['date'] >= date_start) & (df_orders['date'] <= date_end)]
-            df_orders = df_orders.rename(columns={
-                "techSize": "Размер",
-                "supplierArticle": "Артикул продавца",
-                "nmId": "Артикул WB"
-            })
-            # Если стоит флаг сохранения, сохраняем отчет в csv, иначе - возвращаем df
-            if to_save:
-                orders_file = uploaddir_today / f"{str(date.today())}_Заказы.csv"
-                df_orders.to_csv(orders_file, sep=';', index=False)
-            else:
-                return df_orders
-    except Exception as e:
-        logger.error(f"Ошибка получения заказов: {e}")
+    # Формирование DataFrame
+    df_orders = pd.DataFrame(data)
+    if df_orders.empty:
+        logger.warning("WB вернул пустой список заказов за указанный период.")
+    else:
+        # Фильтрация по диапазону дат (если поле 'date' есть)
+        if "date" in df_orders.columns:
+            df_orders = df_orders[
+                (df_orders["date"] >= date_start) &
+                (df_orders["date"] <= date_end)
+            ]
+        else:
+            logger.warning(
+                "В ответе WB отсутствует колонка 'date'. Фильтрация по датам не выполнена."
+            )
 
+        # Переименование колонок
+        rename_map = {
+            "techSize": "Размер",
+            "supplierArticle": "Артикул продавца",
+            "nmId": "Артикул WB",
+        }
+        df_orders = df_orders.rename(columns=rename_map)
+
+    # Сохранение в файл
+    if to_save:
+        orders_file = uploaddir_today / f"{date.today()}_Заказы.csv"
+        try:
+            df_orders.to_csv(orders_file, sep=";", encoding="utf-8-sig", index=False)
+            logger.info("Файл с заказами сохранён: {}", orders_file)
+        except Exception as exc:
+            logger.error("Не удалось сохранить файл с заказами {}: {}", orders_file, exc)
+            raise
+
+    return df_orders
 
 # Продажи
-def getSalesWB(headers, date_start, date_end, to_save=True):
+def getSalesWB(
+    headers: dict,
+    date_start: str,
+    date_end: str,
+    to_save: bool = True,
+    max_retries: int = 2,
+    retry_delay: int = 65,
+):
+    """
+    Загрузка продаж Wildberries за указанный период.
+
+    :param headers: Заголовки запроса (должен содержать токен авторизации).
+    :param date_start: Начальная дата периода (строка, как в API WB).
+    :param date_end: Конечная дата периода (строка, как в API WB).
+    :param to_save: Сохранять ли результат в CSV.
+    :param max_retries: Кол-во попыток при ошибке 429 или сетевых ошибках.
+    :param retry_delay: Пауза между попытками (сек).
+    :return: DataFrame с продажами.
+    :raises: RequestException, ValueError, RuntimeError при неуспехе.
+    """
+    sales_endpoint = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
     params = {
         "dateFrom": date_start,
         "dateTo": date_end,
-        # "flag": 0
     }
-    logger.info("Uploading sales")
+
+    logger.info(
+        "Загрузка продаж WB с {} по {} (max_retries={}, retry_delay={})",
+        date_start, date_end, max_retries, retry_delay
+    )
+
+    attempt = 0
+    response = None
+
+    while attempt < max_retries:
+        attempt += 1
+        try:
+            logger.debug("Отправка запроса к WB (продажи), попытка {} из {}", attempt, max_retries)
+            response = requests.get(
+                sales_endpoint,
+                headers=headers,
+                params=params,
+                timeout=30,
+            )
+        except RequestException as exc:
+            logger.error(
+                "Сетевая ошибка при запросе продаж WB (попытка {} из {}): {}",
+                attempt, max_retries, exc
+            )
+            if attempt >= max_retries:
+                raise
+            logger.info("Ожидание {} секунд перед повторной попыткой...", retry_delay)
+            time.sleep(retry_delay)
+            continue
+
+        # Обработка статусов
+        if response.status_code == 200:
+            logger.debug("Успешный ответ WB по продажам (статус 200)")
+            break
+
+        if response.status_code == 429 and attempt < max_retries:
+            logger.warning(
+                "Получен статус 429 Too Many Requests при запросе продаж "
+                "(попытка {} из {}). Ожидание {} секунд перед повтором...",
+                attempt, max_retries, retry_delay
+            )
+            time.sleep(retry_delay)
+            continue
+
+        logger.error(
+            "Неожиданный статус ответа WB по продажам: {}. Тело ответа: {}",
+            response.status_code,
+            response.text[:1000],
+        )
+        response.raise_for_status()
+
+    if response is None or response.status_code != 200:
+        raise RuntimeError(
+            f"Не удалось получить продажи WB после {max_retries} попыток. "
+            f"Последний статус: {getattr(response, 'status_code', 'нет ответа')}"
+        )
+
+    # Разбор JSON
     try:
-        resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/sales",
-                                headers=headers, params=params)
-        # Если ошибка, что много запросов, ждем 1 минуту, потом пробуем снова
-        if resp_data.status_code == 429:
-            logger.info("Waiting 1 minute for next attempt")
-            time.sleep(65)
-            resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/sales",
-                                    headers=headers, params=params)
-        # Если запрос выполнен успешно, забираем отчет из ответа
-        if resp_data.status_code == 200:
-            result = resp_data.json()
-            df_sales = pd.DataFrame(result)
-            df_sales = df_sales[(df_sales['date'] >= date_start) & (df_sales['date'] <= date_end)]
-            df_sales = df_sales.rename(columns={
-                            "techSize": "Размер",
-                            "supplierArticle": "Артикул продавца",
-                            "nmId": "Артикул WB"
-                        })
-            # Если стоит флаг сохранения, сохраняем отчет в csv, иначе - возвращаем df
-            if to_save:
-                sales_file = uploaddir_today / f"{str(date.today())}_Продажи.csv"
-                df_sales.to_csv(sales_file, sep=';', index=False)
-            else:
-                return df_sales
-    except Exception as e:
-        logger.error(f"Ошибка получения продаж {e}")
+        data = response.json()
+    except ValueError as exc:
+        logger.error(
+            "Ошибка парсинга JSON от WB (продажи): {}. Тело ответа: {}",
+            exc,
+            response.text[:1000],
+        )
+        raise
+
+    # Формирование DataFrame
+    df_sales = pd.DataFrame(data)
+    if df_sales.empty:
+        logger.warning("WB вернул пустой список продаж за указанный период.")
+    else:
+        if "date" in df_sales.columns:
+            df_sales = df_sales[
+                (df_sales["date"] >= date_start) &
+                (df_sales["date"] <= date_end)
+            ]
+        else:
+            logger.warning(
+                "В ответе WB по продажам отсутствует колонка 'date'. "
+                "Фильтрация по датам не выполнена."
+            )
+
+        rename_map = {
+            "techSize": "Размер",
+            "supplierArticle": "Артикул продавца",
+            "nmId": "Артикул WB",
+        }
+        df_sales = df_sales.rename(columns=rename_map)
+
+    # Сохранение в файл
+    if to_save:
+        sales_file = uploaddir_today / f"{date.today()}_Продажи.csv"
+        try:
+            df_sales.to_csv(sales_file, sep=";", encoding="utf-8-sig", index=False)
+            logger.info("Файл с продажами сохранён: {}", sales_file)
+        except Exception as exc:
+            logger.error("Не удалось сохранить файл с продажами {}: {}", sales_file, exc)
+            raise
+
+    return df_sales
 
 # Остатки
-def getStockRemindersWB(headers, date_start, date_end):
+def getStockRemindersWB(
+    headers: dict,
+    date_start: str,  # оставлены для сов��естимости с сигнатурой
+    date_end: str,    # API остатков их всё равно игнорирует
+    to_save: bool = True,
+    max_retries: int = 2,
+    retry_delay: int = 65,
+):
+    """
+    Загрузка остатков Wildberries.
+
+    В текущем API WB для эндпоинта /stocks дата не используется, поэтому
+    выгружаются актуальные остатки на момент запроса.
+
+    :param headers: Заголовки запроса (должен содержать токен авторизации).
+    :param date_start: Не используется (оставлено для совместимости).
+    :param date_end: Не используется (оставлено для совместимости).
+    :param to_save: Сохранять ли результат в CSV.
+    :param max_retries: Кол-во попыток при ошибке 429 или сетевых ошибках.
+    :param retry_delay: Пауза между попытками (сек).
+    :return: DataFrame с остатками.
+    :raises: RequestException, ValueError, RuntimeError при неуспехе.
+    """
+    stock_rem_endpoint = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
     params = {
-        "dateFrom": "2010-01-01T00:00:00Z",
-        # "flag": 0
+        "dateFrom": "2010-01-01T00:00:00Z",  # как в оригинальном коде
     }
-    logger.info("Uploading stock reminders")
-    try:
-        resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/stocks",
-                                headers=headers, params=params)
-        # Если ошибка, что много запросов, ждем 1 минуту, потом пробуем снова
-        if resp_data.status_code == 429:
-            logger.info("Waiting 1 minute for next attempt")
-            time.sleep(65)
-            resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/stocks",
-                                    headers=headers, params=params)
-        if resp_data.status_code == 200:
-            result = resp_data.json()
-            df_reminders = pd.DataFrame(result)
-            df_reminders = df_reminders.rename(columns={
-                "techSize": "Размер",
-                "supplierArticle": "Артикул продавца",
-                "nmId": "Артикул WB"
-                })
-            df_reminders.to_csv(uploaddir_today / f"{str(date.today())}_Остатки.csv", sep=';', index=False)
-    except Exception as e:
-        logger.error(f"Ошибка получения Остатков:{e}")
 
-
-# Остатки fbs
-def getStockReminders_fbs(headers):
-    # Считываем df со списком товаров
-    df_products = pd.read_csv(uploaddir_today / f"{str(date.today())}_Товары.csv", sep=';')
-    # Получаем склады продавца
-    resp_data_seller_warehouses = requests.get("https://marketplace-api.wildberries.ru/api/v3/warehouses", headers=headers).json()
-    df_seller_warehouses = pd.DataFrame(resp_data_seller_warehouses)
-    # Пустой df, в который будем добавлять остатки
-    df_reminders_fbs = pd.DataFrame(columns=['sku', 'amount'])
-    # Переводим баркоды в список
-    df_products['barcode_list'] = df_products['barcode'].apply(
-        lambda x: [str(item.strip()) for item in x.split(';')] if isinstance(x, str) else x
+    logger.info(
+        "Загрузка остатков WB (max_retries={}, retry_delay={})",
+        max_retries, retry_delay
     )
-    # Диапазоны выгрузок (с шагом 1000 до кол-ва товаров)
-    step = 1000
-    df_products['chunks'] = df_products.index.map(lambda x: int(x/step) + 1)
-    logger.info("Uploading fbs reminders")
-    for i in range(df_seller_warehouses.shape[0]):
-        for chunk in df_products['chunks'].unique():
-            sku_list = df_products.loc[df_products['chunks'] == chunk, 'last_barcode'].to_list()
-            sku_list_string = [str(elem) for elem in sku_list]
-            params_fbs_stocks = {# "warehouse_id": warehouse_id,
-                                "skus": sku_list_string
-                                }
-            resp_data_fbs_stocks = requests.post(f"https://marketplace-api.wildberries.ru/api/v3/stocks/{df_seller_warehouses['id'][i]}", headers=headers, json=params_fbs_stocks).json()
-            tmp_df = pd.DataFrame(resp_data_fbs_stocks['stocks'])
-            df_reminders_fbs = pd.concat([df_reminders_fbs, tmp_df])
-            df_reminders_fbs['warehouseName'] = df_seller_warehouses['name'][i]
-    # Пересоздаем индекс после concat
-    df_reminders_fbs = df_reminders_fbs.reset_index(drop=True)
-    # Переименовываем колонку с баркодом
-    df_reminders_fbs = df_reminders_fbs.rename(columns={'sku': 'last_barcode'})
-    # Переводим остатки и баркод в число
-    for col in ['amount', 'last_barcode']:
-        df_reminders_fbs[col] = df_reminders_fbs[col].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        df_reminders_fbs[col] = df_reminders_fbs[col].fillna(0)
-    # По баркоду получаем имя и размер товара
-    df_reminders_fbs = df_reminders_fbs.merge(df_products[['Артикул продавца', 'Размер', 'last_barcode']],
-                                     how='left',
-                                     on='last_barcode')
-    # Сохраняем файл
-    df_reminders_fbs.to_csv(uploaddir_today / f"{str(date.today())}_Остатки_fbs.csv", sep=';', index=False)
+
+    attempt = 0
+    response = None
+
+    while attempt < max_retries:
+        attempt += 1
+        try:
+            logger.debug("Отправка запроса к WB (остатки), попытка {} из {}", attempt, max_retries)
+            response = requests.get(
+                stock_rem_endpoint,
+                headers=headers,
+                params=params,
+                timeout=30,
+            )
+        except RequestException as exc:
+            logger.error(
+                "Сетевая ошибка при запросе остатков WB (попытка {} из {}): {}",
+                attempt, max_retries, exc
+            )
+            if attempt >= max_retries:
+                raise
+            logger.info("Ожидание {} секунд перед повторной попыткой...", retry_delay)
+            time.sleep(retry_delay)
+            continue
+
+        if response.status_code == 200:
+            logger.debug("Успешный ответ WB по остаткам (статус 200)")
+            break
+
+        if response.status_code == 429 and attempt < max_retries:
+            logger.warning(
+                "Получен статус 429 Too Many Requests при запросе остатков "
+                "(попытка {} из {}). Ожидание {} секунд перед повтором...",
+                attempt, max_retries, retry_delay
+            )
+            time.sleep(retry_delay)
+            continue
+
+        logger.error(
+            "Неожиданный статус ответа WB по остаткам: {}. Тело ответа: {}",
+            response.status_code,
+            response.text[:1000],
+        )
+        response.raise_for_status()
+
+    if response is None or response.status_code != 200:
+        raise RuntimeError(
+            f"Не удалось получить остатки WB после {max_retries} попыток. "
+            f"Последний статус: {getattr(response, 'status_code', 'нет ответа')}"
+        )
+
+    # Разбор JSON
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error(
+            "Ошибка парсинга JSON от WB (остатки): {}. Тело ответа: {}",
+            exc,
+            response.text[:1000],
+        )
+        raise
+
+    # Формирование DataFrame
+    df_reminders = pd.DataFrame(data)
+    if df_reminders.empty:
+        logger.warning("WB вернул пустой список остатков.")
+    else:
+        rename_map = {
+            "techSize": "Размер",
+            "supplierArticle": "Артикул продавца",
+            "nmId": "Артикул WB",
+        }
+        df_reminders = df_reminders.rename(columns=rename_map)
+
+    # Сохранение в файл
+    if to_save:
+        reminders_file = uploaddir_today / f"{date.today()}_Остатки.csv"
+        try:
+            df_reminders.to_csv(reminders_file, sep=";", encoding="utf-8-sig", index=False)
+            logger.info("Файл с остатками сохранён: {}", reminders_file)
+        except Exception as exc:
+            logger.error("Не удалось сохранить файл с остатками {}: {}", reminders_file, exc)
+            raise
+
+    return df_reminders
+
+# Остатки FBS
+def getStockReminders_fbs(
+    headers: dict,
+    to_save: bool = True,
+    chunk_size: int = 1000,
+    max_retries: int = 3,
+    retry_delay: int = 65,
+):
+    """
+    Остатки FBS по складам WB.
+
+    ОСОБЕННОСТИ:
+    1. В запрос передаётся список chrtID (а не баркодов).
+    2. Объединение остатков с товарами происходит по колонке `chrtID`.
+
+    Ожидается, что в файле товаров есть колонка `chrtID`.
+    """
+
+    def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
+        """Вспомогательная функция для запросов с ретраями."""
+        attempt = 0
+        while attempt < max_retries:
+            attempt += 1
+            try:
+                logger.debug(
+                    "HTTP {} {} (попытка {}/{})",
+                    method.upper(),
+                    url,
+                    attempt,
+                    max_retries,
+                )
+                resp = requests.request(method=method, url=url, timeout=30, **kwargs)
+            except RequestException as exc:
+                logger.error(
+                    "Сетевая ошибка при запросе {} {} (попытка {}/{}) : {}",
+                    method.upper(),
+                    url,
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+                if attempt >= max_retries:
+                    raise
+                logger.info(
+                    "Ожидание {} секунд перед повторной попыткой...",
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
+                continue
+
+            if resp.status_code == 200:
+                return resp
+
+            if resp.status_code == 429 and attempt < max_retries:
+                logger.warning(
+                    "Получен статус 429 Too Many Requests при запросе {} {} "
+                    "(попытка {}/{}). Ожидание {} секунд перед повтором...",
+                    method.upper(),
+                    url,
+                    attempt,
+                    max_retries,
+                    retry_delay,
+                )
+                time.sleep(retry_delay)
+                continue
+
+            logger.error(
+                "Неожиданный статус ответа {} {}: {}. Тело ответа: {}",
+                method.upper(),
+                url,
+                resp.status_code,
+                resp.text[:1000],
+            )
+            resp.raise_for_status()
+
+        raise RuntimeError(
+            "Не удалось выполнить запрос {} {} после {} попыток.".format(
+                method.upper(), url, max_retries
+            )
+        )
+
+    # URL для запросов
+    WB_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
+    WB_STOCKS_FBS_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks"
+    # 1. Читаем список товаров
+    products_file = uploaddir_today / f"{date.today()}_Товары.csv"
+    logger.info("Загрузка списка товаров из файла: {}", products_file)
+    try:
+        df_products = pd.read_csv(products_file, sep=";")
+    except Exception as exc:
+        logger.error("Не удалось прочитать файл товаров {}: {}", products_file, exc)
+        raise
+
+    if "chrtID" not in df_products.columns:
+        raise ValueError("В файле товаров отсутствует колонка 'chrtID'.")
+
+    df_products = df_products[df_products["chrtID"].notna()].copy()
+    if df_products.empty:
+        logger.warning(
+            "Список товаров пуст или не содержит chrtID. Возвращаю пустой DataFrame."
+        )
+        return pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+
+    df_products["chrtID"] = df_products["chrtID"].astype(str)
+    df_products = df_products.reset_index(drop=True)
+    df_products["chunk"] = df_products.index // chunk_size
+
+    logger.info(
+        "Всего товаров: {}, размер чанка: {}, всего чанков: {}",
+        len(df_products),
+        chunk_size,
+        df_products["chunk"].nunique(),
+    )
+
+    # 2. Получаем склады продавца
+    logger.info("Загрузка складов продавца (FBS)...")
+    resp_warehouses = _request_with_retry("get", WB_WAREHOUSES_URL, headers=headers)
+    try:
+        warehouses_data = resp_warehouses.json()
+    except ValueError as exc:
+        logger.error(
+            "Ошибка парсинга JSON по складам FBS: {}. Ответ: {}",
+            exc,
+            resp_warehouses.text[:1000],
+        )
+        raise
+
+    df_seller_warehouses = pd.DataFrame(warehouses_data)
+    if df_seller_warehouses.empty:
+        logger.warning("Список складов продавца пуст. Возвращаю пустой DataFrame.")
+        return pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+
+    if "id" not in df_seller_warehouses.columns or "name" not in df_seller_warehouses.columns:
+        raise ValueError(
+            "В ответе по складам нет ожидаемых колонок 'id' и 'name'. "
+            "Колонки: {}".format(list(df_seller_warehouses.columns))
+        )
+
+    logger.info(
+        "Найдено складов FBS: {} ({})",
+        df_seller_warehouses.shape[0],
+        ", ".join(map(str, df_seller_warehouses["name"].tolist())),
+    )
+
+    # 3. Запрашиваем остатки по всем складам и чанкам chrtID
+    logger.info("Загрузка FBS-остатков по chrtID...")
+    all_stocks = []
+
+    for _, wh_row in df_seller_warehouses.iterrows():
+        warehouse_id = wh_row["id"]
+        warehouse_name = wh_row["name"]
+
+        logger.info("Обработка склада '{}' (id={})...", warehouse_name, warehouse_id)
+
+        for chunk_id, chunk_df in df_products.groupby("chunk"):
+            chrt_list = chunk_df["chrtID"].tolist()
+            payload = {"skus": chrt_list}
+
+            url = f"{WB_STOCKS_FBS_URL}/{warehouse_id}"
+            logger.debug(
+                "Запрос остатков FBS: склад={}, chunk={}, кол-во chrtID={}",
+                warehouse_name,
+                chunk_id,
+                len(chrt_list),
+            )
+
+            resp_stocks = _request_with_retry("post", url, headers=headers, json=payload)
+            try:
+                stocks_data = resp_stocks.json()
+            except ValueError as exc:
+                logger.error(
+                    "Ошибка парсинга JSON по остаткам FBS (склад {}): {}. Ответ: {}",
+                    warehouse_name,
+                    exc,
+                    resp_stocks.text[:1000],
+                )
+                raise
+
+            stocks_list = stocks_data.get("stocks", [])
+            if not stocks_list:
+                logger.debug(
+                    "Пустые остатки для склада {}, chunk={}",
+                    warehouse_name,
+                    chunk_id,
+                )
+                continue
+
+            tmp_df = pd.DataFrame(stocks_list)
+            if tmp_df.empty:
+                continue
+
+            tmp_df["warehouseId"] = warehouse_id
+            tmp_df["warehouseName"] = warehouse_name
+            all_stocks.append(tmp_df)
+
+    if not all_stocks:
+        logger.warning("WB вернул пустые остатки FBS по всем складам.")
+        df_reminders_fbs = pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+    else:
+        df_reminders_fbs = pd.concat(all_stocks, ignore_index=True)
+
+    # 4. Приведение типов и объединение с товарами по chrtID
+    if "sku" not in df_reminders_fbs.columns:
+        logger.warning(
+            "В ответе по остаткам FBS нет колонки 'sku'. Колонки: {}",
+            list(df_reminders_fbs.columns),
+        )
+    else:
+        df_reminders_fbs = df_reminders_fbs.rename(columns={"sku": "chrtID"})
+
+    for col in ["amount", "chrtID"]:
+        if col in df_reminders_fbs.columns:
+            df_reminders_fbs[col] = pd.to_numeric(df_reminders_fbs[col], errors="coerce").fillna(0)
+
+    if "chrtID" in df_reminders_fbs.columns:
+        df_reminders_fbs = df_reminders_fbs.merge(
+            df_products[["Артикул продавца", "Размер", "chrtID"]],
+            how="left",
+            on="chrtID",
+        )
+    else:
+        logger.warning(
+            "В остатках отсутствует колонка 'chrtID', объединение с товарами не выполнено."
+        )
+
+    # 5. Сохранение
+    reminders_fbs_file = uploaddir_today / f"{date.today()}_Остатки_fbs.csv"
+    if to_save:
+        try:
+            df_reminders_fbs.to_csv(reminders_fbs_file, sep=";", encoding="utf-8-sig", index=False)
+            logger.info("Файл с остатками FBS сохранён: {}", reminders_fbs_file)
+        except Exception as exc:
+            logger.error(
+                "Не удалось сохранить файл с остатками FBS {}: {}",
+                reminders_fbs_file,
+                exc,
+            )
+            raise
+
+    return df_reminders_fbs
+
 
 # Воронка продаж
 def getSalesCrater(headers, date_start, date_end):
@@ -536,51 +1013,23 @@ def getSalesCrater(headers, date_start, date_end):
         tmp_df = pd.DataFrame(resp_data['data']['cards'])
 
 
-# Поставки
-def get_supply_orders_WB(headers, date_start, date_end):
-    params = {
-        "dateFrom": date_start,
-        # "flag": 0
-    }
-    logger.info("Uploading supply orders")
-    resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/incomes",
-                             headers=headers, params=params)
-    # Если ошибка, что много запросов, ждем 1 минуту, потом пробуем снова
-    if resp_data.status_code == 429:
-        logger.info("Waiting 1 minute for next attempt")
-        time.sleep(65)
-        resp_data = requests.get("https://statistics-api.wildberries.ru/api/v1/supplier/incomes",
-                                 headers=headers, params=params)
-    if resp_data.status_code == 200:
-        result = resp_data.json()
-        # Если были поставки
-        if len(result) > 0:
-            df_supplies = pd.DataFrame(result)
-            df_supplies = df_supplies.rename(columns={
-                "techSize": "Размер",
-                "supplierArticle": "Артикул продавца",
-                "nmId": "Артикул WB"
-            })
-            df_supplies = df_supplies[(df_supplies['date'] >= date_start) & (df_supplies['date'] <= date_end)]
-        # Если нет, сохраняем пустой df
-        else:
-            df_supplies = pd.DataFrame(columns=[
-                'Артикул продавца',
-                'Размер',
-                'supplies'
-            ])
-        df_supplies.to_csv(uploaddir_today / f"{str(date.today())}_Поставки.csv", sep=';', index=False)
-    else:
-        logger.error(f"Ошибка получения поставок")
-
+# Поставки v2
 def get_supply_orders_WB_v2(
     headers,
     status_ids=[2, 3, 4],
     filter_by='date',  # 'date' (по умолчанию) или 'status'
+    status_ids_map = {
+        1: "Не запланировано",
+        2: "Запланировано",
+        3: "Отгрузка разрешена",
+        4: "Идёт приёмка",
+        5: "Принято",
+        6: "Отгружено на воротах"
+    },
+    to_save=True,
 ):
     """
     Получить поставки Wildberries с фильтрацией по дате или статусу.
-
     :param headers: dict — заголовки для API Wildberries
     :param date_start: str|None — дата начала фильтра (ГГГГ-ММ-ДД)
     :param date_end: str|None — дата конца фильтра (ГГГГ-ММ-ДД)
@@ -593,7 +1042,6 @@ def get_supply_orders_WB_v2(
     limit = 1000
     offset = 0
     all_supplies = []
-
     # df для сохранения, если не было заявок на поставку
     df_supplies_template = pd.DataFrame(columns=[
         "Артикул WB", "Артикул продавца", "Размер", "Склад",
@@ -601,11 +1049,9 @@ def get_supply_orders_WB_v2(
     ])
     output_path = uploaddir_today / f"{str(date.today())}_Поставки.csv"
 
-
     # --- Установка дат по умолчанию ---
     from_date = str(date.today())
     logger.info(f"Фильтрация заявок по: {filter_by}")
-
     # --- Формирование payload в зависимости от фильтрации ---
     if filter_by == 'date':
         payload_template = {
@@ -626,12 +1072,10 @@ def get_supply_orders_WB_v2(
     else:
         logger.error("Некорректное значение filter_by! Используйте 'date' или 'status'")
         return pd.DataFrame()
-
     logger.info(
         f"Начинаем загрузку заявок: фильтр по {filter_by}."
         # f"Статусы: {status_ids}"
     )
-
     while True:
         payload = payload_template.copy()
         payload["offset"] = offset
@@ -640,7 +1084,6 @@ def get_supply_orders_WB_v2(
         except Exception as e:
             logger.error(f"Ошибка соединения: {e}")
             break
-
         if response.status_code == 200:
             supplies = response.json()
             if not supplies:
@@ -657,18 +1100,16 @@ def get_supply_orders_WB_v2(
         else:
             logger.error(f"Ошибка получения списка заявок: {response.status_code} {response.text}")
             break
-
     df_supplies = pd.DataFrame(all_supplies)
-
     # Если нашлись заявки на поставку, начинаем выгрузку инфы по ним
     if not df_supplies.empty:
         # --- Получаем сведения о складах и товарах в заявках ---
         all_items = []
         for idx, row in df_supplies.iterrows():
             supply_id = row["supplyID"]
-            status_name = row.get("statusName", "")
+            status_id = row.get("statusID", "")
+            status_name = status_ids_map.get(status_id, f"Неизвестный статус {status_id}")
             logger.info(f"Выгрузка данных по заявке {supply_id}, статус заявки: {status_name}")
-
             # --- Получаем название склада по supplyID ---
             supply_url = f"{base_url}/{supply_id}"
             attempts = 0
@@ -689,7 +1130,6 @@ def get_supply_orders_WB_v2(
                 logger.error(f"Не получилось получить склад для {supply_id}")
                 continue
             time.sleep(2.1)
-
             # --- Получаем товары по заявке ---
             goods_url = f"{base_url}/{supply_id}/goods"
             attempts = 0
@@ -718,7 +1158,6 @@ def get_supply_orders_WB_v2(
                     logger.error(f"Ошибка {r.status_code} на товары {supply_id}: {r.text}")
                     break
             time.sleep(2.1)
-
         # --- Объединение результатов в единый датафрейм ---
         if all_items:
             df_items = pd.concat(all_items, ignore_index=True)
@@ -731,12 +1170,17 @@ def get_supply_orders_WB_v2(
         else:
             df_items = df_supplies_template.copy()
 
-        df_items.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
-    # Если заявки на поставку не нашлись, сохраняем пустой df
+        # Сохранение и возврат результата
+        if to_save:
+            df_items.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
+        return df_items
+
+    # Если заявки на поставку не нашлись, сохраняем/возвращаем пустой df
     else:
         logger.info("Нет заявок по заданным параметрам.")
-        df_supplies_template.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
-
+        if to_save:
+            df_supplies_template.to_csv(output_path, sep=";", index=False, encoding="utf-8-sig")
+        return df_supplies_template
 
 # Поставки fbs
 def get_supply_orders_WB_fbs(headers):
@@ -790,27 +1234,24 @@ if __name__ == '__main__':
         # start_date_str = '2025-07-12T23:59:59'
         # end_date_str = '2025-06-13T00:00:00'
     )
-    # date_end = '2025-07-09T23:59:59'
-    # date_start = '2025-06-10T00:00:00'
+
     logger.info(f"Uploading files for client {client_name} for dates {date_start} - {date_end}")
     save_dates_to_csv(date_start, date_end)
-    # Товары, не находящиеся в корзине
-    # df_products = getWBProduct(headers, type_products='not_from_recycle')
-    # Товары из корзины
-    # getWBProduct(headers, type_products='from_recycle')
-    # Цены
-    # get_prices_WB(headers, df_products)
+
+
     df_products = get_wb_product(headers, to_save=True)
+
     # Заказы
-    getOrdersWB(headers, date_start, date_end)
+    df_orders = getOrdersWB(headers, date_start, date_end)
     # Продажи и возвраты
-    getSalesWB(headers, date_start, date_end)
+    df_sales = getSalesWB(headers, date_start, date_end)
     # Остатки
-    getStockRemindersWB(headers, date_start, date_end)
+    df_reminders = getStockRemindersWB(headers, date_start, date_end)
     # Остатки fbs
-    getStockReminders_fbs(headers)
+    df_reminders_fbs = getStockReminders_fbs(headers)
+
     # Поставки
-    get_supply_orders_WB_v2(headers)
+    df_supply_items = get_supply_orders_WB_v2(headers)
     # Поставки fbs
     get_supply_orders_WB_fbs(headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
