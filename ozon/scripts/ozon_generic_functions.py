@@ -42,7 +42,15 @@ def get_orders(headers, date_start, date_end):
     df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
 
     # Объединяем два отчета в один
-    common_columns = ['Артикул', 'Название товара', 'OZON id', 'Статус', 'Принят в обработку', 'Сумма отправления']
+    common_columns = [
+        'Артикул',
+        'Название товара',
+        'OZON id', 'Статус',
+        'Принят в обработку',
+        'Сумма отправления',
+        'Номер заказа',
+        'Схема доставки',
+    ]
 
     # df_orders_fbo, df_orders_fbs = getOrders_v2(headers, date_start, date_end, to_save=False)
     # # Объединяем два отчета в один
