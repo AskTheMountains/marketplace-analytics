@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 from io import BytesIO
+from urllib.parse import urlparse
 from xlsx2csv import Xlsx2csv
 import requests
 # from loguru import logger
@@ -197,8 +198,10 @@ def getOzonProduct(headers, to_save=True):
     logger.info('Отчет по товарам готов, загружаем файл')
 
     # Определяем тип файла по расширению
-    file_extension = os.path.splitext(file_url)[-1].lower()
-
+    # file_extension = os.path.splitext(file_url)[-1].lower()
+    parsed = urlparse(file_url)
+    _, file_extension = os.path.splitext(parsed.path)
+    file_extension = file_extension.lower()
     # Скачиваем файл отчета
     r = requests.get(file_url, stream=True)
     if r.status_code == 200:
@@ -1959,7 +1962,12 @@ def uploadTransactionReport(headers, date_start, date_end):
     dt_end = pd.to_datetime(date_end)
     period_days = (dt_end - dt_start).days
 
-    if period_days <= 31:
+    if period_days >= 29:
+        # Дробим на месяцы
+        logger.info(f"Период больше ({period_days} дней). Разбиваем на месячные интервалы.")
+        date_range_df = generate_monthly_intervals(date_start, date_end)
+        logger.info(f"Сгенерировано {len(date_range_df)} месячных интервалов для выгрузки.")
+    else:
         # Один интервал на весь указанный диапазон
         date_range_df = pd.DataFrame([{
             'date_start': dt_start.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
@@ -1967,9 +1975,6 @@ def uploadTransactionReport(headers, date_start, date_end):
             'dt_start': dt_start,
             'dt_end': dt_end
         }])
-    else:
-        # Дробим на месяцы
-        date_range_df = generate_monthly_intervals(date_start, date_end)
 
     logger.info(f"Выгрузка транзакций с {date_start} по {date_end} начата.")
 
@@ -3631,21 +3636,16 @@ def get_supply_orders_details(
 ):
     """
     Получает DataFrame с деталями по заявкам на поставку через Seller API Ozon.
-
     Параметры:
     ----------
     df : pd.DataFrame
         DataFrame с колонкой 'order_id'.
-
     headers : dict
         Заголовки для API.
-
     batch_size : int, default=100
         Размер блока запросов к API.
-
     method_url : str, default="/v3/supply-order/get"
         URL метода Ozon Seller API.
-
     Возвращает:
     -----------
     pd.DataFrame
@@ -3655,7 +3655,6 @@ def get_supply_orders_details(
     supply_info_url = f'{ozon_seller_api_url}/{method_url}'
     order_ids = df_supply_order_list["order_id"].tolist()
     orders_details = []
-
     logger.info(f"Запросим детали по {len(order_ids)} заявкам (batch_size={batch_size})")
 
     for i in range(0, len(order_ids), batch_size):
@@ -3665,10 +3664,11 @@ def get_supply_orders_details(
         if response.status_code != 200:
             logger.error(f"Ошибка API {supply_info_url}: {response.status_code} — {response.text}")
             continue
+
         result = response.json()
         orders = result.get("orders", [])
         if not orders:
-            logger.warning(f"В ответе пустой список 'orders'.")
+            logger.warning("В ответе пустой список 'orders'.")
         orders_details.extend(orders)
 
     # Обработка и вытаскивание нужных полей в итоговый список
@@ -3676,17 +3676,35 @@ def get_supply_orders_details(
     for order in orders_details:
         order_id = order.get("order_id")
         order_number = order.get("order_number")
-        drop = order.get("drop_off_warehouse", {})
+        state = order.get("state")
+
+        drop = order.get("drop_off_warehouse", {}) or {}
         drop_id = drop.get("warehouse_id")
         drop_name = drop.get("name")
+
         supplies = order.get("supplies", [])
         if supplies:
             for supply in supplies:
                 bundle_id = supply.get("bundle_id")
                 supply_id = supply.get("supply_id")
-                storage = supply.get("storage_warehouse", {})
-                storage_id = storage.get("warehouse_id")
-                storage_name = storage.get("name")
+
+                # Берём storage_warehouse "как есть", без {} по умолчанию,
+                # чтобы различать отсутствие ключа и пустой словарь.
+                storage = supply.get("storage_warehouse", None)
+
+                if storage is None:
+                    # storage_warehouse нет или он равен None — логируем и подставляем dropoff-склад
+                    logger.warning(
+                        f"Для order_id={order_id}, supply_id={supply_id}, state={state} "
+                        f"отсутствует поле 'storage_warehouse' или оно равно None. "
+                        f"Используем данные drop_off_warehouse."
+                    )
+                    storage_id = drop_id
+                    storage_name = drop_name
+                else:
+                    storage_id = storage.get("warehouse_id")
+                    storage_name = storage.get("name")
+
                 extracted_rows.append({
                     "order_id": order_id,
                     "order_number": order_number,
