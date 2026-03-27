@@ -3,6 +3,7 @@
 import argparse
 import glob
 import os
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -273,7 +274,8 @@ def add_new_columns(df_realization_report_renamed):
         'Тип платежа за Эквайринг/Комиссии за организацию платежей',
         'Вознаграждение с продаж до вычета услуг поверенного, без НДС',
         'Сумма, удержанная за начисленные баллы программы лояльности',
-        'Компенсация скидки по программе лояльности'
+        'Компенсация скидки по программе лояльности',
+        'Разовое изменение срока перечисления денежных средств',
     ]
     for col in variable_api_columns:
         if col not in df_realization_report_new_columns.columns:
@@ -400,7 +402,8 @@ def add_new_columns(df_realization_report_renamed):
         'Стоимость платной приёмки',
         'Компенсация скидки по программе лояльности',
         'Штрафы',
-        'Доплаты'
+        'Доплаты',
+        'Разовое изменение срока перечисления денежных средств',
     ]
 
     # Итоговая колонка с прочими расходами
@@ -1336,29 +1339,41 @@ def calc_paid_acceptance_costs(
     return result_paid_acceptance
 
 
-# Функция получения дат расходов по ВБ Продвижению
+# Функция получения дат расходов по ВБ / WB Продвижению
 def get_promotion_dates(df_realization_report_date_filtered):
-    # Ищем даты расходов по ВБ Продвижению
+    # Регулярка для строк вида:
+    # "Оказание услуг «ВБ.Продвижение»"
+    # "Оказание услуг «ВБ Продвижение», документ №123"
+    # "Оказание услуг «WB Продвижение», документ №123"
+    promo_regex = re.compile(
+        r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
+        flags=re.IGNORECASE
+    )
+
+    # Фильтр по столбцу "Обоснование штрафов и доплат"
+    mask = (
+        df_realization_report_date_filtered['Обоснование штрафов и доплат']
+        .astype(str)  # на случай NaN
+        .str.strip()
+        .str.contains(promo_regex, regex=True, na=False)
+    )
+
     promotion_dates = df_realization_report_date_filtered.loc[
-        df_realization_report_date_filtered['Обоснование штрафов и доплат'].isin([
-            'Оказание услуг «ВБ.Продвижение»',
-            'Оказание услуг «WB Продвижение»'
-            ]),
+        mask,
         ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Итого руб']
     ]
+
     if not promotion_dates.empty:
-        # Переводим дату в нужный формат для выгрузки по апи рекламы
+        # Даты для API рекламы
         date_start_promotion = (
-            pd
-            .to_datetime(min(promotion_dates['Дата начала отчётного периода']))
-            .strftime('%Y-%m-%d')
+            pd.to_datetime(promotion_dates['Дата начала отчётного периода'].min())
+              .strftime('%Y-%m-%d')
         )
         date_end_promotion = (
-            pd
-            .to_datetime(max(promotion_dates['Дата конца отчётного периода']))
-            .strftime('%Y-%m-%d')
+            pd.to_datetime(promotion_dates['Дата конца отчётного периода'].max())
+              .strftime('%Y-%m-%d')
         )
-        # Переводим дату в нужный формат для выгрузки заказов
+        # Даты для заказов
         date_start_orders = date_start_promotion + 'T00:00:00.000Z'
         date_end_orders = date_end_promotion + 'T23:59:59.000Z'
     else:
@@ -1367,16 +1382,12 @@ def get_promotion_dates(df_realization_report_date_filtered):
         date_start_orders = None
         date_end_orders = None
 
-    # Формируем словарь с резульататми
-    promotion_dates = {
+    return {
         'date_start_promotion': date_start_promotion,
         'date_end_promotion': date_end_promotion,
         'date_start_orders': date_start_orders,
         'date_end_orders': date_end_orders,
     }
-
-    return promotion_dates
-
 
 # Функция обработки датафрейма со статистикой РК
 def process_company_stats_df(df_companies_stats):
@@ -1891,10 +1902,10 @@ def calc_other_costs_v3(result_sku_costs, df_sku_sizes_costs_final):
             'Платная приемка (Отчет реализации)',
             'Стоимость платной приемки',
         ],
-        'Расходы по рекламным кампаниям': [
-            'Оказание услуг «ВБ.Продвижение»',
-            'Оказание услуг «WB Продвижение»',
-        ]
+        # 'Расходы по рекламным кампаниям': [
+        #     'Оказание услуг «ВБ.Продвижение»',
+        #     'Оказание услуг «WB Продвижение»',
+        # ]
     }
     # Для удаления составим индивидуальный exclude_costs_list_conditional:
     exclude_condition_mask = pd.Series(False, index=df_other_costs_by_operation.index)
@@ -2113,17 +2124,36 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     #     position='НДС с вознаграждения WB'
     # )
 
-    # Считаем все расходы на рекламные кампании
-    promotion_columns = [
-        'Расходы по рекламным кампаниям',
+    # 1. Базовый список (как был)
+    base_promotion_columns = [
+        # 'Расходы по рекламным кампаниям',
         'Списания за отзывы',
         'Витрина Магазина',
         'Оказание услуг «ВБ.Медиа»',
         'Предоставление услуг по подписке «Джем»',
         'Стоимость участия в программе лояльности',
     ]
-    # Находим колонки по рекламе, которые реально есть в отчете реализации
-    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
+
+    # 2. regex для колонок "Оказание услуг ... Продвижение, документ №..."
+    promo_regex = re.compile(
+        r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
+        flags=re.IGNORECASE
+    )
+    # Все колонки df_final_costs, которые подходят под regex
+    regex_promo_columns = [
+        col for col in df_final_costs.columns
+        if promo_regex.search(col)
+    ]
+
+    # 3. Объединяем: явные + найденные по regex
+    all_promotion_columns = base_promotion_columns + regex_promo_columns
+
+    # 4. Фильтруем по фактически существующим колонкам
+    existing_promotion_columns = [
+        col for col in df_final_costs.columns
+        if col in all_promotion_columns
+    ]
+
     if existing_promotion_columns:
         df_final_costs['Затраты на рекламу руб'] = df_final_costs[existing_promotion_columns].sum(axis=1)
     else:
@@ -2178,7 +2208,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         # 'Платное хранение (отдельный отчет)',
         # 'Платная приемка (отдельный отчет)'
         'Приход денег на РС'
-        ] + promotion_columns
+        ] + existing_promotion_columns
     )
     columns_for_final_costs = ([
         'Стоимость логистики',
@@ -2240,7 +2270,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     )
     # У некоторых колонок с маржинальностью меняем знак по принципу:
     # там, где маржинальность в рублях > 0, знак "+  в ином случае "-"
-    for col in ['Маржинальность на ед. товара']:
+    for col in ['Маржинальность на ед. товара', 'Маржинальность %']:
         df_final_costs[col] = np.where(
             df_final_costs['Маржинальность руб'] < 0,
             (-1) * abs(df_final_costs[col]),
@@ -2264,7 +2294,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         df_final_costs[col] = df_final_costs[col].replace([-np.inf, np.inf], np.nan)
 
 
-    return df_final_costs, promotion_columns, columns_for_final_costs
+    return df_final_costs, existing_promotion_columns, columns_for_final_costs
 
 
 # Функция расчета сводной таблицы по всем расходам
@@ -2408,7 +2438,7 @@ def format_excel(
     date_report,
     client_name,
     df_final_costs,
-    promotion_columns,
+    existing_promotion_columns,
     columns_for_final_costs,
 ):
 
@@ -2463,7 +2493,7 @@ def format_excel(
             cell.border = Border(top=thin_border, bottom=thin_border, left=thin_border, right=thin_border)
 
     # Определяем, какие рекламные столбцы реально присутствуют в таблице
-    existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
+    # existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
 
     # Определяем все колонки, учитываемые в расходах (исключаем явно ненужные)
     cost_columns = [col for col in df_final_costs.columns if col in columns_for_final_costs]
@@ -2508,7 +2538,7 @@ def format_excel(
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
         cell_sales_for_percent = f"{col_map[sales_for_percent_col]}{row}"
         formula_percent_margin = (
-            f'=IFERROR({cell_marg_rub}/{cell_sales_for_percent} * 100, "")'
+            f'=IFERROR(ABS({cell_marg_rub}/{cell_sales_for_percent})*SIGN({cell_marg_rub}), "")'
         )
         final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
@@ -2665,8 +2695,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2026-01-01',
-        date_end='2026-01-31'
+        date_start = '2026-02-01',
+        date_end='2026-02-28'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
@@ -2772,7 +2802,7 @@ if __name__ == '__main__':
         result_other_costs
     )
     # Расчет итоговой колонки по затратам
-    df_final_costs, promotion_columns, columns_for_final_costs = calc_final_costs(
+    df_final_costs, existing_promotion_columns, columns_for_final_costs = calc_final_costs(
         df_all_costs_stats_with_catalog
     )
     # Считаем сводную по затратам
@@ -2798,7 +2828,7 @@ if __name__ == '__main__':
         date_report,
         client_name,
         df_final_costs,
-        promotion_columns,
+        existing_promotion_columns,
         columns_for_final_costs,
     )
     print(f"\033[32m\033[47mDone calculating Finance Report for Client {client_name}")
