@@ -443,7 +443,7 @@ class OzonActionsReport(ReportBase):
 
 class OzonCampaignsReport(ReportBase):
     report_name = "Отчет по рекламным кампаниям (Ozon)"
-    report_dir = "ozon/Clients/{client_name}/ClientRKSvod"
+    report_dir = "ozon/Clients/{client_name}/CampaignsReport"
 
     def default_params(self):
         return {
