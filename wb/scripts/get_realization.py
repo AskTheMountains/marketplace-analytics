@@ -303,8 +303,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2025-01-01',
-        date_end='2025-11-30'
+        date_start='2026-01-01',
+        date_end='2026-02-28'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
@@ -330,8 +330,9 @@ if __name__ == '__main__':
     print_realization_reports(df_sales_returns_wb)
 
     logger.info(
-        f"Отчет реализации WB по клиенту {client_name} в буфере обмена. "
+        f"Отчет реализации WB по клиенту "
+        f"{client_name} за даты {date_start} по {date_end} в буфере обмена. "
         "Скопируйте его в Excel"
     )
 
-# %%
+ # %%
