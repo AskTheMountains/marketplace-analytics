@@ -1,6 +1,4 @@
 # %%
-from importlib.util import module_from_spec
-import numpy as np
 import pandas as pd
 from pathlib import Path
 from openpyxl import load_workbook
@@ -22,12 +20,32 @@ df_products_ = (
 # %%
 path_to_file = Path(
     'd:\\artem\\Downloads\\'
-    '2026-02-02_Сводная_РК_Neva_Metall_Ozon.xlsx'
+    '2026-03-10_Сводная_РК_Water_Power_Ozon.xlsx'
 )
 sheet_name='Список товаров'
 df = pd.read_excel(path_to_file, sheet_name=sheet_name)
 wb = load_workbook(path_to_file)
 ws = wb[sheet_name]
+
+# Границы листа
+min_row = ws.min_row
+max_row = ws.max_row
+min_col = ws.min_column
+max_col = ws.max_column
+
+# Определяем стиль границ
+thin_border = Border(
+    left=Side(style='thin'),
+    right=Side(style='thin'),
+    top=Side(style='thin'),
+    bottom=Side(style='thin')
+)
+
+# Создаем границы
+for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            cell.border = thin_border
+
 
 # 1. Список допустимых имён колонок кампаний
 campaign_column_names = [
