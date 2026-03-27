@@ -465,52 +465,45 @@ def get_companies_costs_ids(df_finance_report):
 
 # Функция нахождения идентификаторов рекламных кампаний
 def get_companies_ids(df_finance_report, companies_costs_ids):
+    """
+    Возвращает df с колонками:
+    - Номер кампании
+    - Тип начисления
+    - Итого_из_отчета
 
-    # Выбираем затраты по рекламе, где есть кампании
-    # df_companies_costs = df_finance_report.loc[
-    #     (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
-    #     | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
-    #     ['Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
-    # ]
+    Для типа "Продвижение с оплатой за заказ" все строки
+    агрегируются в одну кампанию с Номер кампании = 'ORDERS'.
+    """
+    ORDERS_TYPE = "Продвижение с оплатой за заказ"
+
+    # Выбираем только строки с нужными id (рекламные расходы)
     df_companies_costs = df_finance_report.loc[
         df_finance_report['id'].isin(companies_costs_ids),
         ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
     ]
-    if df_companies_costs.shape[0] > 0:
-        # # Создаем столбец с номером кампании
-        # conditions = [
-        #     # Трафареты
-        #     df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
-        #     # Выводы в топ
-        #     df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
-        # ]
-        # choices = [
-        #     # Номер кампании для трафаретов
-        #     (df_companies_costs['Название товара']
-        #     .str.split('Заказ №').str[1]
-        #     .str.split('.').str[0]),
-        #     # Номер кампании для выводов в топ
-        #     df_companies_costs['ID начисления']
-        # ]
-        # df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
 
-        # Считаем расходы на каждую кампанию
+    if df_companies_costs.shape[0] > 0:
+        df_companies_costs = df_companies_costs.copy()
+
+        # Базово номер кампании = ID начисления
+        df_companies_costs['Номер кампании'] = df_companies_costs['ID начисления'].astype(str)
+
+        # Для "оплаты за заказ" собираем всё в одну виртуальную кампанию 'ORDERS'
+        mask_orders = df_companies_costs['Тип начисления'] == ORDERS_TYPE
+        df_companies_costs.loc[mask_orders, 'Номер кампании'] = 'ORDERS'
+
+        # Считаем расходы на каждую кампанию и тип начисления
         df_companies_costs_total = (
             df_companies_costs
-            .groupby(['ID начисления', 'Тип начисления'], as_index=False)
+            .groupby(['Номер кампании', 'Тип начисления'], as_index=False)
             .agg(
                 Итого_из_отчета=('Итого руб', 'sum')
             )
-            .rename(columns={
-                'ID начисления': 'Номер кампании'
-            })
-            # .reset_index()
         )
     else:
         df_companies_costs_total = pd.DataFrame()
 
     return df_companies_costs_total
-
 
 # Функция парсинга файлов со статистикой по кампаниям
 def parse_companies_files(current_report_dir, date_report):
@@ -519,122 +512,201 @@ def parse_companies_files(current_report_dir, date_report):
     # Директория, куда будем складывать обработанные файлы
     companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
 
-    # Получаем список csv файлов по кампаниям
+    # Префикс файлов отчёта по продвижению с оплатой за заказ
+    orders_report_prefix = "search_promo_all_skus_orders_report_"
+
+    # ==============================
+    # 1. ПАРСИМ ОБЫЧНЫЕ КАМПАНИИ (ПО ID)
+    # ==============================
+
     filenames_companies = {"path": []}
-    # Расширения файлов для поиска
     companies_stats_extensions = ['.csv', '.xlsx']
+
     # Осуществляем поиск файлов с заданным расширением
     for ext in companies_stats_extensions:
         for file in companies_stats_dir.glob(f'*{ext}'):
+            # Пропускаем файлы отчёта по продвижению с оплатой за заказ —
+            # у них нет ID кампании
+            if file.name.startswith(orders_report_prefix):
+                continue
             filenames_companies['path'].append(file)
-    # Считывание только имени файла
-    filenames_companies['file_name'] = [file.name for file in filenames_companies['path']]
-    # Размер файла
-    filenames_companies['file_size'] = [file.stat().st_size for file in filenames_companies['path']]
-    # Перевод в df
-    filenames_companies = pd.DataFrame(filenames_companies)
-    # Номер заказа
-    filenames_companies['company_id'] = filenames_companies['file_name'].str.split('_').str[0]
-    # Сортировка по размеру
-    filenames_companies = filenames_companies.sort_values(by='file_size', ascending=False, ignore_index=True)
 
-    # Обработка csv по статистике кампаний в цикле
-    for idx, row in filenames_companies.iterrows():
-        # Считываем csv
-        df_company = pd.read_csv(row['path'], sep=';', decimal=',', skiprows=1)
-        # Если по кампании есть расходы, начинаем их обрабатывать
-        if df_company.shape[0] >= 2:
-            # Определяем тип отчета (по первой колонке в отчете)
-            if df_company.columns[0] == 'Дата':
-                # Убираем строку Всего и Корректировка
-                df_company = df_company.loc[~df_company['Дата'].isin(['Всего', 'Корректировка']), :]
-                # Ozon ID = SKU в данном отчете
-                df_company = df_company.rename(columns={'Ozon ID': 'sku'})
-                # Переименовываем колонку с расходами для удобства
-                df_company = df_company.rename(columns={'Расход, ₽': 'Расходы'})
-                # Переименовываем колонку с названием товара
-                df_company = df_company.rename(columns={'Наименование': 'Наименование товара'})
-                # Выбираем нужные колонки
-                df_company = df_company.loc[:, ['Дата', 'sku', 'Наименование товара', 'Расходы']]
-                # Сохраняем обработанный файл
-                df_company.to_csv(
-                    companies_parsed_dir / f"{row['company_id']}.csv",
-                    sep=';',
-                    encoding='utf-8-sig',
-                    index=False
-                )
-            else:
-                # Убираем строку Всего и Корректировка
-                df_company = df_company.loc[~df_company['sku'].isin(['Всего', 'Корректировка']), :]
-                # Переименовываем колонку с расходами для удобства
-                df_company = df_company.rename(columns={'Расход, ₽, с НДС': 'Расходы'})
-                # Переименовываем колонку с названием товара
-                df_company = df_company.rename(columns={'Название товара': 'Наименование товара'})
-                # Выбираем нужные колонки
-                df_company = df_company.loc[:, ['sku', 'Наименование товара', 'Расходы']]
-                # Сохраняем обработанный файл
-                df_company.to_csv(
-                    companies_parsed_dir / f"{row['company_id']}.csv",
-                    sep=';',
-                    encoding='utf-8-sig',
-                    index=False
-                )
+    # Если файлов кампаний нет — логируем и переходим к отчёту по заказам
+    if not filenames_companies['path']:
+        logger.info(
+            f"В директории {companies_stats_dir} не найдено файлов статистики кампаний "
+            f"(исключая отчёты по оплате за заказ)"
+        )
+    else:
+        # Считывание только имени файла
+        filenames_companies['file_name'] = [file.name for file in filenames_companies['path']]
+        # Размер файла
+        filenames_companies['file_size'] = [file.stat().st_size for file in filenames_companies['path']]
+        # Перевод в df
+        filenames_companies = pd.DataFrame(filenames_companies)
+        # Номер кампании (берём всё до первого подчёркивания в имени файла)
+        filenames_companies['company_id'] = filenames_companies['file_name'].str.split('_').str[0]
+        # Сортировка по размеру (сначала более крупные)
+        filenames_companies = filenames_companies.sort_values(
+            by='file_size',
+            ascending=False,
+            ignore_index=True
+        )
 
+        # Обработка csv/xlsx по статистике кампаний в цикле
+        for idx, row in filenames_companies.iterrows():
+            # Считываем файл (первую строку с описанием пропускаем)
+            df_company = pd.read_csv(row['path'], sep=';', decimal=',', skiprows=1)
 
-# Функция расчета расходов по рекламным кампаниям
+            # Если в отчёте по кампании есть строки, начинаем их обрабатывать
+            if df_company.shape[0] >= 2:
+                # Определяем тип отчета (по имени первой колонки)
+                if df_company.columns[0] == 'Дата':
+                    # Убираем строку "Всего" и "Корректировка"
+                    df_company = df_company.loc[
+                        ~df_company['Дата'].isin(['Всего', 'Корректировка']),
+                        :
+                    ]
+                    # Ozon ID = SKU в данном отчете
+                    df_company = df_company.rename(columns={'Ozon ID': 'sku'})
+                    # Переименовываем колонку с расходами для удобства
+                    df_company = df_company.rename(columns={'Расход, ₽': 'Расходы'})
+                    # Переименовываем колонку с названием товара
+                    df_company = df_company.rename(columns={'Наименование': 'Наименование товара'})
+                    # Выбираем нужные колонки
+                    df_company = df_company.loc[:, ['Дата', 'sku', 'Наименование товара', 'Расходы']]
+                    # Сохраняем обработанный файл по ID кампании
+                    df_company.to_csv(
+                        companies_parsed_dir / f"{row['company_id']}.csv",
+                        sep=';',
+                        encoding='utf-8-sig',
+                        index=False
+                    )
+                else:
+                    # Убираем строку "Всего" и "Корректировка"
+                    df_company = df_company.loc[
+                        ~df_company['sku'].isin(['Всего', 'Корректировка']),
+                        :
+                    ]
+                    # Переименовываем колонку с расходами для удобства
+                    df_company = df_company.rename(columns={'Расход, ₽, с НДС': 'Расходы'})
+                    # Переименовываем колонку с названием товара
+                    df_company = df_company.rename(columns={'Название товара': 'Наименование товара'})
+                    # Выбираем нужные колонки
+                    df_company = df_company.loc[:, ['sku', 'Наименование товара', 'Расходы']]
+                    # Сохраняем обработанный файл по ID кампании
+                    df_company.to_csv(
+                        companies_parsed_dir / f"{row['company_id']}.csv",
+                        sep=';',
+                        encoding='utf-8-sig',
+                        index=False
+                    )
+
+    # ==============================
+    # 2. ПАРСИМ ОТЧЁТ ПО ПРОДВИЖЕНИЮ С ОПЛАТОЙ ЗА ЗАКАЗ
+    # ==============================
+
+    orders_files = list(companies_stats_dir.glob(f"{orders_report_prefix}*.csv"))
+    if not orders_files:
+        logger.info(
+            f"Отчёт по продвижению с оплатой за заказ "
+            f"({orders_report_prefix}*.csv) в директории {companies_stats_dir} не найден"
+        )
+        return
+
+    # Предполагаем один отчёт на период; если их несколько — берём первый по имени
+    orders_file = sorted(orders_files)[0]
+    logger.info(f"Найден отчёт по оплате за заказ: {orders_file.name}, начинаем парсинг")
+
+    # В первой строке файла — описание отчёта, во второй — заголовок, поэтому skiprows=1
+    df_orders = pd.read_csv(orders_file, sep=';', decimal=',', skiprows=1)
+
+    if df_orders.empty:
+        logger.warning(f"Отчёт по оплате за заказ пуст: {orders_file.name}")
+        return
+
+    # На всякий случай убираем строки "Всего" / "Корректировка", если они присутствуют в колонке 'Дата'
+    if 'Дата' in df_orders.columns:
+        df_orders = df_orders.loc[
+            ~df_orders['Дата'].isin(['Всего', 'Корректировка']),
+            :
+        ]
+
+    # Переименовываем колонки под общий формат:
+    # - SKU продвигаемого товара -> 'sku'
+    # - Название товара -> 'Наименование товара'
+    # - Расход, ₽ -> 'Расходы'
+    rename_map = {}
+    if 'SKU продвигаемого товара' in df_orders.columns:
+        rename_map['SKU продвигаемого товара'] = 'sku'
+    elif 'SKU' in df_orders.columns:
+        rename_map['SKU'] = 'sku'
+
+    if 'Название товара' in df_orders.columns:
+        rename_map['Название товара'] = 'Наименование товара'
+
+    if 'Расход, ₽' in df_orders.columns:
+        rename_map['Расход, ₽'] = 'Расходы'
+
+    df_orders = df_orders.rename(columns=rename_map)
+
+    # Оставляем только нужные для дальнейших расчётов колонки
+    needed_cols = [c for c in [
+        'Дата',
+        'ID заказа',
+        'Номер заказа',
+        'sku',
+        'Наименование товара',
+        'Расходы'
+    ] if c in df_orders.columns]
+
+    df_orders = df_orders[needed_cols]
+
+    # Сохраняем обработанный отчёт по оплате за заказ в отдельный файл
+    # (без ID кампании, т.к. его нет в этом отчёте)
+    orders_parsed_path = companies_parsed_dir / "orders_report.csv"
+    df_orders.to_csv(
+        orders_parsed_path,
+        sep=';',
+        encoding='utf-8-sig',
+        index=False
+    )
+
+    logger.info(
+        f"Обработанный отчёт по продвижению с оплатой за заказ сохранён в {orders_parsed_path}"
+    )
+
+# Функция расчета расходов по рекламным кампаниям (в т.ч. оплата за заказ)
 def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_ids):
-
     # df, куда будем помещать итоговый результат (разбивку расходов по SKU)
     df_result_companies_stats = pd.DataFrame()
-    # df с рекламными расходами из отчета ЛК
+    # df с рекламными расходами из отчета ЛК (агрегировано по Номер кампании + Тип начисления)
     df_companies_stats_from_report = pd.DataFrame()
-    # df с сравнением расходов по рекламе из АПИ и отчета ЛК
+    # df со сравнением расходов по рекламе из АПИ и отчета ЛК
     df_companies_api_report_stats = pd.DataFrame()
 
+    ORDERS_TYPE = "Продвижение с оплатой за заказ"
 
-    # Выбираем затраты по рекламе, где есть кампании
-    # df_companies_costs = df_finance_report.loc[
-    #     (df_finance_report['Название товара'].str.contains('Заказ №', na=False) )
-    #     | (df_finance_report['ID начисления'].str.match('^\d{8}$', na=False)),
-    #     ['id', 'Группа услуг', 'ID начисления', 'Тип начисления', 'Название товара', 'Итого руб']
-    # ]
-
-    # if df_companies_costs.shape[0] > 0:
-    #     # Создаем столбец с номером кампании
-    #     conditions = [
-    #         # Трафареты
-    #         df_companies_costs['Название товара'].str.contains('Заказ №', na=False),
-    #         # Выводы в топ
-    #         df_companies_costs['ID начисления'].str.match('^\d{8}$', na=False)
-    #     ]
-    #     choices = [
-    #         # Номер кампании для трафаретов
-    #         (df_companies_costs['Название товара']
-    #         .str.split('Заказ №').str[1]
-    #         .str.split('.').str[0]),
-    #         # Номер кампании для выводов в топ
-    #         df_companies_costs['ID начисления']
-    #     ]
-    #     df_companies_costs['Номер кампании'] = np.select(conditions, choices, default=np.nan)
-    #     companies_costs_ids = df_companies_costs['id'].to_list()
-
-    #     # Считаем расходы на каждую кампанию
-    #     df_companies_costs_total = (
-    #         df_companies_costs
-    #         .groupby(['Номер кампании', 'Тип начисления'])
-    #         .agg(
-    #             Итого_из_отчета=('Итого руб', 'sum')
-    #         )
-    #         .reset_index()
-    #     )
+    # Агрегированные расходы по кампаниям из финансового отчёта
     df_companies_costs_total = get_companies_ids(df_finance_report, companies_costs_ids)
+
     if df_companies_costs_total.shape[0] > 0:
-        # Помещаем расходы в df из начала функции
+        # Сохраняем копию для вывода/аналитики
         df_companies_stats_from_report = df_companies_costs_total.copy()
 
-        # Сопоставление номера заказа с расходами SKU из апи
+        # Разделяем на обычные кампании и "оплату за заказ"
+        df_regular_costs = df_companies_costs_total[
+            df_companies_costs_total['Тип начисления'] != ORDERS_TYPE
+        ].copy()
+        df_orders_costs = df_companies_costs_total[
+            df_companies_costs_total['Тип начисления'] == ORDERS_TYPE
+        ].copy()
+
+        # Сопоставление кампаний/заказов с расходами по SKU из API
         df_companies_api = pd.DataFrame()
-        for idx, row in df_companies_costs_total.iterrows():
+
+        # 1. Обычные кампании (по ID кампании)
+        for idx, row in df_regular_costs.iterrows():
             # Файл с данными по кампании
             company_file_path = (
                 current_report_dir
@@ -643,77 +715,127 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
             )
             # Если данный файл есть, начинаем считать расходы по данной кампании
             if company_file_path.exists():
-                # Считываем данные по данной кампании
                 df_company = pd.read_csv(company_file_path, sep=';')
-            # Если нет, считаем, что расходы по данной кампании были равны 0
             else:
                 df_company = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы'])
-                # Выводим предупреждение, что файла с расходами по данной кампании нет
-                logger.warning(f"Company file {row['Номер кампании']} has not been found")
+                logger.warning(
+                    f"Файл статистики по кампании {row['Номер кампании']} не найден "
+                    f"({company_file_path})"
+                )
+
             # Удаляем лишнюю колонку, если есть
             if 'Unnamed: 0' in df_company.columns:
                 df_company = df_company.drop(columns='Unnamed: 0')
-            # Считаем итоговые расходы по каждому SKU
-            tmp_df = df_company.groupby(['sku', 'Наименование товара']).agg(
-                Итого=('Расходы', 'sum')
-            ).reset_index()
-            # Добавляем столбцы с информацией о названии заказа
-            tmp_df['Номер кампании'] = row['Номер кампании']
-            tmp_df['Тип начисления'] = row['Тип начисления']
 
-            # Объединяем с предыдущей кампанией
-            df_companies_api = pd.concat([df_companies_api, tmp_df])
+            if not df_company.empty:
+                # Считаем итоговые расходы по каждому SKU
+                tmp_df = (
+                    df_company
+                    .groupby(['sku', 'Наименование товара'], as_index=False)
+                    .agg(Итого=('Расходы', 'sum'))
+                )
+                # Добавляем столбцы с информацией о кампании
+                tmp_df['Номер кампании'] = row['Номер кампании']
+                tmp_df['Тип начисления'] = row['Тип начисления']
+                # Объединяем с предыдущими кампаниями
+                df_companies_api = pd.concat([df_companies_api, tmp_df], ignore_index=True)
 
-        # Считаем затраты на каждый тип начисления на каждый SKU
-        df_companies_api_stats = (
-            df_companies_api
-            .groupby(['sku', 'Тип начисления'])
-            .agg(
-            Итого=('Итого', 'sum')
+        # 2. Продвижение с оплатой за заказ (нет ID кампании, используем orders_report.csv)
+        if not df_orders_costs.empty:
+            orders_parsed_path = (
+                current_report_dir
+                / f"{date_report}_Кампании_parsed"
+                / "orders_report.csv"
             )
-        .reset_index()
-        )
-        # Заменяем знак расходов с плюса на минус
-        df_companies_api_stats['Итого'] = np.where(
-            df_companies_api_stats['Итого'] > 0,
-            -abs(df_companies_api_stats['Итого']),
-            df_companies_api_stats['Итого']
-        )
-        # Переводим в длинный формат
-        df_companies_api_stats = (
-            pd.pivot_table(
-                df_companies_api_stats,
-                index=['sku'],
-                columns='Тип начисления',
-                values='Итого',
-                aggfunc='sum',
-                fill_value=0
-            )
-            .reset_index()
-        )
-        # Переименовываем колонку с SKU
-        df_companies_api_stats = df_companies_api_stats.rename(columns={'sku': 'SKU'})
-        # Убираем имя у index
-        df_companies_api_stats.index.name = None
-        # Помещаем итоговый результат в переменную из начала функции
-        df_result_companies_stats = df_companies_api_stats.copy()
+            if orders_parsed_path.exists():
+                df_orders = pd.read_csv(orders_parsed_path, sep=';')
 
-        # Считаем расходы по типам начисления из апи
-        df_companies_api_stats_by_operation = df_companies_api.groupby(['Номер кампании', 'Тип начисления']).agg(
-            Итого_из_апи=('Итого', 'sum')
-        ).reset_index()
-        # Заменяем знак расходов с плюса на минус
-        df_companies_api_stats_by_operation['Итого_из_апи'] = np.where(
-            df_companies_api_stats_by_operation['Итого_из_апи'] > 0,
-            -abs(df_companies_api_stats_by_operation['Итого_из_апи']),
-            df_companies_api_stats_by_operation['Итого_из_апи']
-        )
-        # Мерджим с расходами из отчета
-        df_companies_api_report_stats = df_companies_costs_total.merge(
-            df_companies_api_stats_by_operation,
-            on=['Номер кампании', 'Тип начисления'],
-            how='left'
-        )
+                # Удаляем лишнюю колонку, если есть
+                if 'Unnamed: 0' in df_orders.columns:
+                    df_orders = df_orders.drop(columns='Unnamed: 0')
+
+                if not df_orders.empty:
+                    # Считаем итоговые расходы по каждому SKU из отчёта по заказам
+                    # Ожидаем колонки: 'sku', 'Наименование товара', 'Расходы'
+                    tmp_orders = (
+                        df_orders
+                        .groupby(['sku', 'Наименование товара'], as_index=False)
+                        .agg(Итого=('Расходы', 'sum'))
+                    )
+                    # Добавляем виртуальный номер кампании 'ORDERS' и тип начисления
+                    tmp_orders['Номер кампании'] = 'ORDERS'
+                    tmp_orders['Тип начисления'] = ORDERS_TYPE
+
+                    df_companies_api = pd.concat(
+                        [df_companies_api, tmp_orders],
+                        ignore_index=True
+                    )
+            else:
+                logger.warning(
+                    f"Файл orders_report.csv с отчётом по оплате за заказ не найден по пути "
+                    f"{orders_parsed_path}"
+                )
+
+        if not df_companies_api.empty:
+            # Считаем затраты на каждый тип начисления на каждый SKU
+            df_companies_api_stats = (
+                df_companies_api
+                .groupby(['sku', 'Тип начисления'], as_index=False)
+                .agg(Итого=('Итого', 'sum'))
+            )
+
+            # Заменяем знак расходов с плюса на минус
+            df_companies_api_stats['Итого'] = np.where(
+                df_companies_api_stats['Итого'] > 0,
+                -abs(df_companies_api_stats['Итого']),
+                df_companies_api_stats['Итого']
+            )
+
+            # Переводим в широкий формат (по типам начисления)
+            df_companies_api_stats = (
+                pd.pivot_table(
+                    df_companies_api_stats,
+                    index=['sku'],
+                    columns='Тип начисления',
+                    values='Итого',
+                    aggfunc='sum',
+                    fill_value=0
+                )
+                .reset_index()
+            )
+
+            # Переименовываем колонку с SKU
+            df_companies_api_stats = df_companies_api_stats.rename(columns={'sku': 'SKU'})
+            # Убираем имя у index
+            df_companies_api_stats.index.name = None
+            # Помещаем итоговый результат в переменную из начала функции
+            df_result_companies_stats = df_companies_api_stats.copy()
+
+            # Считаем расходы по типам начисления и кампаниям из апи
+            df_companies_api_stats_by_operation = (
+                df_companies_api
+                .groupby(['Номер кампании', 'Тип начисления'], as_index=False)
+                .agg(Итого_из_апи=('Итого', 'sum'))
+            )
+
+            # Заменяем знак расходов с плюса на минус
+            df_companies_api_stats_by_operation['Итого_из_апи'] = np.where(
+                df_companies_api_stats_by_operation['Итого_из_апи'] > 0,
+                -abs(df_companies_api_stats_by_operation['Итого_из_апи']),
+                df_companies_api_stats_by_operation['Итого_из_апи']
+            )
+
+            # Мерджим с расходами из отчета ЛК
+            df_companies_api_report_stats = df_companies_costs_total.merge(
+                df_companies_api_stats_by_operation,
+                on=['Номер кампании', 'Тип начисления'],
+                how='left'
+            )
+        else:
+            logger.warning(
+                "Не удалось сформировать данные по расходам из API "
+                "(нет данных ни по кампаниям, ни по оплате за заказ)"
+            )
 
     # Словарь с результатами
     result_companies_costs_no_article = {
@@ -722,9 +844,7 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
         'df_companies_api_report_stats': df_companies_api_report_stats,
         'companies_costs_ids': companies_costs_ids
     }
-
     return result_companies_costs_no_article
-
 
 # Функция добавления артикулов и наименований товаров к расходам по рекламным кампаниям
 def add_articles_to_companies_costs(result_companies_costs_no_article, df_products_processed):
@@ -778,53 +898,150 @@ def calc_companies_costs(
         task_id=None
     ):
     # Директория, где будут лежать данные по рекламным кампаниям
-    companies_stats_dir = current_report_dir / f"{date_report}_Кампании"
-    companies_stats_dir.mkdir(parents=True, exist_ok=True)  # Создаем, если директория не существует
+    companies_stats_dir: Path = current_report_dir / f"{date_report}_Кампании"
+    companies_stats_dir.mkdir(parents=True, exist_ok=True)
+
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir: Path = current_report_dir / f"{date_report}_Кампании_parsed"
     companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Проверяем, что в отчете были расходы по рекламе
     companies_costs_ids = get_companies_costs_ids(df_finance_report)
-    # Если были расходы по РК, начинаем выгрузку отчетов по РК
-    if companies_costs_ids:
-        logger.info('Found companies costs')
-        df_companies_ids = get_companies_ids(df_finance_report, companies_costs_ids)
-        # Получаем список файлов в директории с кампаниями
-        companies_stats_files = os.listdir(companies_stats_dir)
-        # Если нет выгруженных файлов по кампаниям, то делаем выгрузку статистики кампаний
-        if not companies_stats_files:
-            logger.info('No companies files found, uploading companies stats')
-            # Формируем даты для выгрузки по API Performance
-            date_start_performance = '' #  date_start + 'T00:00:00Z'
-            date_end_performance = '' # date_end + 'T23:59:59Z'
-            date_from_performance = date_start
-            date_to_performance = date_end
-            # Выгружаем данные по рекламным кампаниям
-            upload_data_performane(
-                date_start_performance,
-                date_end_performance,
-                client_id_performance,
-                client_secret_performance,
-                companies_stats_dir,
-                date_from_performance,
-                date_to_performance,
-                df_companies_ids,
-                task_id
-            )
-        else:
-            logger.info('Companies stats already downloaded')
+    if not companies_costs_ids:
+        logger.info("В финансовом отчёте не найдено расходов по рекламным кампаниям")
+        return
 
-        # Обрабатываем выгруженные данные
-        parse_companies_files(current_report_dir, date_report)
+    logger.info("Найдены расходы по рекламным кампаниям")
+
+    # Все кампании, по которым есть расходы
+    df_companies_ids = get_companies_ids(df_finance_report, companies_costs_ids)
+
+    ACCRUAL_COL = "Тип начисления"
+    ORDERS_TYPE = "Продвижение с оплатой за заказ"
+    CAMPAIGN_ID_COL = "Номер кампании"
+
+    # --- Разделяем на обычные кампании и "оплату за заказ" ---
+    df_regular = df_companies_ids.copy()
+    df_orders = pd.DataFrame()
+
+    if ACCRUAL_COL in df_companies_ids.columns:
+        mask_orders = df_companies_ids[ACCRUAL_COL] == ORDERS_TYPE
+        df_orders = df_companies_ids[mask_orders].copy()
+        df_regular = df_companies_ids[~mask_orders].copy()
+
+    # Общие даты для Performance API
+    date_start_performance = ''   # при необходимости: f"{date_start}T00:00:00Z"
+    date_end_performance = ''     # при необходимости: f"{date_end}T23:59:59Z"
+    date_from_performance = date_start
+    date_to_performance = date_end
+
+    # ==========================
+    # 1. ОПРЕДЕЛЯЕМ, КАКИЕ КАМПАНИИ ДОКАЧАТЬ
+    # ==========================
+    df_missing_regular = pd.DataFrame()
+
+    if not df_regular.empty:
+        # Все требуемые ID кампаний
+        required_campaign_ids = set(df_regular[CAMPAIGN_ID_COL].astype(str))
+
+        # Уже имеющиеся .csv по кампаниям: <id>_dd.mm.yyyy-dd.mm.yyyy.csv
+        csv_files = list(companies_stats_dir.glob("*.csv"))
+        existing_campaign_ids = set()
+
+        for path in csv_files:
+            stem = path.stem  # например: "23010536_01.02.2026-28.02.2026"
+            parts = stem.split("_", 1)
+            if not parts:
+                continue
+            campaign_id = parts[0]
+            if campaign_id.isdigit():
+                existing_campaign_ids.add(campaign_id)
+
+        # Кампании, по которым ещё нет файлов
+        missing_campaign_ids = required_campaign_ids - existing_campaign_ids
+
+        if missing_campaign_ids:
+            df_missing_regular = df_regular[
+                df_regular[CAMPAIGN_ID_COL].astype(str).isin(missing_campaign_ids)
+            ]
+
+    need_regular_upload = not df_missing_regular.empty
+
+    # ==========================
+    # 2. НУЖНО ЛИ ДОКАЧИВАТЬ "ОПЛАТУ ЗА ЗАКАЗ"
+    # ==========================
+    has_orders_expenses = not df_orders.empty
+
+    # Есть ли уже файл отчёта по оплате за заказ:
+    # search_promo_all_skus_orders_report_24.02.2026-01.03.2026.csv
+    orders_report_exists = bool(
+        list(companies_stats_dir.glob("search_promo_all_skus_orders_report_*.csv"))
+    )
+
+    need_orders_upload = has_orders_expenses and not orders_report_exists
+
+    # ==========================
+    # 3. ОДИН ВЫЗОВ upload_data_performane С НУЖНЫМ mode
+    # ==========================
+    if need_regular_upload or need_orders_upload:
+        if need_regular_upload and need_orders_upload:
+            mode = "all"          # кампании + оплата за заказ
+            df_for_upload = df_missing_regular
+            logger.info(
+                f"Выгружаем статистику по {len(df_missing_regular)} недостающим кампаниям "
+                f"и отчёт по продвижению с оплатой за заказ (mode='all')"
+            )
+        elif need_regular_upload:
+            mode = "campaigns"    # только кампании
+            df_for_upload = df_missing_regular
+            logger.info(
+                f"Выгружаем статистику по {len(df_missing_regular)} недостающим кампаниям "
+                f"(mode='campaigns')"
+            )
+        else:  # need_orders_upload only
+            mode = "orders"       # только оплата за заказ
+            df_for_upload = None  # df не нужен для отчёта по заказам
+            logger.info(
+                "Выгружаем только отчёт по продвижению с оплатой за заказ (mode='orders')"
+            )
+
+        upload_data_performane(
+            date_start_performance,
+            date_end_performance,
+            client_id_performance,
+            client_secret_performance,
+            companies_stats_dir,
+            date_from_performance,
+            date_to_performance,
+            df_for_upload,
+            task_id,
+            mode=mode,
+        )
+    else:
+        logger.info(
+            "Нет недостающих файлов статистики по кампаниям "
+            "и отчёта по продвижению с оплатой за заказ — догрузка не требуется"
+        )
+
+    # ==========================
+    # 4. Парсим всё, что есть
+    # ==========================
+    parse_companies_files(current_report_dir, date_report)
 
     # Считаем расходы по рекламным кампаниям
-    result_companies_costs_no_article = calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_ids)
+    result_companies_costs_no_article = calc_companies_cost_by_sku(
+        date_report,
+        df_finance_report,
+        companies_costs_ids
+    )
+
     # Добавляем артикул к SKU с рекламными расходами
-    result_companies_costs = add_articles_to_companies_costs(result_companies_costs_no_article, df_products_processed)
+    result_companies_costs = add_articles_to_companies_costs(
+        result_companies_costs_no_article,
+        df_products_processed
+    )
 
     return result_companies_costs
-
 
 # Функция товаров в заявках на поставку
 def upload_supplies_items(df_supplies_from_report):
@@ -1406,7 +1623,7 @@ def calc_final_costs(df_all_costs_with_catalog):
 
     # Там, где маржинальность в рублях > 0, у маржинальности на единицу товара так же будет знак "+"
     # в ином случае "-"
-    for col in ['Маржинальность на ед. товара руб']:
+    for col in ['Маржинальность на ед. товара руб', 'Маржинальность %']:
         df_final_costs[col] = np.where(
             df_final_costs['Маржинальность руб'] < 0,
             (-1) * abs(df_final_costs[col]),
@@ -1680,7 +1897,7 @@ def format_excel(
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
         cell_sales = f"{col_map[marg_sales]}{row}"
         formula_percent_margin = (
-            f'=IFERROR({cell_marg_rub}/{cell_sales}, "")'
+            f'=IFERROR(ABS({cell_marg_rub}/{cell_sales})*SIGN({cell_marg_rub}), "")'
         )
         final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
@@ -1829,7 +2046,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет_по_начислениям_01_01_2026_31_01_2026.xlsx"
+    report_file_name = "Отчет_по_начислениям_01_02_2026_28_02_20266.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -1845,8 +2062,8 @@ if __name__ == "__main__":
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2026-01-01',
-        date_end='2026-01-31'
+        date_start = '2026-02-01',
+        date_end='2026-02-28'
     )
 
     # Создаем директорию для текущего отчета
