@@ -113,7 +113,7 @@ def getCompanyList(auth_token, companies_list=[]):
     return df_companies
 
 
-# Статистика по компаниям
+# Статистика по кампаниям
 def getCompanyStatistics(
         date_start,
         date_end,
@@ -122,41 +122,56 @@ def getCompanyStatistics(
         companies_stats_dir,
         date_from='',
         date_to='',
-        task_id = None
+        task_id=None
 ):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_companies_ = df_companies.copy()
-    # Диапазоны выгрузок (с шагом в 10 кампаний)
-    step = 10
-    df_companies_ = df_companies_.reset_index(drop=True)
-    df_companies_['chunks'] = df_companies_.index.map(lambda x: int(x/step) + 1)
-    # Сколько всего получилось диапазонов
-    total_chunks = max(df_companies_['chunks'].unique())
-    # Сколько всего получилось кампаний
+    # Копия df, чтобы не портить исходный
+    df_companies_ = df_companies.copy().reset_index(drop=True)
+
+    # Если кампаний нет — сразу выходим
     total_companies = df_companies_.shape[0]
-    # Сколько выгружено кампаний
+    if total_companies == 0:
+        logger.info("Нет кампаний для выгрузки статистики")
+        return
+
+    # Размер чанка (сколько кампаний запрашиваем за один раз)
+    step = 10
+
+    # Нумеруем чанки: 0..N → 1..M
+    df_companies_['chunk'] = df_companies_.index // step + 1
+
+    # Всего чанков
+    total_chunks = int(df_companies_['chunk'].max())
+
+    # Сколько кампаний уже выгружено (суммарно по всем завершённым чанкам)
     uploaded_companies_amount = 0
-    # Выбираем приоритетные даты для лога
+
+    # Даты для логов
     log_date_start = date_from if date_from else date_start
     log_date_end = date_to if date_to else date_end
 
-    # Цикл по каждому диапазону
-    for chunk in df_companies_['chunks'].unique():
-        # Проверяем срок действия токена
+    # Цикл по чанкам (по порядку)
+    for chunk in sorted(df_companies_['chunk'].unique()):
+        # Текущий поднабор кампаний
+        chunk_df = df_companies_.loc[df_companies_['chunk'] == chunk]
+        # Список кампаний (строками)
+        companies_list_str = chunk_df['Номер кампании'].astype(str).tolist()
+        # Фактический размер текущего чанка
+        current_companies_amount = len(companies_list_str)
+
+        logger.info(
+            f"Старт выгрузки статистики по кампаниям. "
+            f"Текущий чанк: {chunk} из {total_chunks} "
+            f"(кампаний в чанке: {current_companies_amount}, "
+            f"максимальный размер чанка: {step}). "
+            f"Всего кампаний: {total_companies}."
+        )
+
+        # Проверяем/обновляем токен
         auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-        # Авторизация
         headers = {
             'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
         }
 
-        # Формируем список кампаний из диапазона
-        companies_list = df_companies_.loc[df_companies_['chunks'] == chunk, 'Номер кампании'].to_list()
-        # Переводим список кампаний в строковый тип
-        companies_list_str = [str(elem) for elem in companies_list]
-        # Сколько получилось кампаний
-        current_companies_amount = len(companies_list_str)
-        # Сколько выгружается компаний + сколько уже выгружено
-        # current_companies_amount =+ uploaded_companies_amount
         # Параметры запроса
         params_companies_stats = {
             "campaigns": companies_list_str,
@@ -166,20 +181,16 @@ def getCompanyStatistics(
             "dateTo": date_to,
             "groupBy": "NO_GROUP_BY"
         }
-        # Удаляем дату со временем из запроса если они не указаны
+
+        # Удаляем from/to, если они не заданы
         if date_start == '' or date_end == '':
             params_companies_stats.pop('from')
             params_companies_stats.pop('to')
 
-        # Если не задан ID задания на генерацию отчета, то создаем задание на генерацию отчета
-        # Если он задан (например, мы до этого запускали и не получили отчеты с  этого задания),
-        # то пропускаем этот этап
+        # Если task_id ещё не задан, создаём новое задание на формирование отчёта
         if task_id is None:
-            # Флаг проверки того, что прошел запрос на формирование отчета
             report_task_ok = False
-            # Делаем запросы, пока не пройдет запрос на формирование отчета
             while not report_task_ok:
-                # Запрос к апи
                 resp_data_company_stats = (
                     requests
                     .post(
@@ -189,96 +200,116 @@ def getCompanyStatistics(
                     )
                     .json()
                 )
-                # Если при запросе выходит ошибка, выводим текст ошибки
-                if 'error' in resp_data_company_stats.keys():
-                    # Получаем текст ошибки
+                # Если при запросе выходит ошибка, выводим текст ошибки и пробуем ещё раз
+                if 'error' in resp_data_company_stats:
                     error_message = resp_data_company_stats['error']
-                    logger.warning(f"Ошибка выгрузки статистики: {error_message}")
-                    # Делаем паузу перед следующей отправкой запроса на генерацию
+                    logger.warning(
+                        f"Ошибка при создании задания на выгрузку статистики кампаний: "
+                        f"{error_message}. Повтор через 5 секунд."
+                    )
                     time.sleep(5)
-                # Если ошибки нет, то ставим флаг того, что запрос прошел и идем дальше
                 else:
                     report_task_ok = True
 
-            # Получаем номер задания на генерацию отчета
+            # Получаем ID задания на генерацию отчёта
             task_id = resp_data_company_stats['UUID']
 
-        # Получаем статус отчета
-        report_status = '' # Начальное значение статуса отчета
-        logger.info("Getting companies stats report status")
-        # Делаем запросы, пока отчет не сформируется, либо не будет ошибка
+        # Ожидаем готовности отчёта
+        report_status = ''  # начальное значение статуса
+        logger.info("Проверяем статус формирования отчёта по кампаниям")
+
         while report_status not in ['OK', 'ERROR']:
-            # Заново запрашиваем токен авторизации, если истек текущий
+            # Обновляем токен при необходимости
             auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-            # Авторизация
             headers = {
                 'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
             }
-            # Делаем запрос
-            resp_data_report_status = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
-                                                headers=headers).json()
-            # Получаем статус отчета
-            report_status = resp_data_report_status['state']
-            # Выводим сообщение, сколько уже выгружено кампаний и сколько выгружается
+
+            # Запрашиваем статус отчёта
+            resp_data_report_status = requests.get(
+                f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
+                headers=headers
+            ).json()
+
+            report_status = resp_data_report_status.get('state', '')
+
             logger.info(
-                f"\nUploading "
-                f"{current_companies_amount} of {total_companies} companies\n"
-                f"(Chunk {chunk} of {total_chunks})\n"
-                f"Already uploaded: {uploaded_companies_amount} companies\n"
-                f"Dates: {log_date_start} - {log_date_end}\n"
-                f"Report creation status: {report_status}\n"
-                f"Task id: {task_id}"
+                "\nСтатус формирования отчёта по статистике кампаний:\n"
+                f"  Даты отчёта: {log_date_start} - {log_date_end}\n"
+                f"  Текущий чанк: {chunk} из {total_chunks} "
+                f"(размер чанка: {current_companies_amount})\n"
+                f"  Всего выгружено кампаний: {uploaded_companies_amount} из {total_companies}\n"
+                f"  Текущий статус отчёта: {report_status}\n"
+                f"  ID задания: {task_id}"
             )
-            # logger.info(f"Report creation status: {report_status}")
-            # Ограничение апи - один запрос в 5 секунд
+
+            # Ограничение API — не чаще одного запроса раз в 5 секунд
             time.sleep(5)
 
-        # Если отчет сформирован успешно, то скачиваем его
-        if resp_data_report_status['state'] == 'OK':
-            logger.info("Companies stats report created, downloading")
+        # Если отчёт сформирован успешно — скачиваем его
+        if resp_data_report_status.get('state') == 'OK':
+            logger.info("Отчёт по статистике кампаний сформирован, скачиваем файл")
+
             params_get_report = {
                 "UUID": resp_data_report_status['UUID']
             }
-            resp_data_report = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/report",
-                                params=params_get_report,
-                                headers=headers)
-            # Определяем расширение файла
+            resp_data_report = requests.get(
+                f"{ozon_performance_api_url}:443/api/client/statistics/report",
+                params=params_get_report,
+                headers=headers
+            )
+
+            # Тип содержимого (csv или zip)
             report_type = resp_data_report.headers['Content-Type'].split(';')[0]
-            # Получаем имя файла
+            # Имя файла из заголовка
             file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
-            # Удаляем лишние символы из имени файла
+
+            # Чистим имя файла
             replace_dict = {
                 '"': '',
                 ' ': '',
                 'filename=': '',
             }
-            # Заменяем символы
             for old, new in replace_dict.items():
                 file_name = file_name.replace(old, new)
-            # Если csv, то просто сохраняем файл
+
+            # Если csv, просто сохраняем
             if 'csv' in report_type:
                 file_type = 'csv'
                 file_path = companies_stats_dir / file_name
                 with open(file_path, 'wb') as w:
                     w.write(resp_data_report.content)
-
-                logger.info(f"Companies stats report saved in: {file_path}")
-            # Если zip, сохраняем архив, затем распаковываем его
+                logger.info(f"Файл отчёта по кампаниям сохранён: {file_path}")
             else:
+                # Иначе считаем, что пришёл zip-архив
                 file_type = 'zip'
                 zip_file_path = companies_stats_dir / f"{str(date.today())}_Кампании_{chunk}.{file_type}"
                 with open(zip_file_path, 'wb') as w:
                     w.write(resp_data_report.content)
                 with ZipFile(zip_file_path, 'r') as zip_ref:
                     zip_ref.extractall(companies_stats_dir)
-                    logger.info(f"Companies stats archive saved in: {zip_file_path} (archive extracted)")
+                logger.info(
+                    f"Архив отчёта по кампаниям сохранён: {zip_file_path} "
+                    f"(содержимое распаковано в {companies_stats_dir})"
+                )
 
-
-            # Увеличиваем число выгруженных кампаний
+            # Увеличиваем счётчик успешно выгруженных кампаний
             uploaded_companies_amount += current_companies_amount
-            # Сброс task_id для следующего диапазона кампаний
-            task_id = None
 
+            logger.info(
+                f"Чанк {chunk} завершён. "
+                f"Всего выгружено кампаний: {uploaded_companies_amount} из {total_companies}."
+            )
+
+            # Сбрасываем task_id для следующего чанка
+            task_id = None
+        else:
+            logger.error(
+                f"Отчёт по статистике кампаний не был сформирован (статус: {report_status}). "
+                f"Чанк: {chunk} из {total_chunks}, ID задания: {task_id}"
+            )
+            # В случае ERROR просто переходим к следующему чанку
+            task_id = None
 
 
 # Отчёт по товарам в продвижении в поиске
@@ -335,94 +366,170 @@ def getProductsSearchPromote(auth_token, date_start, date_end):
         logger.info("Error creating products promote report")
 
 
-# Отчет по товарам в оплате за заказ
+# Отчёт по товарам в оплате за заказ
 def get_search_promo_orders(
         auth_token,
         date_start,
         date_end,
         companies_stats_dir,
         task_id=None,
+        report_type: str = "all_sku",
 ):
+    """
+    Выгружает отчёт по продвижению с оплатой за заказ.
+
+    Варианты отчёта:
+      - "all_sku"      — отчёт по всем товарам (создание задачи через GET)
+      - "selected_sku" — отчёт по выбранным товарам (создание задачи через POST)
+
+    Параметры
+    ---------
+    auth_token : dict
+        Словарь с данными авторизации для Ozon Performance API.
+        Должен содержать ключи: "token_type" и "access_token".
+        Токен автоматически проверяется и обновляется с помощью
+        функции `check_token_exp`.
+    date_start : str
+        Дата/время начала периода отчёта в формате, ожидаемом API.
+        Для варианта "all_sku" передаётся в параметр "timeBounds.from".
+        Для варианта "selected_sku" — в поле "from" JSON‑тела POST‑запроса.
+    date_end : str
+        Дата/время окончания периода отчёта в формате, ожидаемом API.
+        Аналогично `date_start`, но для "timeBounds.to" или "to".
+    companies_stats_dir : pathlib.Path
+        Путь к директории, где будет сохранён загруженный CSV‑файл отчёта.
+    task_id : str | None, optional
+        Идентификатор уже созданного задания на генерацию отчёта.
+        Если передан, создание нового задания пропускается и сразу
+        начинается опрос статуса существующего задания.
+        Если None (по умолчанию), функция создаёт новое задание.
+    report_type : str, optional
+        Тип отчёта:
+          - "all_sku" (по умолчанию) — отчёт по всем товарам, запрос на создание
+            задачи отправляется методом GET по эндпоинту
+            `/api/client/statistics/all_sku_promo/orders/generate`,
+            параметры передаются через `params`:
+              {"timeBounds.from": date_start, "timeBounds.to": date_end}
+          - "selected_sku" — отчёт по выбранным товарам, запрос на создание
+            задачи отправляется методом POST по эндпоинту
+            `/api/client/statistics/orders/generate`,
+            параметры передаются в теле `json`:
+              {"from": date_start, "to": date_end}
+
+    Возвращает
+    ----------
+    None
+        Функция сохраняет файл отчёта в `companies_stats_dir` и пишет
+        информацию в лог. В случае ошибки формирования отчёта или
+        неизвестного формата вызывает исключение или пишет ошибку в лог.
+    """
+    report_type = report_type.lower()
+    if report_type not in ("all_sku", "selected_sku"):
+        raise ValueError("Параметр report_type должен быть 'all_sku' или 'selected_sku'")
+
     logger.info(
-        f"\nUploading pay for orders report\n"
-        f"dates: {date_start} - {date_end}"
+        "Начинаем выгрузку отчёта по продвижению с оплатой за заказ\n"
+        f"Диапазон дат (с временем): {date_start} — {date_end}\n"
+        f"Тип отчёта: {report_type}"
     )
-    # Формируем параметры запроса
-    params_products_pay_for_orders = {
-        'from': date_start,
-        'to': date_end
-    }
-    # Если не задан ID задания на генерацию отчета, то создаем задание на генерацию отчета
-    # Если он задан (например, мы до этого запускали и не получили отчеты с  этого задания),
-    # то пропускаем этот этап
+
+    # Формируем параметры запроса для создания задачи
+    if report_type == "selected_sku":
+        # вариант с POST, для выбранных товаров
+        params_products_pay_for_orders = {
+            'from': date_start,
+            'to': date_end,
+        }
+    else:
+        # вариант с GET, для всех товаров
+        params_products_pay_for_orders = {
+            'timeBounds.from': date_start,
+            'timeBounds.to': date_end,
+        }
+
+    # Если не задан ID задания на генерацию отчёта, создаём новое задание
     if task_id is None:
-        # Флаг проверки того, что прошел запрос на формирование отчета
         report_task_ok = False
-        # Делаем запросы, пока не пройдет запрос на формирование отчета
         while not report_task_ok:
-            # Проверяем срок действия токена
+            # Проверяем/обновляем токен
             auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-            # Авторизация
             headers = {
                 'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
             }
-            # Запрос к апи
-            resp_data_products_pay_for_orders = (
-                requests
-                .post(
-                    f"{ozon_performance_api_url}:443/api/client/statistics/orders/generate",
-                    headers=headers,
-                    json=params_products_pay_for_orders
+
+            # Создаём задание на генерацию отчёта в зависимости от типа
+            if report_type == "selected_sku":
+                # POST — отчёт по выбранным товарам
+                resp_data_products_pay_for_orders = (
+                    requests
+                    .post(
+                        f"{ozon_performance_api_url}:443/api/client/statistics/orders/generate",
+                        headers=headers,
+                        json=params_products_pay_for_orders,
+                    )
+                    .json()
                 )
-                .json()
-            )
-            # Если при запросе выходит ошибка, выводим текст ошибки
-            if 'error' in resp_data_products_pay_for_orders.keys():
-                # Получаем текст ошибки
+            else:
+                # GET — отчёт по всем товарам
+                resp_data_products_pay_for_orders = (
+                    requests
+                    .get(
+                        "https://api-performance.ozon.ru:443/api/client/statistics/all_sku_promo/orders/generate",
+                        headers=headers,
+                        params=params_products_pay_for_orders,
+                    )
+                    .json()
+                )
+
+            # Если при запросе выходит ошибка — логируем и пробуем снова
+            if 'error' in resp_data_products_pay_for_orders:
                 error_message = resp_data_products_pay_for_orders['error']
-                logger.info(f"{error_message}")
-                # Делаем паузу перед следующей отправкой запроса на генерацию
+                logger.warning(
+                    "Ошибка при создании задания на отчёт по оплате за заказ: "
+                    f"{error_message}. Повтор через 5 секунд."
+                )
                 time.sleep(5)
-            # Если ошибки нет, то ставим флаг того, что запрос прошел и идем дальше
             else:
                 report_task_ok = True
 
-        # Получаем номер задания на генерацию отчета
+        # Получаем номер задания на генерацию отчёта
         task_id = resp_data_products_pay_for_orders['UUID']
+        logger.info(
+            "Задание на формирование отчёта по оплате за заказ создано. "
+            f"ID задания: {task_id}"
+        )
 
-    # Получаем статус отчета
-    report_status = '' # Начальное значение статуса отчета
-    logger.info("Getting pay for orders report status")
-    # Делаем запросы, пока отчет не сформируется, либо не будет ошибка
+    # ----------------------------
+    # Ожидаем готовности отчёта
+    # ----------------------------
+    report_status = ''  # начальное значение статуса
+    logger.info("Проверяем статус формирования отчёта по оплате за заказ")
     while report_status not in ['OK', 'ERROR']:
-        # Заново запрашиваем токен авторизации, если истек текущий
+        # Проверяем/обновляем токен
         auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-        # Авторизация
         headers = {
             'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
         }
-        # Делаем запрос
-        resp_data_report_status = requests.get(f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
-                                            headers=headers).json()
-        # Получаем статус отчета
-        report_status = resp_data_report_status['state']
-        # Выводим сообщение, сколько уже выгружено кампаний и сколько выгружается
+        # Проверяем статус задания
+        resp_data_report_status = requests.get(
+            f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
+            headers=headers
+        ).json()
+        report_status = resp_data_report_status.get('state', '')
         logger.info(
-            f"\nUploading pay for orders report\n"
-            # f"{current_companies_amount} of {total_companies} companies\n"
-            # f"(Chunk {chunk} of {total_chunks})\n"
-            # f"Already uploaded: {uploaded_companies_amount} companies\n"
-            f"Dates: {date_start} - {date_end}\n"
-            f"Report creation status: {report_status}\n"
-            f"Task id: {task_id}"
+            "\nСтатус формирования отчёта по продвижению с оплатой за заказ:\n"
+            f"  Диапазон дат: {date_start} — {date_end}\n"
+            f"  Текущий статус: {report_status}\n"
+            f"  ID задания: {task_id}"
         )
-        # logger.info(f"Report creation status: {report_status}")
-        # Ограничение апи - один запрос в 5 секунд
+        # Ограничение API — не чаще одного запроса раз в 5 секунд
         time.sleep(5)
 
-    # Если отчет сформирован успешно, то скачиваем его
-    if resp_data_report_status['state'] == 'OK':
-        logger.info("Downloading pay for orders report")
+    # ----------------------------
+    # Если отчёт сформирован — скачиваем
+    # ----------------------------
+    if resp_data_report_status.get('state') == 'OK':
+        logger.info("Отчёт по оплате за заказ сформирован, скачиваем файл")
         params_get_report = {
             "UUID": resp_data_report_status['UUID']
         }
@@ -431,36 +538,34 @@ def get_search_promo_orders(
             params=params_get_report,
             headers=headers
         )
-        # Определяем расширение файла
-        report_type = resp_data_report.headers['Content-Type'].split(';')[0]
-        # Получаем имя файла
+        # Тип содержимого (ожидаем csv)
+        report_type_header = resp_data_report.headers['Content-Type'].split(';')[0]
+        # Имя файла из заголовка
         file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
-        # Удаляем лишние символы из имени файла
+        # Чистим имя файла
         replace_dict = {
             '"': '',
             ' ': '',
             'filename=': '',
         }
-        # Заменяем символы
         for old, new in replace_dict.items():
             file_name = file_name.replace(old, new)
-        # Если csv, то просто сохраняем файл
-        if 'csv' in report_type:
-            file_type = 'csv'
+        # Если csv, просто сохраняем
+        if 'csv' in report_type_header:
             file_path = companies_stats_dir / file_name
             with open(file_path, 'wb') as w:
                 w.write(resp_data_report.content)
-                logger.info(f"Pay for orders report saved: {file_name}")
-        # Если zip, сохраняем архив, затем распаковываем его
+            logger.info(f"Отчёт по продвижению с оплатой за заказ сохранён: {file_path}")
         else:
-            raise ValueError(f'Unknown report type: {report_type}')
-            # file_type = 'zip'
-            # zip_file_path = companies_stats_dir / f"{str(date.today())}_Кампании_{chunk}.{file_type}"
-            # with open(zip_file_path, 'wb') as w:
-            #     w.write(resp_data_report.content)
-            # with ZipFile(zip_file_path, 'r') as zip_ref:
-            #     zip_ref.extractall(companies_stats_dir)
-
+            raise ValueError(
+                f"Неизвестный формат отчёта по оплате за заказ: {report_type_header}"
+            )
+    else:
+        logger.error(
+            "Отчёт по продвижению с оплатой за заказ не был сформирован.\n"
+            f"Итоговый статус: {report_status}\n"
+            f"ID задания: {task_id}"
+        )
 
 
 # Вызов всех функций
@@ -474,39 +579,102 @@ def upload_data_performane(
         date_to='',
         df_companies=None,
         task_id=None,
-        payment_for_orders=False,
+        mode='all',  # 'all' | 'campaigns' | 'orders'
 ):
+    """
+    mode:
+        'all'       - выгружать и кампании, и оплату за заказ
+        'campaigns' - только кампании
+        'orders'    - только оплату за заказ
+
+    Пары дат:
+        - для кампаний:
+            можно передавать либо date_start/date_end (с временем),
+            либо оставить их пустыми и передать date_from/date_to (только дата).
+
+        - для оплаты за заказ:
+            всегда требуются даты с временем;
+            если date_start/date_end пустые, но заданы date_from/date_to,
+            они будут автоматически преобразованы в
+            date_from + 'T00:00:00Z' и date_to + 'T23:59:59Z'.
+    """
+
+    if mode not in {'all', 'campaigns', 'orders'}:
+        raise ValueError(
+            f"Не поддерживаемый режим выгрузки: {mode}. "
+            f"Используйте: 'all', 'campaigns' или 'orders'."
+        )
+
     # Получаем токен авторизации
     auth_token = getAuthorizationToken(client_id_performance, client_secret_performance)
 
-    # Если df со списком кампаний не задан, то список кампаний берем по апи
-    if df_companies is None:
-        df_companies_for_statistic = getCompanyList(auth_token)
-    # Если df со списком кампаний задан, то кампании берем из этого df
-    else:
+    # -------------------------
+    # 1. Выгрузка кампаний (если требуется)
+    # -------------------------
+    if mode in {'all', 'campaigns'}:
+        # Если df со списком кампаний не задан, то список кампаний должны были передать явно
+        if df_companies is None:
+            logger.error("Не передан DataFrame со списком кампаний (df_companies).")
+            raise ValueError(
+                "Для выгрузки статистики кампаний необходимо передать "
+                "DataFrame со списком кампаний в параметр df_companies."
+            )
+
         df_companies_for_statistic = df_companies.copy()
 
-    # Выгружаем статистику кампаний
-    getCompanyStatistics(
-        date_start,
-        date_end,
-        auth_token,
-        df_companies_for_statistic,
-        companies_stats_dir,
-        date_from,
-        date_to,
-        task_id
-    )
+        logger.info(
+            f"Начинаем выгрузку статистики по кампаниям "
+            f"(количество кампаний: {len(df_companies_for_statistic)})"
+        )
 
-    # Выгружаем отчет о товарах в оплате за заказ (если стоит флаг)
-    if payment_for_orders:
-        get_search_promo_orders(
-            auth_token,
+        # Здесь сохраняем прежнее поведение:
+        # date_start/date_end могут быть как с временем, так и пустыми,
+        # а date_from/date_to — просто даты.
+        getCompanyStatistics(
             date_start,
             date_end,
+            auth_token,
+            df_companies_for_statistic,
+            companies_stats_dir,
+            date_from,
+            date_to,
+            task_id
+        )
+
+    # -------------------------
+    # 2. Выгрузка отчёта по оплате за заказ (если требуется)
+    # -------------------------
+    if mode in {'all', 'orders'}:
+        # Для оплаты за заказ нужны даты с временем.
+        # Пытаемся использовать date_start/date_end, если они заданы.
+        if date_start and date_end:
+            orders_date_start = date_start
+            orders_date_end = date_end
+        # Если они не заданы, но есть date_from/date_to (только даты),
+        # формируем строки с временем.
+        elif date_from and date_to:
+            # здесь считаем, что date_from / date_to в формате 'YYYY-MM-DD'
+            orders_date_start = f"{date_from}T00:00:00Z"
+            orders_date_end = f"{date_to}T23:59:59Z"
+        else:
+            raise ValueError(
+                "Для выгрузки отчёта по оплате за заказ необходимо указать либо "
+                "date_start/date_end (с временем), либо date_from/date_to (без времени)."
+            )
+
+        logger.info(
+            "Начинаем выгрузку отчёта по продвижению с оплатой за заказ: "
+            f"{orders_date_start} — {orders_date_end}"
+        )
+
+        get_search_promo_orders(
+            auth_token,
+            orders_date_start,
+            orders_date_end,
             companies_stats_dir,
             task_id
         )
+
     print(f"\033[44m\033[37mDONE UPLOADING OZON PERFORMANCE FOR CLIENT {client_name}")
 
 

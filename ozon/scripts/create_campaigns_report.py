@@ -83,23 +83,18 @@ def parse_cli_companies(cli_companies):
 
 # Функция создания директории, куда будет помещаться статистика кампаний
 def create_upload_statistic_dir(client_name, date_report=str(date.today())):
-    # Задаем путь к директории
-    # upload_path = (
-    #     f"{BASE_DIR}/"
-    #     f"Clients/{client_name}/ClientSvod/"
-    #     f"{date_report}/{date_report}_Кампании_API"
-    # )
+    # Создаем директорию для выгрузки статистики по кампаниям, если её нет
     upload_path = (
         BASE_DIR
         / f"Clients"
         / f"{client_name}"
         / f"CampaignsReport"
+        / "Данные по РК"
         / f"{date_report}"
         / f"{date_report}_Кампании_API"
     )
-    if not upload_path.exists():
-        upload_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Creating Companies Upload directory:{upload_path}")
+    upload_path.mkdir(parents=True, exist_ok=True)
+
 
     return upload_path
 
@@ -425,7 +420,11 @@ def get_missing_companies(
             .reset_index(drop=True)
         )
         # df для вывода в консоль, потому что я так хочу!
-        df_missing_companies_print = df_missing_companies.loc[:, ['Номер кампании', 'dt_start_file', 'dt_end_file']].to_string(index=False)
+        df_missing_companies_print = (
+            df_missing_companies
+            .loc[:, ['Номер кампании', 'dt_start_file', 'dt_end_file']]
+            .to_string(index=False)
+        )
         logger.info(
             f"\nБудет загружена статистика для кампаний:\n"
             f"{df_missing_companies_print}"
@@ -700,7 +699,7 @@ def get_promo_orders(
     )
     # Формируем имя ожидаемого файла с отчетом
     payment_orders_report_file_name = (
-        upload_path / f"search_promo_organisation_orders_report_{date_start_file}-{date_end_file}.csv"
+        upload_path / f"search_promo_all_skus_orders_report_{date_start_file}-{date_end_file}.csv"
     )
     # Проверяем наличие файла
     payment_orders_report_exists = payment_orders_report_file_name.is_file()
@@ -734,38 +733,170 @@ def parse_search_promo_report(
     df_payment_orders_report = df_payment_orders_report.iloc[:-1]
 
     # Считаем расходы на каждый артикул
-    df_payment_orders_costs = (
-        df_payment_orders_report
-        .groupby(['SKU', 'Название товара'], as_index=False)
-        .agg(**{
-            'Расход в оплате за заказ, руб': ('Расход, ₽', 'sum'),
-        })
-    )
+    # df_payment_orders_costs = (
+    #     df_payment_orders_report
+    #     .groupby(['SKU', 'Название товара'], as_index=False)
+    #     .agg(**{
+    #         'Расход в оплате за заказ, руб': ('Расход, ₽', 'sum'),
+    #     })
+    # )
     # Переводим столбец с SKU в int, чтобы не было ошибок при merge
-    df_payment_orders_costs['SKU'] = df_payment_orders_costs['SKU'].astype(int)
+    df_payment_orders_report['SKU'] = df_payment_orders_report['SKU'].astype(int)
 
-    return df_payment_orders_costs
+    return df_payment_orders_report
+
+# Функция добавления данных по заказам к оплате за заказ
+def add_orders_to_payment_orders_report(
+        df_payment_orders_report,
+        df_orders_all
+):
+    # Колонки, которые берем из отчета по заказам
+    orders_cols = ['Номер заказа', 'Статус']
+    # Убираем дубликаты по номеру заказа, чтобы не было ошибок при merge
+    df_orders_all_ = df_orders_all.drop_duplicates(subset=['Номер заказа'])
+    # Объединяем данные по номеру заказа
+    df_payment_orders_report_with_orders = df_payment_orders_report.merge(
+        df_orders_all_[orders_cols],
+        on='Номер заказа',
+        how='left',
+        indicator=True,
+    )
+    # # Находим номера заказов, по которым нет данных в отчете по заказам
+    # missing_orders = (
+    #     df_payment_orders_report_with_orders
+    #     .loc[
+    #         df_payment_orders_report_with_orders['_merge'] == 'left_only',
+    #         'Номер заказа'
+    #     ]
+    #     .tolist()
+    # )
+    # if missing_orders:
+    #     logger.warning(
+    #         f"В отчете оплаты за заказ не найдена информация по {len(missing_orders)} заказам из отчета по заказам."
+    #     )
+    # # Убираем заказы со статусом "Отменён"
+    # df_payment_orders_report = df_payment_orders_report.loc[
+    #     ~df_payment_orders_report['Статус'].isin(['Отменён', 'Отменен']),
+    #     :
+    # ]
+    # df_payment_orders_report = df_payment_orders_report.reset_index(drop=True)
+
+    # Убираем столбец с индикатором
+    df_payment_orders_report_with_orders = df_payment_orders_report_with_orders.drop(columns=['_merge'], errors='ignore')
 
 
-# Функция добавления расходов товаров в оплате за заказ к статистике РК
-def add_promo_search_costs_to_company_stats(
-        df_companies_parsed,
-        df_payment_orders_costs
+    return df_payment_orders_report_with_orders
+
+
+# Функция добавления данных по товарам к отчету оплаты за заказ
+def add_products_data_to_payment_orders_report(
+        df_payment_orders_report_with_orders,
+        df_products_processed
 ):
 
-    # Объединяем данные по SKU
-    df_companies_parsed_with_promo = df_companies_parsed.merge(
-        df_payment_orders_costs[['SKU', 'Расход в оплате за заказ, руб']],
-        on='SKU',
-        how='left'
-    )
-    # Заполняем NaN нулями
-    df_companies_parsed_with_promo['Расход в оплате за заказ, руб'] = (
-        df_companies_parsed_with_promo['Расход в оплате за заказ, руб']
-        .fillna(0)
-    )
+    # Колонки, которые берем из отчета по товарам
+    products_cols = ['SKU', 'Артикул размера', 'ID Размерного ряда', 'Количество размеров в артикуле']
 
-    return df_companies_parsed_with_promo
+    # Объединяем данные по SKU
+    df_payment_orders_report_with_products = df_payment_orders_report_with_orders.merge(
+        df_products_processed[products_cols],
+        on='SKU',
+        how='left',
+        indicator=True,
+    )
+    # Находим SKU, по которым нет данных в отчете по товарам
+    missing_products = (
+        df_payment_orders_report_with_products
+        .loc[
+            df_payment_orders_report_with_products['_merge'] == 'left_only',
+            'Артикул'
+        ]
+        .tolist()
+    )
+    if missing_products:
+        logger.warning(
+            f"В отчете оплаты за заказ не найдена информация по {len(missing_products)} товарам из отчета по товарам: {missing_products[:10]}..."
+        )
+    # Убираем столбец с индикатором
+    df_payment_orders_report_with_products = df_payment_orders_report_with_products.drop(columns=['_merge'], errors='ignore')
+
+
+    return df_payment_orders_report_with_products
+
+
+# Функция расчета расходов в оплате за заказ
+def calc_payment_orders_costs_v2(
+        df_payment_orders_report_with_products,
+):
+    # Копия, чтобы не трогать оригинальный df
+    df_ = df_payment_orders_report_with_products.copy()
+
+    # Задаём правила агрегации
+    agg_rules = {
+        'sum': [
+            # по SKU (артикулу)
+            {
+                'agg_col': 'Расход, ₽',
+                'group_col': 'SKU',
+                'new_col': 'Расход ОЗЗ 5%, руб',
+            },
+            {
+                'agg_col': 'Количество',
+                'group_col': 'SKU',
+                'new_col': 'Заказы ОЗЗ 5%, шт',
+            },
+
+            # по Артикул размера
+            {
+                'agg_col': 'Расход, ₽',
+                'group_col': 'Артикул размера',
+                'new_col': 'Расход ОЗЗ 5% по размерному ряду, руб',
+            },
+            {
+                'agg_col': 'Количество',
+                'group_col': 'Артикул размера',
+                'new_col': 'Заказы ОЗЗ 5% по размерному ряду, шт',
+            },
+        ],
+    }
+
+    grouped_dfs_costs_payment_orders = {}
+
+    # Собираем все уникальные group_col
+    all_group_cols = {
+        params['group_col']
+        for rule in agg_rules.values()
+        for params in rule
+    }
+
+    for group_col in all_group_cols:
+        # Все правила для конкретной group_col
+        relevant_aggs = [
+            (func, params)
+            for func, params_list in agg_rules.items()
+            for params in params_list
+            if params['group_col'] == group_col
+        ]
+
+        # Конструируем словарь для .agg()
+        agg_dict = {}
+        for func, params in relevant_aggs:
+            agg_col = params['agg_col']
+            new_col = params['new_col']
+            agg_dict[new_col] = (agg_col, func)
+
+        # Группировка
+        df_grouped = (
+            df_
+            .groupby(group_col)
+            .agg(**agg_dict)
+            .reset_index()
+        )
+
+        grouped_dfs_costs_payment_orders[group_col] = df_grouped
+
+    return grouped_dfs_costs_payment_orders
+
 
 
 # Функция обработка списка товаров АПИ
@@ -824,7 +955,7 @@ def process_product_list(df_products):
     # Получаем количество размеров в каждой группе
     df_products_processed['Количество размеров в артикуле'] = (
         df_products_processed
-        .groupby(['ID Размерного ряда'])
+        .groupby(['Артикул размера'])
         .transform('size')
     )
     # GPT END----
@@ -862,7 +993,8 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
         df_products_processed_[[
             'SKU',
             'Артикул',
-            'ID Размерного ряда',
+            # 'ID Размерного ряда',
+            'Артикул размера',
             'Количество размеров в артикуле',
             'model_id'
         ]],
@@ -873,7 +1005,7 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
     # Перемещаем колонку с артикулом в начало
     df_companies_products_data = move_columns(
         df_companies_products_data,
-        ['Артикул', 'ID Размерного ряда', 'Количество размеров в артикуле', 'model_id'],
+        ['Артикул', 'Артикул размера', 'ID Размерного ряда', 'Количество размеров в артикуле', 'model_id'],
         position='SKU'
     )
     # Перемещаем колонку с номером кампании в начало
@@ -904,7 +1036,7 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
         ]
     )
     if not df_missing_products.empty:
-        logger.warning(f"No info about products:\n{df_missing_products.to_string(index=False)}")
+        logger.warning(f"В статистике РК не найдена информация по {len(df_missing_products)} товарам из отчета по товарам: \n{df_missing_products.to_string(index=False)}")
 
     # Удаляем кампании, по которым не выгрузилась статистика
     df_companies_products_data = (
@@ -918,6 +1050,44 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
     )
 
     return df_companies_products_data
+
+# Функция добавления расходов товаров в оплате за заказ к статистике РК
+def add_payment_orders_costs_to_company_stats(
+        df_companies_products_data,
+        grouped_dfs_costs_payment_orders,
+):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_companies_parsed_with_promo = df_companies_products_data.copy()
+
+    # Проходим циклом по каждой колонке для объединения и добавляем расходы в оплате за заказ к статистике РК
+    for group_col, df_costs in grouped_dfs_costs_payment_orders.items():
+        if group_col in df_companies_parsed_with_promo.columns:
+            df_companies_parsed_with_promo = df_companies_parsed_with_promo.merge(
+                df_costs,
+                on=group_col,
+                how='left',
+                indicator=True,
+            )
+            # Находим значения, по которым нет данных в df_costs
+            missing_values = (
+                df_companies_parsed_with_promo
+                .loc[
+                    df_companies_parsed_with_promo['_merge'] == 'left_only',
+                    group_col
+                ]
+                .unique()
+            )
+            if len(missing_values) > 0:
+                logger.warning(
+                    f"При добавлении расходов в оплате за заказ к статистике РК не найдена информация по {len(missing_values)} уникальным значениям в колонке '{group_col}': {missing_values[:10]}..."
+                )
+            # Убираем столбец с индикатором
+            df_companies_parsed_with_promo = df_companies_parsed_with_promo.drop(columns=['_merge'], errors='ignore')
+        else:
+            logger.warning(f"Колонка '{group_col}' для объединения расходов в оплате за заказ не найдена в статистике РК")
+
+
+    return df_companies_parsed_with_promo
 
 
 # Функция определения минимальной и максимальной даты в кампаниях
@@ -947,48 +1117,6 @@ def get_min_max_dates(df_input_companies_parsed):
     return min_date, max_date
 
 
-# Функция выгрузки отчета о заказах
-# def get_orders(headers, date_start, date_end):
-#     # Выгружаем отчет об отправлениях fbo и fbs
-#     df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
-#     df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
-#     # Убираем лишние колонки из отчета fbo
-#     df_orders_fbo = df_orders_fbo.loc[:, ~df_orders_fbo.columns.isin(['Объемный вес товаров, кг'])]
-
-#     # Объединяем два отчета в один
-#     common_columns = ['Артикул', 'Название товара', 'OZON id', 'Принят в обработку', 'Сумма отправления']
-
-#     # GPT START----
-#     dfs = []
-#     for df in [df_orders_fbo, df_orders_fbs]:
-#         if df is not None and not df.empty:
-#             # Берем только те common_columns, которые реально есть
-#             cols = [col for col in common_columns if col in df.columns]
-#             dfs.append(df.loc[:, cols])
-
-#     if dfs:
-#         df_orders_all = pd.concat(dfs, ignore_index=True)
-#     else:
-#         # Если оба датафрейма пустые — создаём пустой датафрейм с нужными колонками
-#         df_orders_all = pd.DataFrame(columns=common_columns)
-#     # GPT END----
-
-#     # Переводим колонку с датой заказа в datetime
-#     df_orders_all['datetime_orders'] = pd.to_datetime(df_orders_all['Принят в обработку'])
-#     # Указываем, какие колонки считаем за заказы в штуках и рублях
-#     df_orders_all['Заказы шт'] = 1
-#     df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
-#     # Переименовываем колонку с Ozon ID
-#     df_orders_all = df_orders_all.rename(columns={
-#         'OZON id': 'Ozon Product ID',
-#         'Название товара': 'Наименование товара'
-#     })
-#     # Переводим столбец с артикулом в строку
-#     df_orders_all['Артикул'] = df_orders_all['Артикул'].astype(str)
-
-#     return df_orders_all
-
-
 # Функция добавления информации о товарах в заказы
 def add_products_data_to_orders(df_orders_all, df_products_processed):
 
@@ -1002,6 +1130,7 @@ def add_products_data_to_orders(df_orders_all, df_products_processed):
         df_products_processed[[
             'SKU',
             'Артикул',
+            'Артикул размера',
             'ID Размерного ряда',
             'Количество размеров в артикуле',
             'model_id'
@@ -1015,6 +1144,7 @@ def add_products_data_to_orders(df_orders_all, df_products_processed):
         df_orders_products_data,
         [
             'Артикул',
+            'Артикул размера',
             'ID Размерного ряда',
             'Количество размеров в артикуле',
             'model_id'
@@ -1228,7 +1358,7 @@ def add_model_products(
         # .assign(**{
         #     'Артикул для моделей': (lambda df: df['Артикул'])
         # })
-        .loc[:, ['Артикул', 'model_id', 'ID Размерного ряда', 'Количество размеров в артикуле']]
+        .loc[:, ['Артикул', 'model_id', 'Артикул размера', 'Количество размеров в артикуле']]
         .merge(
             tmp_df_orders_for_company,
             how='left',
@@ -1293,7 +1423,7 @@ def add_model_products(
                 'Артикул',
                 'Название товара',
                 'SKU',
-                'ID Размерного ряда',
+                'Артикул размера',
                 'Количество размеров в артикуле',
                 'model_id',
             ]
@@ -1497,12 +1627,12 @@ def calc_orders_by_models_v2(
             },
             {
                 'agg_col': 'Заказы шт',
-                'group_col': 'ID Размерного ряда',
+                'group_col': 'Артикул размера',
                 'new_col': 'Заказы размерного ряда шт (из отчета по Заказам)'
             },
             {
                 'agg_col': 'Заказы руб',
-                'group_col': 'ID Размерного ряда',
+                'group_col': 'Артикул размера',
                 'new_col': 'Заказы размерного ряда руб (из отчета по Заказам)'
             },
         ],
@@ -1592,7 +1722,7 @@ def add_model_products_v2(
                     'SKU',
                     'Название товара',
                     'model_id',
-                    'ID Размерного ряда',
+                    'Артикул размера',
                     'Количество размеров в артикуле'
                 ] + orders_columns
             )
@@ -1679,7 +1809,7 @@ def add_model_products_v2(
                 'Артикул',
                 'Название товара',
                 'SKU',
-                'ID Размерного ряда',
+                'Артикул размера',
                 'Количество размеров в артикуле',
                 'model_id',
                 # 'Заказы модели шт (из отчета по Заказам)',
@@ -1845,13 +1975,13 @@ def add_model_products_v2(
 
 # Функция расчета заказов и остатков для товаров в РК
 def calc_orders_for_companies(
-        df_companies_products_data,
+        df_companies_parsed_with_promo,
         df_orders_products_data,
         df_products_processed,
 ):
     # Создаем копии для избежания изменений в оригинальных df
     # df_orders_products_data_ = df_orders_products_data.copy()
-    df_companies_with_orders = df_companies_products_data.copy()
+    df_companies = df_companies_parsed_with_promo.copy()
 
     # df, куда будем помещать итоговый результат
     df_companies_with_orders_and_models = pd.DataFrame()
@@ -1883,11 +2013,11 @@ def calc_orders_for_companies(
     #     ])]
     # )
     # Делаем цикл по каждой рекламной кампании
-    for unique_company_id in df_companies_products_data['unique_company_id'].unique():
+    for unique_company_id in df_companies['unique_company_id'].unique():
         # Временный df с данными текущей кампании
         tmp_df_company = (
-            df_companies_products_data
-            .loc[df_companies_products_data['unique_company_id'] == unique_company_id, :]
+            df_companies
+            .loc[df_companies['unique_company_id'] == unique_company_id, :]
             # .drop_duplicates(subset=['Номер кампании'])
         )
         # Получаем номер кампании
@@ -1943,75 +2073,101 @@ def add_reminders(df_companies_with_orders_and_models, df_reminders_all):
 def calc_final_orders(df_companies_with_orders_and_reminders):
     # Создаем копию для избежания изменений в оригинальном df
     df_final_orders = df_companies_with_orders_and_reminders.copy()
-    # Заполняем NA чтобы при сумме не появлялся NA
+
+    # Приводим типы
     df_final_orders = df_final_orders.infer_objects(copy=False)
-    # df_final_orders = df_final_orders.fillna(0)
-    # Считаем итоговую колонку заказов в рублях и штуках
+
+    # 1. Итоговые заказы в штуках
     df_final_orders['Заказы всего шт'] = np.where(
         df_final_orders['Количество размеров в артикуле'] > 1,
         # У артикулов с размерным рядом - берем сумму всех заказов размерного ряда артикула
         df_final_orders['Заказы размерного ряда шт (из отчета по Заказам)'],
-        # У артикулов без размерного ряда - суммируем заказы модели из отчета РК и заказы только этого артикула
-        # df_final_orders['Заказы модели шт (из отчета РК)'] + df_final_orders['Заказы шт (из отчета по Заказам)']
+        # У артикулов без размерного ряда - заказы только этого артикула
         df_final_orders['Заказы шт (из отчета по Заказам)']
     )
+
+    # 2. Итоговые заказы в рублях
     df_final_orders['Заказы всего руб'] = np.where(
         df_final_orders['Количество размеров в артикуле'] > 1,
-        # У артикулов с размерным рядом - берем сумму всех заказов размерного ряда артикула
         df_final_orders['Заказы размерного ряда руб (из отчета по Заказам)'],
-        # У артикулов без размерного ряда - суммируем заказы модели из отчета РК и заказы только этого артикула
-        # df_final_orders['Заказы модели руб (из отчета РК)'] + df_final_orders['Заказы руб (из отчета по Заказам)']
         df_final_orders['Заказы руб (из отчета по Заказам)']
     )
-    # Если заказы модели из отчета по заказам нулевые, а из отчета РК - нет, то берем заказы модели из отчета РК
-    # epsilon = 1e-5
-    # df_final_orders['Заказы всего шт'] = np.where(
-    #     (df_final_orders['Заказы модели шт (из отчета РК)'] > 0) &
-    #     (np.isclose(df_final_orders['Заказы модели шт (из отчета по Заказам)'], 0, atol=epsilon)),
 
-    #     df_final_orders['Заказы модели шт (из отчета РК)'],
-    #     df_final_orders['Заказы модели шт (из отчета по Заказам)']
-    # )
-    # df_final_orders['Заказы всего руб'] = np.where(
-    #     (df_final_orders['Заказы модели руб (из отчета РК)'] > 0) &
-    #     (np.isclose(df_final_orders['Заказы модели руб (из отчета по Заказам)'], 0, atol=epsilon)),
+    # Удаляем старые ДРР, если есть
+    df_final_orders = df_final_orders.loc[
+        :,
+        ~df_final_orders.columns.isin(['ДРР, %', 'ДРР по артикулу, %'])
+    ]
 
-    #     df_final_orders['Заказы модели руб (из отчета РК)'],
-    #     df_final_orders['Заказы модели руб (из отчета по Заказам)']
-    # )
-    # Считаем ДРР
-    df_final_orders = df_final_orders.loc[:, ~df_final_orders.columns.isin(['ДРР, %',])]
-    # Суммируем расходы по кампаниям с расходом в оплате за заказ
-    df_final_orders['Расход по кампаниям и в оплате за заказ, руб'] = (
+    # 3. Суммарные расходы: кампании + ОЗЗ
+    # ("Расход по кампаниям с НДС, руб" + "Расход ОЗЗ, руб")
+    df_final_orders['Расход по кампаниям и ОЗЗ, руб'] = (
         df_final_orders['Расход по кампаниям с НДС, руб']
-        + df_final_orders['Расход в оплате за заказ, руб']
+        + df_final_orders['Расход ОЗЗ 5%, руб']
     )
-    # Считаем расходы по кампаниям в разрезе размерного ряда
+
+    # 4. Расходы по кампаниям + ОЗЗ в разрезе размерного ряда
+    # 4.1. Суммарный расход по кампаниям по размерному ряду
     df_final_orders['Расход по кампаниям по размерному ряду, руб'] = (
         df_final_orders
-        .groupby('ID Размерного ряда')['Расход по кампаниям с НДС, руб']
+        .groupby('Артикул размера')['Расход по кампаниям с НДС, руб']
         .transform('sum')
     )
-    # Словарик для расчета ДРР
-    drr_dict = {
-        'ДРР, %': 'Расход по кампаниям с НДС, руб',
-        'ДРР по артикулу, %': 'Расход по кампаниям по размерному ряду, руб'
-    }
-    for drr_type, costs_column in drr_dict.items():
-        # Считаем разные типы дрр
-        df_final_orders[drr_type] = np.where(
-            df_final_orders['Заказы всего руб'] == 0,
-            np.nan,  # Заменить на nan при делении на 0
-            np.round(
-                df_final_orders[costs_column] / df_final_orders['Заказы всего руб'] * 100,
-                2
-            )
-        )
 
-    # Переводим целые числа в тип int
+    # 4.2. Общий расход по размерному ряду: кампании + ОЗЗ
+    df_final_orders['Расход по кампаниям и ОЗЗ по размерному ряду, руб'] = (
+        df_final_orders['Расход по кампаниям по размерному ряду, руб']
+        + df_final_orders['Расход ОЗЗ 5% по размерному ряду, руб']
+    )
+
+    # 5. ДРР, %
+    # ("Расход по кампаниям с НДС, руб" + "Расход ОЗЗ, руб") / "Заказы всего руб"
+    df_final_orders['ДРР, %'] = np.where(
+        df_final_orders['Заказы всего руб'] == 0,
+        np.nan,
+        np.round(
+            df_final_orders['Расход по кампаниям и ОЗЗ, руб']
+            / df_final_orders['Заказы всего руб'] * 100,
+            2
+        )
+    )
+    # Нулевые значения ДРР -> NaN
+    df_final_orders.loc[df_final_orders['ДРР, %'] == 0, 'ДРР, %'] = np.nan
+
+    # 6. ДРР по артикулу, %
+    # - если нет размеров (Количество размеров в артикуле <= 1) → копируем "ДРР, %"
+    # - если есть размеры (>1) → (∑расход кампаний + ∑расход ОЗЗ по размерному ряду) / "Заказы всего руб"
+
+    drr_art = np.empty(len(df_final_orders))
+    drr_art[:] = np.nan
+
+    mask_no_sizes = df_final_orders['Количество размеров в артикуле'] <= 1
+    mask_with_sizes = df_final_orders['Количество размеров в артикуле'] > 1
+
+    # 6.1. Без размеров — копируем ДРР, %
+    drr_art[mask_no_sizes] = df_final_orders.loc[mask_no_sizes, 'ДРР, %']
+
+    # 6.2. С размерами — считаем по размерному ряду
+    denom = df_final_orders.loc[mask_with_sizes, 'Заказы всего руб']
+    num = df_final_orders.loc[mask_with_sizes, 'Расход по кампаниям и ОЗЗ по размерному ряду, руб']
+
+    drr_with_sizes = np.where(
+        denom == 0,
+        np.nan,
+        np.round(num / denom * 100, 2)
+    )
+    drr_art[mask_with_sizes] = drr_with_sizes
+
+    df_final_orders['ДРР по артикулу, %'] = drr_art
+
+    # Нулевые значения ДРР по артикулу -> NaN
+    df_final_orders.loc[df_final_orders['ДРР по артикулу, %'] == 0, 'ДРР по артикулу, %'] = np.nan
+
+    # 7. Переводим "целые" float-колонки в Int64
     for col in df_final_orders.select_dtypes(include=['float']):
-        if np.all(df_final_orders[col].dropna() % 1 == 0):  # Убираем NaN, проверяем дробную часть
-            df_final_orders[col] = df_final_orders[col].astype('Int64')  # Int64 поддерживает пропуски (NA). Если нет NA, можно int
+        series_non_na = df_final_orders[col].dropna()
+        if len(series_non_na) > 0 and np.all(series_non_na % 1 == 0):
+            df_final_orders[col] = df_final_orders[col].astype('Int64')
 
     return df_final_orders
 
@@ -2024,49 +2180,103 @@ def create_excel_report(df_final_orders):
     # Убираем лишние колонки
     df_excel_companies_report = df_excel_companies_report.loc[:, ~df_excel_companies_report.columns.isin([
         'unique_company_id',
-        'ID Размерного ряда',
+        'Артикул размера',
         'model_id',
     ])]
 
     # Делаем "удобный" порядок колонок
-    columns_order = [ # 'Тип кампании',
-        'Номер кампании', 'Дата начала статистики РК', 'Дата окончания статистики РК',
-        'SKU', 'Артикул', 'Название товара', 'Тип товара',
-        'Количество размеров в артикуле', 'Цена товара, руб',
-        'Показы', 'Клики', 'CTR (%)', 'В корзину', 'Ср. цена клика, руб',
-        'Заказы шт (из отчета РК)', 'Заказы руб (из отчета РК)',
-        'Заказы модели шт (из отчета РК)', 'Заказы модели руб (из отчета РК)',
-        'Заказы шт (из отчета по Заказам)',
-        'Заказы руб (из отчета по Заказам)',
+    columns_order = [
+        # Идентификаторы кампании
+        # 'unique_company_id',
+        'Номер кампании',
+        # 'Тип кампании',
+        # 'Дата начала статистики РК',
+        # 'Дата окончания статистики РК',
+
+        # Товар / артикул / модель / размеры
+        'SKU',
+        'Артикул',
+        # 'ID Размерного ряда',
+        'Количество размеров в артикуле',
+        # 'model_id',
+        'Название товара',
+        'Тип товара',
+        'Цена товара, руб',
+
+        # Статистика показов и кликов
+        'Показы',
+        'Клики',
+        'CTR (%)',
+        'В корзину',
+        'Ср. цена клика, руб',
+
+        # Заказы и расход ОЗЗ (общие и по размерному ряду)
+        'Заказы ОЗЗ 5%, шт',
+        'Расход ОЗЗ 5%, руб',
+        'Заказы ОЗЗ 5% по размерному ряду, шт',
+        'Расход ОЗЗ 5% по размерному ряду, руб',
+
+        # Расходы и заказы по РК
+        'Расход по кампаниям с НДС, руб',
+        'Заказы шт (из отчета РК)',
+        'Заказы руб (из отчета РК)',
+        'Заказы модели шт (из отчета РК)',
+        'Заказы модели руб (из отчета РК)',
+
+
+        # Заказы по отчету "Заказы"
         'Заказы модели шт (из отчета по Заказам)',
         'Заказы модели руб (из отчета по Заказам)',
         'Заказы размерного ряда шт (из отчета по Заказам)',
         'Заказы размерного ряда руб (из отчета по Заказам)',
-        'Заказы всего шт', 'Заказы всего руб',
-        'Расход по кампаниям с НДС, руб',
-        'Расход в оплате за заказ, руб',
-        'Расход по кампаниям и в оплате за заказ, руб',
-        'ДРР, %',
+        'Заказы шт (из отчета по Заказам)',
+        'Заказы руб (из отчета по Заказам)',
+
+        # Итоговые заказы и остаток
+        'Заказы всего шт',
+        'Заказы всего руб',
+
+        # Сводные расходы
+        'Расход по кампаниям и ОЗЗ, руб',
+        'Расход по кампаниям по размерному ряду, руб',
+        'Расход по кампаниям и ОЗЗ по размерному ряду, руб',
+
+        # Прочее "старое"
+        # 'Заказано на сумму, ₽',
+        # 'Общий ДРР',
+        # 'Дата добавления',
+
+        # Новые ДРР (в самом конце)
         'ДРР по артикулу, %',
+        'ДРР, %',
+
+        # Залупа
         'Остаток',
         'Дата добавления',
+
+
     ]
     # Если какой-то колонки нет, добавляем её
     for col in columns_order:
         if col not in df_excel_companies_report.columns:
             df_excel_companies_report[col] = np.nan
 
+    # Заменяем все значения 0 и 0.0 на NaN
+    df_excel_companies_report = df_excel_companies_report.replace({0: np.nan, 0.0: np.nan})
+
     # Делаем нужный порядок колонок
     df_excel_companies_report =df_excel_companies_report.loc[:, columns_order]
+
 
     return df_excel_companies_report
 
 
 # Функция сохранения и форматирования отчета excel
 def save_and_format_excel(
-        df_excel_companies_report,
+        dfs_to_save,
         date_campaign_report
 ):
+
     # Имя файла для сохранения
     file_name_report = (
         BASE_DIR
@@ -2078,7 +2288,8 @@ def save_and_format_excel(
     )
     # Сохраняем отчет в файл excel
     with pd.ExcelWriter(file_name_report) as w:
-        df_excel_companies_report.to_excel(w, index=False)
+        for sheet_name, df in dfs_to_save.items():
+            df.to_excel(w, sheet_name=sheet_name, index=False)
 
     logger.info('Formatting companies report')
 
@@ -2169,8 +2380,10 @@ def create_campaigns_report(
         to_save=True,
         delete_files=False,
 ):
-    logger.info(f"Creating companies report for client {client_name} for date {date_campaign_report}")
-
+    logger.info(f"Начало создания отчета по кампаниям для клиента {client_name}")
+    # Создаем папку для загрузки, если её нет
+    upload_path = Path(upload_path)
+    upload_path.mkdir(parents=True, exist_ok=True)
     # Проверяем, нужна ли статистика по всем кампаниям
     all_companies_stats_check = check_all_companies_stats(input_companies)
     # Создаем датафрейм с ID кампаний, их датами и ожидаемым списком файлов
@@ -2198,7 +2411,7 @@ def create_campaigns_report(
         df_input_companies_parsed,
         upload_path,
         auth_token,
-        task_id=task_id
+        task_id=None,
     )
     # Выгружаем отчет по товарам с оплатой за заказ
     payment_orders_report_file_name = get_promo_orders(
@@ -2206,31 +2419,11 @@ def create_campaigns_report(
         upload_path,
         auth_token
     )
-    # Обрабатываем загруженные файлы по рекламным кампаниям
-    df_companies_parsed = parse_companies_files(
-        date_campaign_report,
-        df_input_companies_parsed
-    )
-    # Обрабатываем данные отчета по товарам с оплатой за заказ
-    df_promo_search_costs = parse_search_promo_report(
-        payment_orders_report_file_name
-    )
-    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
-    df_companies_parsed_with_promo = add_promo_search_costs_to_company_stats(
-        df_companies_parsed,
-        df_promo_search_costs
-    )
 
     # Выгружаем список товаров
     df_products = get_ozon_product(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
-    # Добавляем данные по товарам в отчет по РК
-    df_companies_products_data = add_products_data_to_companies_reports(
-        df_companies_parsed_with_promo,
-        df_products_processed
-    )
-
     # Получаем мин. и макс. дату для заказов
     date_start_orders, date_end_orders = get_min_max_dates(df_input_companies_parsed)
     # Выгружаем заказы
@@ -2238,12 +2431,46 @@ def create_campaigns_report(
     # Выгружаем остатки
     df_reminders_all = get_reminders(df_products_processed, headers)
 
+    # Обрабатываем загруженные файлы по рекламным кампаниям
+    df_companies_parsed = parse_companies_files(
+        date_campaign_report,
+        df_input_companies_parsed
+    )
+    # Обрабатываем данные отчета по товарам с оплатой за заказ
+    df_payment_orders_report = parse_search_promo_report(
+        payment_orders_report_file_name
+    )
+
+    # Добавляем данные по заказам к оплате за заказ
+    df_payment_orders_report_with_orders = add_orders_to_payment_orders_report(
+        df_payment_orders_report,
+        df_orders_all,
+    )
+    # Добавляем данные по товарам к отчету по заказам с оплатой за заказ
+    df_payment_orders_report_with_products = add_products_data_to_payment_orders_report(
+        df_payment_orders_report_with_orders,
+        df_products_processed
+    )
+    # Считаем расходы по оплате за заказ
+    grouped_dfs_costs_payment_orders= calc_payment_orders_costs_v2(
+        df_payment_orders_report_with_products
+    )
+    # Добавляем данные по товарам в отчет по РК
+    df_companies_products_data = add_products_data_to_companies_reports(
+        df_companies_parsed,
+        df_products_processed
+    )
+    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
+    df_companies_parsed_with_promo = add_payment_orders_costs_to_company_stats(
+        df_companies_products_data,
+        grouped_dfs_costs_payment_orders
+    )
     # Добавляем данные по товарам в заказы
     df_orders_products_data = add_products_data_to_orders(df_orders_all, df_products_processed)
 
     # Считаем различные виды заказов
     df_companies_with_orders_and_models = calc_orders_for_companies(
-        df_companies_products_data,
+        df_companies_parsed_with_promo,
         df_orders_products_data,
         df_products_processed
     )
@@ -2257,11 +2484,16 @@ def create_campaigns_report(
     # Создаем df для записи в excel
     df_excel_companies_report = create_excel_report(df_final_orders)
 
+    result_companies_report = {
+        'Отчет РК': df_excel_companies_report,
+        'ОЗЗ 5%': df_payment_orders_report_with_products,
+    }
+
     # Если стоит флаг сохранения, то сохраняем отчет
     if to_save:
         # Сохраняем и форматируем отчет в excel
         file_name_report = save_and_format_excel(
-            df_excel_companies_report,
+            result_companies_report,
             date_campaign_report
         )
 
@@ -2269,7 +2501,7 @@ def create_campaigns_report(
         logger.info(f"Campaigns report saved in: {file_name_report}")
 
 
-    return df_excel_companies_report
+    return result_companies_report
 
 
 
@@ -2351,31 +2583,11 @@ if __name__ == '__main__':
         upload_path,
         auth_token
     )
-    # Обрабатываем загруженные файлы по рекламным кампаниям
-    df_companies_parsed = parse_companies_files(
-        date_campaign_report,
-        df_input_companies_parsed
-    )
-    # Обрабатываем данные отчета по товарам с оплатой за заказ
-    df_promo_search_costs = parse_search_promo_report(
-        payment_orders_report_file_name
-    )
-    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
-    df_companies_parsed_with_promo = add_promo_search_costs_to_company_stats(
-        df_companies_parsed,
-        df_promo_search_costs
-    )
 
     # Выгружаем список товаров
     df_products = get_ozon_product(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
-    # Добавляем данные по товарам в отчет по РК
-    df_companies_products_data = add_products_data_to_companies_reports(
-        df_companies_parsed_with_promo,
-        df_products_processed
-    )
-
     # Получаем мин. и макс. дату для заказов
     date_start_orders, date_end_orders = get_min_max_dates(df_input_companies_parsed)
     # Выгружаем заказы
@@ -2383,12 +2595,46 @@ if __name__ == '__main__':
     # Выгружаем остатки
     df_reminders_all = get_reminders(df_products_processed, headers)
 
+    # Обрабатываем загруженные файлы по рекламным кампаниям
+    df_companies_parsed = parse_companies_files(
+        date_campaign_report,
+        df_input_companies_parsed
+    )
+    # Обрабатываем данные отчета по товарам с оплатой за заказ
+    df_payment_orders_report = parse_search_promo_report(
+        payment_orders_report_file_name
+    )
+
+    # Добавляем данные по заказам к оплате за заказ
+    df_payment_orders_report_with_orders = add_orders_to_payment_orders_report(
+        df_payment_orders_report,
+        df_orders_all,
+    )
+    # Добавляем данные по товарам к отчету по заказам с оплатой за заказ
+    df_payment_orders_report_with_products = add_products_data_to_payment_orders_report(
+        df_payment_orders_report_with_orders,
+        df_products_processed
+    )
+    # Считаем расходы по оплате за заказ
+    grouped_dfs_costs_payment_orders= calc_payment_orders_costs_v2(
+        df_payment_orders_report_with_products
+    )
+    # Добавляем данные по товарам в отчет по РК
+    df_companies_products_data = add_products_data_to_companies_reports(
+        df_companies_parsed,
+        df_products_processed
+    )
+    # Добавляем данные отчета по товарам с оплатой за заказ в общий отчет
+    df_companies_parsed_with_promo = add_payment_orders_costs_to_company_stats(
+        df_companies_products_data,
+        grouped_dfs_costs_payment_orders
+    )
     # Добавляем данные по товарам в заказы
     df_orders_products_data = add_products_data_to_orders(df_orders_all, df_products_processed)
 
     # Считаем различные виды заказов
     df_companies_with_orders_and_models = calc_orders_for_companies(
-        df_companies_products_data,
+        df_companies_parsed_with_promo,
         df_orders_products_data,
         df_products_processed
     )
@@ -2401,9 +2647,14 @@ if __name__ == '__main__':
     df_final_orders = calc_final_orders(df_companies_with_orders_and_reminders)
     # Создаем df для записи в excel
     df_excel_companies_report = create_excel_report(df_final_orders)
+    # Формируем словарь с отчетами для сохранения в excel
+    result_companies_report = {
+        'Отчет РК': df_excel_companies_report,
+        'ОЗЗ 5%': df_payment_orders_report_with_products,
+    }
     # Сохраняем и форматируем отчет в excel
     file_name_report = save_and_format_excel(
-        df_excel_companies_report,
+        result_companies_report,
         date_campaign_report
     )
 
