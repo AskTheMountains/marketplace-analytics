@@ -366,206 +366,201 @@ def getProductsSearchPromote(auth_token, date_start, date_end):
         logger.info("Error creating products promote report")
 
 
-# Отчёт по товарам в оплате за заказ
 def get_search_promo_orders(
         auth_token,
         date_start,
         date_end,
         companies_stats_dir,
         task_id=None,
-        report_type: str = "all_sku",
+        report_type: str = "both",
 ):
     """
-    Выгружает отчёт по продвижению с оплатой за заказ.
+    Выгружает отчёт(ы) по продвижению с оплатой за заказ.
 
     Варианты отчёта:
       - "all_sku"      — отчёт по всем товарам (создание задачи через GET)
       - "selected_sku" — отчёт по выбранным товарам (создание задачи через POST)
-
-    Параметры
-    ---------
-    auth_token : dict
-        Словарь с данными авторизации для Ozon Performance API.
-        Должен содержать ключи: "token_type" и "access_token".
-        Токен автоматически проверяется и обновляется с помощью
-        функции `check_token_exp`.
-    date_start : str
-        Дата/время начала периода отчёта в формате, ожидаемом API.
-        Для варианта "all_sku" передаётся в параметр "timeBounds.from".
-        Для варианта "selected_sku" — в поле "from" JSON‑тела POST‑запроса.
-    date_end : str
-        Дата/время окончания периода отчёта в формате, ожидаемом API.
-        Аналогично `date_start`, но для "timeBounds.to" или "to".
-    companies_stats_dir : pathlib.Path
-        Путь к директории, где будет сохранён загруженный CSV‑файл отчёта.
-    task_id : str | None, optional
-        Идентификатор уже созданного задания на генерацию отчёта.
-        Если передан, создание нового задания пропускается и сразу
-        начинается опрос статуса существующего задания.
-        Если None (по умолчанию), функция создаёт новое задание.
-    report_type : str, optional
-        Тип отчёта:
-          - "all_sku" (по умолчанию) — отчёт по всем товарам, запрос на создание
-            задачи отправляется методом GET по эндпоинту
-            `/api/client/statistics/all_sku_promo/orders/generate`,
-            параметры передаются через `params`:
-              {"timeBounds.from": date_start, "timeBounds.to": date_end}
-          - "selected_sku" — отчёт по выбранным товарам, запрос на создание
-            задачи отправляется методом POST по эндпоинту
-            `/api/client/statistics/orders/generate`,
-            параметры передаются в теле `json`:
-              {"from": date_start, "to": date_end}
-
-    Возвращает
-    ----------
-    None
-        Функция сохраняет файл отчёта в `companies_stats_dir` и пишет
-        информацию в лог. В случае ошибки формирования отчёта или
-        неизвестного формата вызывает исключение или пишет ошибку в лог.
+      - "both"         — поочерёдно выгружает оба отчёта: all_sku и selected_sku
     """
     report_type = report_type.lower()
-    if report_type not in ("all_sku", "selected_sku"):
-        raise ValueError("Параметр report_type должен быть 'all_sku' или 'selected_sku'")
+    if report_type not in ("all_sku", "selected_sku", "both"):
+        raise ValueError("Параметр report_type должен быть 'all_sku', 'selected_sku' или 'both'")
 
-    logger.info(
-        "Начинаем выгрузку отчёта по продвижению с оплатой за заказ\n"
-        f"Диапазон дат (с временем): {date_start} — {date_end}\n"
-        f"Тип отчёта: {report_type}"
-    )
+    def _run_single_report(single_type: str, single_task_id: str | None, auth_token_local):
+        """
+        Создать задачу на отчёт указанного типа, дождаться готовности и скачать CSV.
+        single_type: 'all_sku' или 'selected_sku'
+        Возвращает обновлённый auth_token.
+        """
+        logger.info(
+            "Начинаем выгрузку отчёта по продвижению с оплатой за заказ\n"
+            f"Диапазон дат (с временем): {date_start} — {date_end}\n"
+            f"Тип отчёта: {single_type}"
+        )
 
-    # Формируем параметры запроса для создания задачи
-    if report_type == "selected_sku":
-        # вариант с POST, для выбранных товаров
-        params_products_pay_for_orders = {
-            'from': date_start,
-            'to': date_end,
-        }
-    else:
-        # вариант с GET, для всех товаров
-        params_products_pay_for_orders = {
-            'timeBounds.from': date_start,
-            'timeBounds.to': date_end,
-        }
-
-    # Если не задан ID задания на генерацию отчёта, создаём новое задание
-    if task_id is None:
-        report_task_ok = False
-        while not report_task_ok:
-            # Проверяем/обновляем токен
-            auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-            headers = {
-                'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
+        # Формируем параметры запроса для создания задачи
+        if single_type == "selected_sku":
+            # вариант с POST, для выбранных товаров
+            params_products_pay_for_orders = {
+                'from': date_start,
+                'to': date_end,
+            }
+        else:
+            # вариант с GET, для всех товаров
+            params_products_pay_for_orders = {
+                'timeBounds.from': date_start,
+                'timeBounds.to': date_end,
             }
 
-            # Создаём задание на генерацию отчёта в зависимости от типа
-            if report_type == "selected_sku":
-                # POST — отчёт по выбранным товарам
-                resp_data_products_pay_for_orders = (
-                    requests
-                    .post(
-                        f"{ozon_performance_api_url}:443/api/client/statistics/orders/generate",
-                        headers=headers,
-                        json=params_products_pay_for_orders,
+        # Если не задан ID задания на генерацию отчёта, создаём новое задание
+        if single_task_id is None:
+            report_task_ok = False
+            while not report_task_ok:
+                # Проверяем/обновляем токен (как в getCompanyStatistics)
+                auth_token_local = check_token_exp(
+                    auth_token_local,
+                    client_id_performance,
+                    client_secret_performance
+                )
+                headers = {
+                    'Authorization': auth_token_local['token_type'] + ' ' + auth_token_local['access_token']
+                }
+                # Создаём задание на генерацию отчёта в зависимости от типа
+                if single_type == "selected_sku":
+                    # POST — отчёт по выбранным товарам
+                    resp_data_products_pay_for_orders = (
+                        requests
+                        .post(
+                            f"{ozon_performance_api_url}:443/api/client/statistics/orders/generate",
+                            headers=headers,
+                            json=params_products_pay_for_orders,
+                        )
+                        .json()
                     )
-                    .json()
-                )
-            else:
-                # GET — отчёт по всем товарам
-                resp_data_products_pay_for_orders = (
-                    requests
-                    .get(
-                        "https://api-performance.ozon.ru:443/api/client/statistics/all_sku_promo/orders/generate",
-                        headers=headers,
-                        params=params_products_pay_for_orders,
+                else:
+                    # GET — отчёт по всем товарам
+                    resp_data_products_pay_for_orders = (
+                        requests
+                        .get(
+                            f"{ozon_performance_api_url}:443/api/client/statistics/all_sku_promo/orders/generate",
+                            headers=headers,
+                            params=params_products_pay_for_orders,
+                        )
+                        .json()
                     )
-                    .json()
-                )
 
-            # Если при запросе выходит ошибка — логируем и пробуем снова
-            if 'error' in resp_data_products_pay_for_orders:
-                error_message = resp_data_products_pay_for_orders['error']
-                logger.warning(
-                    "Ошибка при создании задания на отчёт по оплате за заказ: "
-                    f"{error_message}. Повтор через 5 секунд."
-                )
-                time.sleep(5)
-            else:
-                report_task_ok = True
+                if 'error' in resp_data_products_pay_for_orders:
+                    error_message = resp_data_products_pay_for_orders['error']
+                    logger.warning(
+                        "Ошибка при создании задания на отчёт по оплате за заказ "
+                        f"({single_type}): {error_message}. Повтор через 5 секунд."
+                    )
+                    time.sleep(5)
+                else:
+                    report_task_ok = True
 
-        # Получаем номер задания на генерацию отчёта
-        task_id = resp_data_products_pay_for_orders['UUID']
-        logger.info(
-            "Задание на формирование отчёта по оплате за заказ создано. "
-            f"ID задания: {task_id}"
-        )
-
-    # ----------------------------
-    # Ожидаем готовности отчёта
-    # ----------------------------
-    report_status = ''  # начальное значение статуса
-    logger.info("Проверяем статус формирования отчёта по оплате за заказ")
-    while report_status not in ['OK', 'ERROR']:
-        # Проверяем/обновляем токен
-        auth_token = check_token_exp(auth_token, client_id_performance, client_secret_performance)
-        headers = {
-            'Authorization': auth_token['token_type'] + ' ' + auth_token['access_token']
-        }
-        # Проверяем статус задания
-        resp_data_report_status = requests.get(
-            f"{ozon_performance_api_url}:443/api/client/statistics/{task_id}",
-            headers=headers
-        ).json()
-        report_status = resp_data_report_status.get('state', '')
-        logger.info(
-            "\nСтатус формирования отчёта по продвижению с оплатой за заказ:\n"
-            f"  Диапазон дат: {date_start} — {date_end}\n"
-            f"  Текущий статус: {report_status}\n"
-            f"  ID задания: {task_id}"
-        )
-        # Ограничение API — не чаще одного запроса раз в 5 секунд
-        time.sleep(5)
-
-    # ----------------------------
-    # Если отчёт сформирован — скачиваем
-    # ----------------------------
-    if resp_data_report_status.get('state') == 'OK':
-        logger.info("Отчёт по оплате за заказ сформирован, скачиваем файл")
-        params_get_report = {
-            "UUID": resp_data_report_status['UUID']
-        }
-        resp_data_report = requests.get(
-            f"{ozon_performance_api_url}:443/api/client/statistics/report",
-            params=params_get_report,
-            headers=headers
-        )
-        # Тип содержимого (ожидаем csv)
-        report_type_header = resp_data_report.headers['Content-Type'].split(';')[0]
-        # Имя файла из заголовка
-        file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
-        # Чистим имя файла
-        replace_dict = {
-            '"': '',
-            ' ': '',
-            'filename=': '',
-        }
-        for old, new in replace_dict.items():
-            file_name = file_name.replace(old, new)
-        # Если csv, просто сохраняем
-        if 'csv' in report_type_header:
-            file_path = companies_stats_dir / file_name
-            with open(file_path, 'wb') as w:
-                w.write(resp_data_report.content)
-            logger.info(f"Отчёт по продвижению с оплатой за заказ сохранён: {file_path}")
-        else:
-            raise ValueError(
-                f"Неизвестный формат отчёта по оплате за заказ: {report_type_header}"
+            single_task_id = resp_data_products_pay_for_orders['UUID']
+            logger.info(
+                "Задание на формирование отчёта по оплате за заказ создано. "
+                f"Тип: {single_type}, ID задания: {single_task_id}"
             )
-    else:
-        logger.error(
-            "Отчёт по продвижению с оплатой за заказ не был сформирован.\n"
-            f"Итоговый статус: {report_status}\n"
-            f"ID задания: {task_id}"
+
+        # ----------------------------
+        # Ожидаем готовности отчёта
+        # ----------------------------
+        report_status = ''  # начальное значение статуса
+        logger.info(
+            "Проверяем статус формирования отчёта по оплате за заказ\n"
+            f"Тип: {single_type}"
         )
+        while report_status not in ['OK', 'ERROR']:
+            # Обновляем токен при необходимости (как в getCompanyStatistics)
+            auth_token_local = check_token_exp(
+                auth_token_local,
+                client_id_performance,
+                client_secret_performance
+            )
+            headers = {
+                'Authorization': auth_token_local['token_type'] + ' ' + auth_token_local['access_token']
+            }
+            # Проверяем статус задания
+            resp_data_report_status = requests.get(
+                f"{ozon_performance_api_url}:443/api/client/statistics/{single_task_id}",
+                headers=headers
+            ).json()
+            report_status = resp_data_report_status.get('state', '')
+            logger.info(
+                "\nСтатус формирования отчёта по продвижению с оплатой за заказ:\n"
+                f"  Диапазон дат: {date_start} — {date_end}\n"
+                f"  Текущий статус: {report_status}\n"
+                f"  Тип: {single_type}\n"
+                f"  ID задания: {single_task_id}"
+            )
+            time.sleep(5)
+
+        # ----------------------------
+        # Если отчёт сформирован — скачиваем
+        # ----------------------------
+        if resp_data_report_status.get('state') == 'OK':
+            logger.info(
+                f"Отчёт по оплате за заказ сформирован (тип: {single_type}), скачиваем файл"
+            )
+            params_get_report = {
+                "UUID": resp_data_report_status['UUID']
+            }
+            resp_data_report = requests.get(
+                f"{ozon_performance_api_url}:443/api/client/statistics/report",
+                params=params_get_report,
+                headers=headers
+            )
+            report_type_header = resp_data_report.headers['Content-Type'].split(';')[0]
+            file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
+
+            replace_dict = {
+                '"': '',
+                ' ': '',
+                'filename=': '',
+            }
+            for old, new in replace_dict.items():
+                file_name = file_name.replace(old, new)
+
+            if 'csv' in report_type_header:
+                file_path = companies_stats_dir / file_name
+                with open(file_path, 'wb') as w:
+                    w.write(resp_data_report.content)
+                logger.info(
+                    f"Отчёт по продвижению с оплатой за заказ сохранён "
+                    f"(тип: {single_type}): {file_path}"
+                )
+            else:
+                raise ValueError(
+                    f"Неизвестный формат отчёта по оплате за заказ "
+                    f"(тип: {single_type}): {report_type_header}"
+                )
+        else:
+            logger.error(
+                "Отчёт по продвижению с оплатой за заказ не был сформирован.\n"
+                f"Итоговый статус: {report_status}\n"
+                f"Тип: {single_type}\n"
+                f"ID задания: {single_task_id}"
+            )
+
+        return auth_token_local
+
+    # ----------------------------
+    # Основная логика по report_type
+    # ----------------------------
+    if report_type in ("all_sku", "selected_sku"):
+        # Один отчёт, можно передать task_id
+        auth_token = _run_single_report(report_type, task_id, auth_token)
+    else:
+        # Новый режим: выгружаем оба отчёта независимо
+        logger.info("Режим 'both': начинаем выгрузку двух отчётов (all_sku и selected_sku)")
+        auth_token = _run_single_report("all_sku", None, auth_token)
+        auth_token = _run_single_report("selected_sku", None, auth_token)
+
+    # при желании можно возвращать обновлённый токен
+    return auth_token
 
 
 # Вызов всех функций
