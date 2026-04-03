@@ -398,378 +398,282 @@ def get_companies_info(headers, df_input_companies):
     return df_companies_nms_all
 
 
-# Функция получения статистики кампаний
-def get_company_stats(
-        headers,
-        df_input_companies,
-        request_type='interval'
-):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_companies_list = df_input_companies.copy()
-    # df, в который будем помещать результаты выгрузки по апи
-    df_companies_stats = pd.DataFrame()
-
-    # Для запроса с интервалом
-    # Для каждой кампании формируем интервал запроса данных статистики
-    df_companies_list['interval'] = df_companies_list.apply(
-        lambda row:  {'begin': row['date_start'], 'end': row['date_end']},
-        axis=1
-    )
-
-    # Для запроса по дням
-    # Переводим в timestamp
-    # df_companies_list['datetime_start'] = pd.to_datetime(df_companies_list['date_start'])
-    # df_companies_list['datetime_end'] = pd.to_datetime(df_companies_list['date_end'])
-    # Создаем список дат с частотой одного дня
-    df_companies_list['dates'] = df_companies_list.apply(
-        lambda row: pd.date_range(row['date_start'], row['date_end'], freq='D').strftime('%Y-%m-%d').tolist(),
-        axis=1
-    )
-    # Удаляем вспомогательные колонки
-    df_companies_list = df_companies_list.loc[:, ~df_companies_list.columns.isin([
-        'date_start', 'date_end', 'datetime_start', 'datetime_end'
-    ])]
-
-    # Разбиваем df на диапазоны по 100 измерений
-    step = 100
-    df_companies_list['id'] = np.arange(0, len(df_companies_list))
-    df_companies_list['chunks'] = df_companies_list['id'].apply(lambda x: int(x/step) + 1)
-    max_chunks = max(df_companies_list['chunks'])
-
-    logger.info("Uploading companies stats")
-    # Цикл по каждому диапазону
-    for chunk in df_companies_list['chunks'].unique():
-        # Выбираем нужный диапазон и колонки
-        tmp_df_companies_list = df_companies_list.loc[
-            df_companies_list['chunks'] == chunk,
-            ['Номер кампании'] + [request_type]
-        ]
-        # Переименовываем колонку для соответствия параметрам запроса
-        tmp_df_companies_list = tmp_df_companies_list.rename(columns={'Номер кампании': 'id'})
-        # Переводим в словарь (это и будут параметры запроса)
-        params_companies_stats = tmp_df_companies_list.to_dict(orient='records')
-        logger.info(f"Uploading {chunk} of {max_chunks} chunks")
-        # Делаем запрос
-        resp_data_companies_stats = requests.get(
-            "https://advert-api.wildberries.ru/adv/v3/fullstats",
-            headers=headers,
-            json=params_companies_stats
-        )
-        # Если пришли данные по кампаниям
-        if resp_data_companies_stats.status_code == 200:
-            # Переводим в словарь
-            resp_data_companies_stats = resp_data_companies_stats.json()
-            # Переводим в df
-            tmp_df_companies_stats = pd.DataFrame(resp_data_companies_stats)
-            # Объединяем с предыдущим проходом цикла
-            df_companies_stats = pd.concat([df_companies_stats, tmp_df_companies_stats])
-            # Ждем 1 минуту до выгрузки следующего диапазона кампаний (если это не последний диапазон)
-            logger.info("Waiting 1 minute before uploading next chunk")
-            if chunk != max_chunks:
-                time.sleep(60)
-        # Если не пришли данные по кампаниям, выводим ошибку
-        else:
-            print(f"{resp_data_companies_stats.json()}")
-            if chunk != max_chunks:
-                time.sleep(60)
-                # Ждем 1 минуту до выгрузки следующего диапазона кампаний (если это не последний диапазон)
-                logger.info("Waiting 1 minute before uploading next chunk")
-
-    # Убираем лишние колонки
-    # df_companies_stats.loc[:, ~df_companies_stats.columns.isin(['dates', 'days', 'boosterStats'])]
-
-    # Получаем df с номенклатурами кампаний
-    # df_companies_nms = result_companies_info['df_companies_nms_all']
-
-    # Добавляем в df статистики кампаний исходные интервалы запроса
-    # поскольку интервал, возвращаемый в ответе, не соответствует интервалу запроса
-    df_request_interval = (
-        pd.concat([
-            df_companies_list[['Номер кампании']],
-            pd.json_normalize(df_companies_list['interval'])
-        ], axis=1)
-        .rename(columns={
-            'Номер кампании': 'advertId',
-            'begin': 'Начальная дата запроса статистики РК',
-            'end': 'Конечная дата запроса статистики РК'
-        })
-    )
-    df_companies_stats_with_request_interval = (
-        df_companies_stats
-        .merge(
-            df_request_interval,
-            on='advertId',
-            how='left'
-        )
-    )
-
-    # Достаем interval из словаря
-    df_companies_stats_with_response_interval = (
-        pd.concat([
-            df_companies_stats_with_request_interval,
-            pd.json_normalize(df_companies_stats_with_request_interval['interval'])
-        ], axis=1)
-        # .rename(columns={
-        #     'begin': 'date_start',
-        #     'end': 'date_end',
-        # })
-    )
-    # Переводим даты в timestamp
-    # Создаем колонки с датой
-    df_companies_stats_with_response_interval['Начальная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['begin']).dt.date
-    df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['end']).dt.date
-    # У конечной даты добавляем 23:59:59
-    # time_to_add = timedelta(hours=23, minutes=29, seconds=59)
-    # df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = (
-    #      df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] + time_to_add
-    # )
-
-    # Перемещаем колонки с ID кампании и датами в начало df
-    companies_columns = [
-        'advertId',
-        'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
-        'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК'
-    ]
-    df_companies_stats_with_response_interval = move_columns(
-        df_companies_stats_with_response_interval,
-        companies_columns,
-        position=0
-    )
-
-    # Распаковываем статистику по дням
-    df_companies_stats_unpacked = df_companies_stats_with_response_interval.explode(column='days', ignore_index=True)
-    df_companies_stats_by_days = pd.concat([
-        df_companies_stats_unpacked[companies_columns],
-        pd.json_normalize(df_companies_stats_unpacked['days']),
-        ], axis=1)
-
-    # Распаковываем статистику по платформам
-    df_by_days_unpacked = df_companies_stats_by_days.explode(column='apps', ignore_index=True)
-    df_by_apps = pd.concat([
-        df_by_days_unpacked[companies_columns],
-        pd.json_normalize(df_by_days_unpacked['apps']),
-        ], axis=1)
-
-    # Распаковываем статистику по артикулам
-    df_by_apps_unpacked = df_by_apps.explode(column='nm', ignore_index=True)
-    df_by_nms = pd.concat([
-        df_by_apps_unpacked[companies_columns],
-        pd.json_normalize(df_by_apps_unpacked['nm']),
-        ], axis=1)
-
-    # Колонки, по которым производится группировка
-    groupby_cols = companies_columns + ['nmId', 'name']
-    # Считаем суммы по кампании и артикулу
-    df_companies_stats_nms = (
-        df_by_nms
-        .loc[:,
-             groupby_cols +
-             ['views', 'clicks', 'sum', 'atbs', 'orders', 'shks', 'sum_price']]
-        .groupby(groupby_cols)
-        .sum()
-        # .agg(**{
-        #     'views': ('views', 'sum'),
-        #     'clicks': ('clicks', 'sum')
-        # })
-        .reset_index()
-    )
-    # Считаем оставшиеся метрики
-    df_companies_stats_nms = df_companies_stats_nms.assign(
-        ctr=lambda df: df['clicks'] / df['views'] * 100,
-        cr=lambda df: df['shks'] / df['clicks'] * 100,
-        cpc=lambda df: df['sum'] / df['clicks'],
-        cpm=lambda df: df['sum'] / df['views'] * 1000,
-    )
-    # Переименовываем колонки
-    df_companies_stats_nms = df_companies_stats_nms.rename(columns={
-        'advertId': 'Номер кампании',
-        'nmId': 'Артикул WB',
-        'name': 'Наименование товара',
-        'views': 'Показы',
-        'clicks': 'Клики',
-        'sum': 'Затраты руб',
-        'atbs': 'Добавлений в корзину',
-        'orders': 'Заказы шт (из отчета РК)',
-        'sum_price': 'Заказы руб (из отчета РК)',
-        'shks': 'Заказанные товары шт (из отчета РК)',
-        'ctr': 'CTR, %',
-        'cr': 'CR, %',
-        'cpc': 'CPC',
-        'cpm': 'CPM',
-    })
-
-    # Создаем столбец с уникальным ID кампании по дате
-    df_companies_stats_nms['unique_company_id'] = (
-        df_companies_stats_nms
-        .groupby(['Номер кампании', 'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК'], as_index=False)
-        .ngroup() + 1
-    )
-    # Порядок колонок
-    df_companies_stats_nms = df_companies_stats_nms.loc[:,
-        [
-            'unique_company_id',
-            'Номер кампании',
-            'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
-            'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК',
-            'Артикул WB', 'Наименование товара',
-            'Показы', 'Клики',
-            'CTR, %', 'CR, %', 'CPC','CPM',
-            'Затраты руб',
-            'Добавлений в корзину',
-            'Заказы шт (из отчета РК)',
-            'Заказанные товары шт (из отчета РК)',
-            'Заказы руб (из отчета РК)',
-       ]
-    ]
-    # Перемещаем колонку в начало df
-    # df_companies_stats_nms = move_columns(
-    #     df_companies_stats_nms,
-    #     columns_to_move=['unique_company_id'],
-    #     position=0
-    # )
-
-    return df_companies_stats_nms
-
-
 def split_into_intervals(start_date, end_date, max_days=31):
-    """Разбивает интервал на интервалы не длиннее max_days"""
+    """Разбивает интервал на интервалы не длиннее max_days."""
     intervals = []
     current_start = start_date
     while current_start <= end_date:
-        current_end = min(current_start + timedelta(days=max_days-1), end_date)
-        intervals.append({'begin': current_start.strftime('%Y-%m-%d'), 'end': current_end.strftime('%Y-%m-%d')})
+        current_end = min(current_start + timedelta(days=max_days - 1), end_date)
+        intervals.append({
+            'begin': current_start.strftime('%Y-%m-%d'),
+            'end': current_end.strftime('%Y-%m-%d')
+        })
         current_start = current_end + timedelta(days=1)
     return intervals
 
 
-# Функция получения статистики кампаний (v2)
-def get_company_stats_v2(
-        headers,
-        df_input_companies,
-        request_type='interval'
-):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_companies_list = df_input_companies.copy()
+def get_company_stats_raw(
+        headers: dict,
+        df_input_companies: pd.DataFrame,
+        base_url: str = "https://advert-api.wildberries.ru/adv/v3/fullstats",
+        max_days: int = 31,
+        step: int = 100,
+        period_seconds: int = 60,
+        period_limit: int = 3,
+        min_interval_seconds: float = 20.0,
+        max_retries: int = 3,
+        batch_size_companies: int = 50
+) -> pd.DataFrame:
+    """
+    Получает сырую статистику кампаний по API WB в виде DataFrame.
 
-    # Для запроса с интервалом
-    # Для каждой кампании формируем интервал запроса данных статистики
-    df_companies_list['interval'] = df_companies_list.apply(
-        lambda row:  {'begin': row['date_start'], 'end': row['date_end']},
-        axis=1
+    Делает:
+      - разбиение списка кампаний на батчи по batch_size_companies;
+      - разбиение дат на интервалы не длиннее max_days;
+      - вызовы API с учётом rate limit (1 мин / 3 запроса / ~20 сек);
+      - сбор ответов в один DataFrame.
+
+    Ожидаемые колонки в df_input_companies:
+      - 'Номер кампании'
+      - 'date_start'
+      - 'date_end'
+    """
+
+    if df_input_companies.empty:
+        logger.warning("Входной датафрейм с кампаниями пуст. Возвращаю пустой результат.")
+        return pd.DataFrame()
+
+    df_companies = df_input_companies.copy()
+
+    total_companies = len(df_companies['Номер кампании'].unique())
+    logger.info(f"Всего уникальных кампаний в запросе: {total_companies}")
+
+    # Разбиваем входные кампании на батчи по batch_size_companies
+    unique_ids = df_companies['Номер кампании'].unique()
+    num_batches = (len(unique_ids) + batch_size_companies - 1) // batch_size_companies
+
+    logger.info(
+        f"Кампании будут обработаны батчами по {batch_size_companies} шт. "
+        f"Всего батчей: {num_batches}"
     )
-    # Формируем интервалы не более 31 дня
-    df_companies_list['intervals'] = df_companies_list.apply(
-        lambda row: split_into_intervals(
-            pd.to_datetime(row['date_start']),
-            pd.to_datetime(row['date_end'])
-        ), axis=1
-    )
-    # Создаем распакованный df со списком кампаний по интервалам не более 31 дня
-    df_companies_list_full = (
-        df_companies_list
-        .explode('intervals')
-        .reset_index(drop=True)
-    )
-    # Создаем даты для запроса
-    df_companies_list_full['interval_begin'] = df_companies_list_full['intervals'].apply(lambda x: x['begin'])
-    df_companies_list_full['interval_end'] = df_companies_list_full['intervals'].apply(lambda x: x['end'])
-    # Для запроса по дням
-    # Переводим в timestamp
-    # df_companies_list['datetime_start'] = pd.to_datetime(df_companies_list['date_start'])
-    # df_companies_list['datetime_end'] = pd.to_datetime(df_companies_list['date_end'])
-    # Создаем список дат с частотой одного дня
-    # df_companies_list['dates'] = df_companies_list.apply(
-    #     lambda row: pd.date_range(row['date_start'], row['date_end'], freq='D').strftime('%Y-%m-%d').tolist(),
-    #     axis=1
-    # )
 
-    # Удаляем вспомогательные колонки
-    # df_companies_list_full = df_companies_list_full.loc[:, ~df_companies_list_full.columns.isin([
-    #     'date_start', 'date_end', 'datetime_start', 'datetime_end'
-    # ])]
+    all_stats = pd.DataFrame()
 
-    # # Разбиваем df на диапазоны по 100 измерений
-    # step = 100
-    # df_companies_list_full['id'] = np.arange(0, len(df_companies_list_full))
-    # df_companies_list_full['chunks'] = df_companies_list_full['id'].apply(lambda x: int(x/step) + 1)
-    # max_chunks = max(df_companies_list_full['chunks'])
-
-    step = 100  # максимум кампаний в одном запросе
-    df_companies_stats = pd.DataFrame()  # df, куда будем складывать результаты выгрузки АПИ
-    # получаем уникальные интервалы
-    unique_intervals = df_companies_list_full[['interval_begin', 'interval_end']].drop_duplicates()
-    # Считаем количество отправленных запросов подряд без паузы
+    # Глобальный контроль лимита по времени
     request_counter = 0
+    period_start_ts = time.time()
 
-    logger.info("Uploading companies stats")
+    for batch_idx in range(num_batches):
+        batch_start = batch_idx * batch_size_companies
+        batch_ids = unique_ids[batch_start:batch_start + batch_size_companies]
 
-    # Цикл по каждому интервалу
-    for interval_idx, interval_row in unique_intervals.iterrows():
-        begin = interval_row['interval_begin']
-        end = interval_row['interval_end']
-        # список уникальных кампаний для этого интервала
-        company_ids = df_companies_list_full[
-            (df_companies_list_full['interval_begin'] == begin) &
-            (df_companies_list_full['interval_end'] == end)
-        ]['Номер кампании'].unique()
+        logger.info(
+            f"Обработка батча {batch_idx + 1}/{num_batches}. "
+            # f"Кампании: {list(map(int, batch_ids))}"
+        )
 
-        # разбиваем на интервалы по 100 кампаний
-        num_chunks = (len(company_ids) + step - 1) // step
+        df_batch = df_companies[df_companies['Номер кампании'].isin(batch_ids)].copy()
 
-        for chunk_idx in range(num_chunks):
-            i = chunk_idx * step
-            # Формируем параметры запроса
-            chunk = company_ids[i:i+step]
-            params_companies_stats = {
-                'ids': ','.join(str(i) for i in company_ids),
-                'beginDate': begin,
-                'endDate': end
-            }
+        # Формируем интервалы не более max_days
+        df_batch['intervals'] = df_batch.apply(
+            lambda row: split_into_intervals(
+                pd.to_datetime(row['date_start']),
+                pd.to_datetime(row['date_end']),
+                max_days=max_days
+            ),
+            axis=1
+        )
+
+        # Распаковываем интервалы
+        df_batch_full = (
+            df_batch
+            .explode('intervals')
+            .reset_index(drop=True)
+        )
+        df_batch_full['interval_begin'] = df_batch_full['intervals'].apply(lambda x: x['begin'])
+        df_batch_full['interval_end'] = df_batch_full['intervals'].apply(lambda x: x['end'])
+
+        # Уникальные интервалы дат в батче
+        unique_intervals = df_batch_full[['interval_begin', 'interval_end']].drop_duplicates()
+
+        logger.info(
+            f"Для батча {batch_idx + 1} сформировано {len(unique_intervals)} уникальных интервалов дат."
+        )
+
+        # Цикл по интервалам дат в данном батче
+        for interval_idx, interval_row in unique_intervals.iterrows():
+            begin = interval_row['interval_begin']
+            end = interval_row['interval_end']
+
+            # Кампании батча, попадающие в этот интервал
+            company_ids = df_batch_full[
+                (df_batch_full['interval_begin'] == begin) &
+                (df_batch_full['interval_end'] == end)
+            ]['Номер кампании'].unique()
+
+            # Разбиваем кампании на чанки по step (лимит 100 кампаний в одном запросе WB)
+            num_chunks = (len(company_ids) + step - 1) // step
 
             logger.info(
-                f"\nUploading companies {list(map(int, chunk))}\n"
-                f"Interval: {begin} - {end} "
-                # f"(кампаний в чанке: {len(chunk)})"
+                f"Батч {batch_idx + 1}: интервал {begin} - {end}, "
+                f"кампаний в интервале: {len(company_ids)}, чанков: {num_chunks}"
             )
-            # Отправляем запрос
-            resp_data_companies_stats = requests.get(
-                "https://advert-api.wildberries.ru/adv/v3/fullstats",
-                headers=headers,
-                params=params_companies_stats
-            )
-            # Если запрос прошел успешно, добавляем данные в общий df
-            if resp_data_companies_stats.status_code == 200:
-                # Переводим в словарь
-                resp_data_companies_stats = resp_data_companies_stats.json()
-                # Переводим в df
-                tmp_df_companies_stats = pd.DataFrame(resp_data_companies_stats)
-                # Добавляем даты текущего интервала
-                tmp_df_companies_stats['request_start_date_chunk'] = begin
-                tmp_df_companies_stats['request_end_date_chunk'] = end
-                # Объединяем в общий df
-                df_companies_stats = pd.concat([df_companies_stats, tmp_df_companies_stats])
-            # Если запрос вернулся с ошибкой, выводим ошибку
-            else:
-                print(f"{resp_data_companies_stats.json()}")
 
-            # После КАЖДОГО запроса увеличиваем счетчик
-            request_counter += 1
+            for chunk_idx in range(num_chunks):
+                i = chunk_idx * step
+                chunk = company_ids[i:i + step]
+                if len(chunk) == 0:
+                    continue
 
-            # Проверяем, последний ли это чанк в последнем интервале
-            is_last_interval = (interval_idx == len(unique_intervals) - 1)
-            is_last_chunk = (chunk_idx == num_chunks - 1)
-            is_last_request = is_last_interval and is_last_chunk
+                params_companies_stats = {
+                    'ids': ','.join(str(cid) for cid in chunk),
+                    'beginDate': begin,
+                    'endDate': end
+                }
 
-            # После каждого 5го запроса, если НЕ последний, ставим паузу и обнуляем счетчик
-            if request_counter == 5 and not is_last_request:
-                logger.info("Reached 5 requests limit, waiting 1 minute")
-                time.sleep(60)
-                request_counter = 0  # Обнуляем счетчик
+                logger.info(
+                    f"Батч {batch_idx + 1}/{num_batches}, интервал {begin} - {end}, "
+                    f"запрос по кампаниям: {list(map(int, chunk))}"
+                )
 
-    # Делаем сортировку по номеру кампании
-    df_companies_stats = df_companies_stats.sort_values(by='advertId', ignore_index=True)
+                # === Контроль лимита запросов ===
+                now = time.time()
+                # Если прошло больше period_seconds с начала окна — сбрасываем счётчик
+                if now - period_start_ts >= period_seconds:
+                    logger.info("Начинается новое минутное окно лимита. Сбрасываю счётчик запросов.")
+                    period_start_ts = now
+                    request_counter = 0
+
+                # Если уже достигли лимита запросов в текущем окне — ждём до конца минуты
+                if request_counter >= period_limit:
+                    sleep_time = period_seconds - (now - period_start_ts)
+                    if sleep_time > 0:
+                        logger.info(
+                            f"Достигнут лимит {period_limit} запросов за {period_seconds} секунд. "
+                            f"Пауза {sleep_time:.1f} сек."
+                        )
+                        time.sleep(sleep_time)
+                    period_start_ts = time.time()
+                    request_counter = 0
+
+                # Повторные попытки при 429 и временных ошибках
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        resp = requests.get(
+                            base_url,
+                            headers=headers,
+                            params=params_companies_stats
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Ошибка при выполнении запроса (попытка {attempt}/{max_retries}): {e}"
+                        )
+                        if attempt == max_retries:
+                            logger.error("Достигнут максимум попыток. Пропускаю этот чанк.")
+                            break
+                        time.sleep(5)
+                        continue
+
+                    status = resp.status_code
+                    rl_remaining = resp.headers.get("X-Ratelimit-Remaining")
+
+                    if status == 200:
+                        request_counter += 1
+
+                        try:
+                            resp_json = resp.json()
+                        except Exception as e:
+                            logger.error(f"Не удалось распарсить JSON ответа: {e}")
+                            break
+
+                        tmp_df = pd.DataFrame(resp_json)
+                        if not tmp_df.empty:
+                            tmp_df['request_start_date_chunk'] = begin
+                            tmp_df['request_end_date_chunk'] = end
+                            all_stats = pd.concat([all_stats, tmp_df], ignore_index=True)
+                            logger.info(
+                                f"Успешно получена статистика для {len(chunk)} кампаний "
+                                f"за период {begin} - {end}."
+                            )
+                        else:
+                            logger.info(
+                                f"Ответ для кампаний {list(map(int, chunk))} за период {begin} - {end} пуст."
+                            )
+
+                        # Если не последний запрос — выдерживаем интервал
+                        last_batch = (batch_idx == num_batches - 1)
+                        last_interval = (interval_idx == len(unique_intervals) - 1)
+                        last_chunk = (chunk_idx == num_chunks - 1)
+                        is_last_request = last_batch and last_interval and last_chunk
+
+                        if not is_last_request:
+                            if rl_remaining is not None and rl_remaining == '0':
+                                logger.info(
+                                    "Заголовок X-Ratelimit-Remaining = 0. "
+                                    f"Делаю паузу {min_interval_seconds} сек."
+                                )
+                                time.sleep(min_interval_seconds)
+                            else:
+                                logger.info(
+                                    f"Ожидание {min_interval_seconds} сек перед следующим запросом."
+                                )
+                                time.sleep(min_interval_seconds)
+
+                        break  # выходим из цикла попыток для этого чанка
+
+                    elif status == 429:
+                        logger.info(
+                            f"Ответ 429 Too Many Requests (попытка {attempt}/{max_retries}). "
+                            "Пауза 60 сек и повтор запроса."
+                        )
+                        time.sleep(60)
+                        if attempt == max_retries:
+                            logger.error("Достигнут максимум попыток после 429. Пропускаю этот чанк.")
+                        continue
+
+                    else:
+                        try:
+                            err_json = resp.json()
+                        except Exception:
+                            err_json = resp.text
+                        logger.error(
+                            f"Ошибка ответа API (HTTP {status}), попытка {attempt}/{max_retries}. "
+                            f"Тело ответа: {err_json}"
+                        )
+                        if attempt == max_retries:
+                            logger.error("Достигнут максимум попыток. Пропускаю этот чанк.")
+                            break
+                        time.sleep(5)
+                        continue
+
+    if all_stats.empty:
+        logger.warning("Не удалось получить ни одной записи статистики. Возвращаю пустой DataFrame.")
+        return all_stats
+
+    all_stats = all_stats.sort_values(by='advertId', ignore_index=True)
+    logger.info(f"Итоговый размер сырых данных со статистикой: {all_stats.shape}")
+    return all_stats
+
+
+# Функция обработки статистики кампаний
+def process_company_stats(
+        df_raw: pd.DataFrame,
+        df_input_companies: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Обрабатывает сырую статистику кампаний:
+      - добавляет интервалы запроса,
+      - распаковывает days/apps/nms,
+      - группирует по кампании и артикулу,
+      - считает метрики,
+      - фильтрует по затратам > 0.
+    """
+
+    if df_raw.empty:
+        logger.warning("df_raw is empty in process_company_stats.")
+        return pd.DataFrame()
+
     # Добавляем в df статистики кампаний исходные интервалы запроса
-    # поскольку интервал, возвращаемый в ответе, не соответствует интервалу запроса
     df_request_interval = (
         df_input_companies
         .rename(columns={
@@ -777,80 +681,59 @@ def get_company_stats_v2(
             'date_start': 'Начальная дата запроса статистики РК',
             'date_end': 'Конечная дата запроса статистики РК'
         })
-        .loc[:,
-             [
+        .loc[:, [
             'advertId',
             'Начальная дата запроса статистики РК',
             'Конечная дата запроса статистики РК'
-            ]
-        ]
-    )
-    df_companies_stats_with_request_interval = (
-        df_companies_stats
-        .merge(
-            df_request_interval,
-            on='advertId',
-            how='left'
-        )
+        ]]
+        .drop_duplicates()
     )
 
-    # Достаем interval ответа статистики РК из словаря
-    # df_companies_stats_with_response_interval = (
-    #     pd.concat([
-    #         df_companies_stats_with_request_interval,
-    #         pd.json_normalize(df_companies_stats_with_request_interval['interval'])
-    #     ], axis=1)
-    #     .rename(columns={
-    #         'begin': 'response_start_date',
-    #         'end': 'response_end_date',
-    #     })
-    # )
-    # Переводим даты в timestamp
-    # Создаем колонки с датой
-    # df_companies_stats_with_response_interval['Начальная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_start_date']).dt.date
-    # df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = pd.to_datetime(df_companies_stats_with_response_interval['response_end_date']).dt.date
-    # У конечной даты добавляем 23:59:59
-    # time_to_add = timedelta(hours=23, minutes=29, seconds=59)
-    # df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] = (
-    #      df_companies_stats_with_response_interval['Конечная дата ответа статистики РК'] + time_to_add
-    # )
+    df_stats = (
+        df_raw
+        .merge(df_request_interval, on='advertId', how='left')
+    )
 
-    # Перемещаем колонки с ID кампании и датами в начало df
+    # Колонки, которые будем держать "в голове" дальше
     companies_columns = [
         'advertId',
         'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
         'request_start_date_chunk', 'request_end_date_chunk',
-        # 'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК'
     ]
-    df_companies_stats_with_request_interval = move_columns(
-        df_companies_stats_with_request_interval,
-        companies_columns,
-        position=0
+
+    df_stats = move_columns(df_stats, companies_columns, position=0)
+
+    # Распаковываем по дням
+    df_unpacked_days = df_stats.explode(column='days', ignore_index=True)
+    df_by_days = pd.concat(
+        [
+            df_unpacked_days[companies_columns],
+            pd.json_normalize(df_unpacked_days['days'])
+        ],
+        axis=1
     )
 
-    # Распаковываем статистику по дням
-    df_companies_stats_unpacked = df_companies_stats_with_request_interval.explode(column='days', ignore_index=True)
-    df_companies_stats_by_days = pd.concat([
-        df_companies_stats_unpacked[companies_columns],
-        pd.json_normalize(df_companies_stats_unpacked['days']),
-        ], axis=1)
+    # Распаковываем по платформам
+    df_unpacked_apps = df_by_days.explode(column='apps', ignore_index=True)
+    df_by_apps = pd.concat(
+        [
+            df_unpacked_apps[companies_columns],
+            pd.json_normalize(df_unpacked_apps['apps'])
+        ],
+        axis=1
+    )
 
-    # Распаковываем статистику по платформам
-    df_by_days_unpacked = df_companies_stats_by_days.explode(column='apps', ignore_index=True)
-    df_by_apps = pd.concat([
-        df_by_days_unpacked[companies_columns],
-        pd.json_normalize(df_by_days_unpacked['apps']),
-        ], axis=1)
+    # Распаковываем по артикулам
+    df_unpacked_nms = df_by_apps.explode(column='nms', ignore_index=True)
+    df_by_nms = pd.concat(
+        [
+            df_unpacked_nms[companies_columns],
+            pd.json_normalize(df_unpacked_nms['nms'])
+        ],
+        axis=1
+    )
 
-    # Распаковываем статистику по артикулам
-    df_by_apps_unpacked = df_by_apps.explode(column='nms', ignore_index=True)
-    df_by_nms = pd.concat([
-        df_by_apps_unpacked[companies_columns],
-        pd.json_normalize(df_by_apps_unpacked['nms']),
-        ], axis=1)
-
-    # Колонки, по которым производится группировка
-    # groupby_cols = companies_columns + ['nmId', 'name']
+    # Группировка по кампании и артикулу
     groupby_cols = [
         'advertId',
         'Начальная дата запроса статистики РК',
@@ -858,29 +741,24 @@ def get_company_stats_v2(
         'nmId',
         'name'
     ]
-    # Считаем суммы по кампании и артикулу
-    df_companies_stats_nms = (
+
+    df_agg = (
         df_by_nms
-        .loc[:,
-             groupby_cols +
-             ['views', 'clicks', 'sum', 'atbs', 'orders', 'shks', 'sum_price']]
-        .groupby(groupby_cols)
+        .loc[:, groupby_cols + ['views', 'clicks', 'sum', 'atbs', 'orders', 'shks', 'sum_price']]
+        .groupby(groupby_cols, as_index=False)
         .sum()
-        # .agg(**{
-        #     'views': ('views', 'sum'),
-        #     'clicks': ('clicks', 'sum')
-        # })
-        .reset_index()
     )
-    # Считаем оставшиеся метрики
-    df_companies_stats_nms = df_companies_stats_nms.assign(
-        ctr=lambda df: df['clicks'] / df['views'] * 100,
-        cr=lambda df: df['shks'] / df['clicks'] * 100,
-        cpc=lambda df: df['sum'] / df['clicks'],
-        cpm=lambda df: df['sum'] / df['views'] * 1000,
+
+    # Метрики (с защитой от деления на ноль)
+    df_agg = df_agg.assign(
+        ctr=lambda df: np.where(df['views'] > 0, df['clicks'] / df['views'] * 100, 0.0),
+        cr=lambda df: np.where(df['clicks'] > 0, df['shks'] / df['clicks'] * 100, 0.0),
+        cpc=lambda df: np.where(df['clicks'] > 0, df['sum'] / df['clicks'], 0.0),
+        cpm=lambda df: np.where(df['views'] > 0, df['sum'] / df['views'] * 1000, 0.0),
     )
-    # Переименовываем колонки
-    df_companies_stats_nms = df_companies_stats_nms.rename(columns={
+
+    # Переименование колонок
+    df_agg = df_agg.rename(columns={
         'advertId': 'Номер кампании',
         'nmId': 'Артикул WB',
         'name': 'Наименование товара',
@@ -897,44 +775,41 @@ def get_company_stats_v2(
         'cpm': 'CPM',
     })
 
-    # Создаем столбец с уникальным ID кампании по дате
-    df_companies_stats_nms['unique_company_id'] = (
-        df_companies_stats_nms
-        .groupby(['Номер кампании', 'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК'], as_index=False)
+    # Уникальный ID кампании по периоду
+    df_agg['unique_company_id'] = (
+        df_agg
+        .groupby(
+            ['Номер кампании',
+             'Начальная дата запроса статистики РК',
+             'Конечная дата запроса статистики РК'],
+            as_index=False
+        )
         .ngroup() + 1
     )
-    # Порядок колонок
-    df_companies_stats_nms = df_companies_stats_nms.loc[:,
-        [
-            'unique_company_id',
-            'Номер кампании',
-            'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
-            # 'Начальная дата ответа статистики РК', 'Конечная дата ответа статистики РК',
-            'Артикул WB', 'Наименование товара',
-            'Показы', 'Клики РК',
-            'CTR, %', 'CR, %', 'CPC','CPM',
-            'Затраты руб',
-            'Корзина РК',
-            'Заказы шт (из отчета РК)',
-            'Заказанные товары шт (из отчета РК)',
-            'Заказы руб (из отчета РК)',
-       ]
-    ]
-    # Перемещаем колонку в начало df
-    # df_companies_stats_nms = move_columns(
-    #     df_companies_stats_nms,
-    #     columns_to_move=['unique_company_id'],
-    #     position=0
-    # )
 
-    # Фильтруем статистику только по тем артикулам, по которым были расходы
-    df_companies_stats_nms = (
-        df_companies_stats_nms
-        .loc[df_companies_stats_nms['Затраты руб'] > 0, :]
+    # Порядок колонок
+    df_agg = df_agg.loc[:, [
+        'unique_company_id',
+        'Номер кампании',
+        'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
+        'Артикул WB', 'Наименование товара',
+        'Показы', 'Клики РК',
+        'CTR, %', 'CR, %', 'CPC', 'CPM',
+        'Затраты руб',
+        'Корзина РК',
+        'Заказы шт (из отчета РК)',
+        'Заказанные товары шт (из отчета РК)',
+        'Заказы руб (из отчета РК)',
+    ]]
+
+    # Фильтр по затратам
+    df_agg = (
+        df_agg
+        .loc[df_agg['Затраты руб'] > 0, :]
         .reset_index(drop=True)
     )
 
-    return df_companies_stats_nms
+    return df_agg
 
 
 # Функция определения минимальной и максимальной даты в кампаниях
@@ -1715,8 +1590,8 @@ if __name__ == '__main__':
     df_date_range = generate_dates(
         start_date=date_start_cli,
         end_date=date_end_cli,
-        # start_date='2025-09-01',
-        # end_date='2025-09-23'
+        # start_date='2026-03-01',
+        # end_date='2026-03-31'
     )
     # Список кампаний и даты для каждой кампании,
     # за которые нужно сформировать отчет
@@ -1725,20 +1600,26 @@ if __name__ == '__main__':
     date_campaign_report = str(date.today())
     # Создаем df с нужным списком кампаний и датами
     df_input_companies = create_companies_upload_df(input_companies)
+
     # Получаем список кампаний
     df_company_list = get_company_list(headers)
     # Получаем список номенклатур кампании
     # df_companies_nms = get_companies_info(headers, df_input_companies)
     # Получаем статистику кампаний
-    df_companies_stats = get_company_stats_v2(headers, df_input_companies, request_type='interval')
+    df_companies_stats_raw = get_company_stats_raw(headers, df_input_companies)
+    # Обрабатываем статистику кампаний
+    df_companies_stats = process_company_stats(df_companies_stats_raw, df_input_companies)
+
     # Получаем список товаров
     df_products = getWBProduct(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
+
     # Находим мин. и макс. дату для получения заказов
     date_start_orders, date_end_orders = get_min_max_dates(df_input_companies)
     # Выгружаем заказы
     df_orders = get_orders(headers, date_start_orders, date_end_orders)
+
     # Считаем заказы для каждой кампании
     df_companies_stats_with_orders, df_associated_orders = calc_orders_for_companies(
         df_input_companies,
