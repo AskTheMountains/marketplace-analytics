@@ -1956,8 +1956,11 @@ def generate_monthly_intervals(date_start: str, date_end: str):
 # Функция выгрузки списка транзакций
 def uploadTransactionReport(headers, date_start, date_end):
     """
-    Выгружает транзакции по API Ozon с разбивкой по месяцам и логированием.
+    Выгружает транзакции по API Ozon с разбивкой по месяцам, пагинацией и повторными попытками запросов.
     """
+    sleep_interval = 10
+    max_retries = 5
+
     dt_start = pd.to_datetime(date_start)
     dt_end = pd.to_datetime(date_end)
     period_days = (dt_end - dt_start).days
@@ -1977,13 +1980,13 @@ def uploadTransactionReport(headers, date_start, date_end):
         }])
 
     logger.info(f"Выгрузка транзакций с {date_start} по {date_end} начата.")
-
     df_transactions_list = pd.DataFrame()
 
     for idx, interval in date_range_df.iterrows():
         logger.info(f"Обработка периода: {interval['dt_start']} - {interval['dt_end']}")
         page = 1
-        total_pages = 1  # Пажинация: по умолчанию хотя бы одну страницу пробуем
+        total_pages = 1  # хотя бы одну страницу пробуем
+
         while page <= total_pages:
             payload = {
                 "filter": {
@@ -1998,41 +2001,97 @@ def uploadTransactionReport(headers, date_start, date_end):
                 "page": page,
                 "page_size": 1000
             }
-            try:
-                resp = requests.post(
-                    f"{ozon_seller_api_url}/v3/finance/transaction/list",
-                    headers=headers,
-                    data=json.dumps(payload),
-                    timeout=60
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                # Получение страниц
-                result = data.get('result', {})
-                total_pages = result.get('page_count', 0)
-                operations = result.get('operations', [])
-                if not operations:
-                    logger.info(f"Нет транзакций за этот период, страница {page}.")
-                tmp_df = pd.DataFrame(operations)
-                if not tmp_df.empty:
-                    tmp_df = tmp_df.assign(
-                        dt_start=interval['dt_start'],
-                        dt_end=interval['dt_end']
+
+            attempt = 1
+            success = False
+
+            while attempt <= max_retries and not success:
+                try:
+                    resp = requests.post(
+                        f"{ozon_seller_api_url}/v3/finance/transaction/list",
+                        headers=headers,
+                        data=json.dumps(payload),
+                        timeout=60
                     )
-                    df_transactions_list = pd.concat([df_transactions_list, tmp_df], ignore_index=True)
-                logger.info(f"Страница {page} из {total_pages} обработана.")
-            except requests.RequestException as ex:
-                logger.error(f"Ошибка запроса API на странице {page}: {ex}")
-            except Exception as ex:
-                logger.error(f"Общая ошибка на странице {page}: {ex}")
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    result = data.get('result', {})
+                    # обновляем total_pages только по результатам успешного запроса
+                    total_pages = result.get('page_count', 0) or 1
+                    operations = result.get('operations', [])
+
+                    if not operations:
+                        logger.info(
+                            f"Нет транзакций за этот период, страница {page} "
+                            f"({interval['dt_start']} - {interval['dt_end']})."
+                        )
+                    else:
+                        tmp_df = pd.DataFrame(operations)
+                        if not tmp_df.empty:
+                            tmp_df = tmp_df.assign(
+                                dt_start=interval['dt_start'],
+                                dt_end=interval['dt_end']
+                            )
+                            df_transactions_list = pd.concat(
+                                [df_transactions_list, tmp_df],
+                                ignore_index=True
+                            )
+
+                    logger.info(
+                        f"Страница {page} из {total_pages} обработана "
+                        f"({interval['dt_start']} - {interval['dt_end']})."
+                    )
+                    success = True
+
+                    # Пауза только после успешного запроса, перед следующей страницей
+                    logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
+                    time.sleep(sleep_interval)
+
+                except requests.RequestException as ex:
+                    logger.error(
+                        f"Ошибка запроса API по транзакциям "
+                        f"(период {interval['dt_start']} - {interval['dt_end']}, "
+                        f"страница {page}, попытка {attempt}/{max_retries}): {ex}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток для "
+                            f"периода {interval['dt_start']} - {interval['dt_end']}, "
+                            f"страницы {page}. Переходим к следующей странице/интервалу."
+                        )
+                        break
+                    logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                    time.sleep(sleep_interval)
+                    attempt += 1
+
+                except Exception as ex:
+                    logger.error(
+                        f"Общая ошибка по транзакциям "
+                        f"(период {interval['dt_start']} - {interval['dt_end']}, "
+                        f"страница {page}, попытка {attempt}/{max_retries}): {ex}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток (общая ошибка) для "
+                            f"периода {interval['dt_start']} - {interval['dt_end']}, "
+                            f"страницы {page}. Переходим к следующей странице/интервалу."
+                        )
+                        break
+                    logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                    time.sleep(sleep_interval)
+                    attempt += 1
+
             page += 1
 
     if not df_transactions_list.empty:
-        logger.info(f"Выгрузка транзакций завершена. Найдено {df_transactions_list.shape[0]} транзакций.")
+        logger.info(
+            f"Выгрузка транзакций завершена. "
+            f"Найдено {df_transactions_list.shape[0]} транзакций."
+        )
     else:
         logger.info("Транзакции не найдены по указанному периоду.")
         return pd.DataFrame(columns=api_columns.get("transactions", []))
-
 
     return df_transactions_list
 
@@ -3077,86 +3136,98 @@ def getSalesFBS(headers):
 
 # Остатки FBO
 def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
-
     logger.info(f"Выгрузка остатков FBO на {str(date.today())}")
-
     # Интервал между запросами (в секундах)
-    sleep_interval = 5
+    sleep_interval = 10
+    max_retries = 5
 
     # Если список товаров не задан, считываем его из текущей выгрузки
     if df_products is None:
-        # Задаем имя файла для товаров
         file_name_products = (
             uploaddir_today /
             f"{str(date.today())}_Товары.csv"
         )
         df_products_ = pd.read_csv(file_name_products, sep=';')
-    # Если список товаров задан, берем его из переданного аргумента
     else:
         df_products_ = df_products.copy()
-    # Удаляем на всякий случай дубликаты
+
+    # Удаляем дубликаты и SKU = 0
     df_products_ = df_products_.drop_duplicates(subset=['SKU'])
-    # Удаляем товары с SKU = 0 (скрытые товары)
     df_products_ = df_products_.loc[~df_products_['SKU'].isin([0, '0']), :]
-    # Сбрасываем индекс
     df_products_ = df_products_.reset_index(drop=True)
+
     # Разбиваем список товаров на диапазоны по 100 шт
     step = 100
     df_products_['chunks'] = (df_products_.index // step) + 1
 
-    # df, куда будем помещать результаты выгрузки АПИ
     df_fbo_reminders_api = pd.DataFrame()
-
-    # Переменная для отслеживания количества товаров
     uploaded_products_count = 0
     total_products_count = df_products_.shape[0]
 
-    # Цикл по каждому интервалу
     for chunk in df_products_['chunks'].unique():
-        # Делаем выборку одного интервала
         df_products_chunk = df_products_.loc[df_products_['chunks'] == chunk, :]
-        # Считаем, сколько товаров в данном интервале
         products_count_in_chunk = df_products_chunk.shape[0]
-        # Формируем лист с SKU
-        sku_list = df_products_chunk['SKU'].to_list()
-        # Переводим SKU в строку
-        sku_list = [str(sku) for sku in sku_list]
+        sku_list = df_products_chunk['SKU'].astype(str).tolist()
 
-        # Параметры запроса
-        params_fbo_reminders = json.dumps({
-            'skus': sku_list
-        })
+        params_fbo_reminders = json.dumps({'skus': sku_list})
 
-        # Запрос к АПИ
-        resp_data_reminders_fbo = requests.post(
-            f"{ozon_seller_api_url}//v1/analytics/stocks",
-            headers=headers,
-            data=params_fbo_reminders
-        )
-        if resp_data_reminders_fbo.status_code == 200:
-            resp_data_reminders_fbo = resp_data_reminders_fbo.json()
-            # Переводим в df
-            tmp_df_fbo_reminders = pd.DataFrame(resp_data_reminders_fbo['items'])
+        attempt = 1
+        while attempt <= max_retries:
+            try:
+                resp = requests.post(
+                    f"{ozon_seller_api_url}//v1/analytics/stocks",
+                    headers=headers,
+                    data=params_fbo_reminders,
+                    timeout=60  # на всякий случай
+                )
+            except Exception as e:
+                logger.error(
+                    f"Ошибка сети/запроса при получении остатков FBO "
+                    f"(интервал {chunk}, попытка {attempt}/{max_retries}): {e}"
+                )
+                if attempt == max_retries:
+                    logger.error(
+                        f"Достигнуто максимальное число попыток для интервала {chunk}. "
+                        f"Переходим к следующему интервалу."
+                    )
+                    break
+                logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                time.sleep(sleep_interval)
+                attempt += 1
+                continue
 
-            # Объединяем с предыдущим проходом цикла
-            df_fbo_reminders_api = pd.concat([df_fbo_reminders_api, tmp_df_fbo_reminders])
+            if resp.status_code == 200:
+                resp_data = resp.json()
+                tmp_df_fbo_reminders = pd.DataFrame(resp_data.get('items', []))
+                df_fbo_reminders_api = pd.concat(
+                    [df_fbo_reminders_api, tmp_df_fbo_reminders],
+                    ignore_index=True
+                )
 
-            # Обновляем количество загруженных товаров
-            uploaded_products_count += products_count_in_chunk
+                uploaded_products_count += products_count_in_chunk
+                logger.info(
+                    f"Выгружены остатки для {uploaded_products_count} из {total_products_count} товаров "
+                    f"(интервал {chunk}/{df_products_['chunks'].max()})"
+                )
+                logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
+                time.sleep(sleep_interval)
+                break  # успешный запрос, выходим из while и идем к следующему чанку
+            else:
+                logger.error(
+                    f"Ошибка получения остатков FBO (интервал {chunk}, попытка {attempt}/{max_retries}): "
+                    f"{resp.status_code} {resp.text}"
+                )
+                if attempt == max_retries:
+                    logger.error(
+                        f"Достигнуто максимальное число попыток для интервала {chunk}. "
+                        f"Переходим к следующему интервалу."
+                    )
+                    break
+                logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                time.sleep(sleep_interval)
+                attempt += 1
 
-            logger.info(
-                f"Выгружены остатки для {uploaded_products_count} из {total_products_count} товаров "
-                f"(интервал {chunk}/{df_products_['chunks'].max()})"
-            )
-
-            # Делаем паузу между запросами
-            logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
-            time.sleep(sleep_interval)
-
-        else:
-            logger.error(f"Ошибка получения остатков FBO: {resp_data_reminders_fbo.text}")
-
-    # Переименовываем и выбираем нужные колонки
+    # Переименование и выбор колонок
     rename_dict = {
         'sku': 'SKU',
         'offer_id': 'Артикул',
@@ -3170,9 +3241,9 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
     }
     df_fbo_reminders_api = df_fbo_reminders_api.rename(columns=rename_dict)
 
-    df_fbo_reminders = (
-        df_fbo_reminders_api
-        .loc[:, df_fbo_reminders_api.columns.isin([
+    df_fbo_reminders = df_fbo_reminders_api.loc[
+        :,
+        df_fbo_reminders_api.columns.isin([
             'SKU',
             'Артикул',
             'Наименование товара',
@@ -3182,14 +3253,13 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
             'Товары в заявках на поставку',
             'Товары в пути',
             'Доступный к продаже товар'
-        ])]
-    )
-    # Если пришел пустой df, то сохраняем df с колонками, которые приходят по апи
+        ])
+    ]
+
     if df_fbo_reminders.empty:
         df_fbo_reminders = pd.DataFrame(columns=list(rename_dict.values()))
-    # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
+
     if to_save:
-        # Задаем имя файла для сохранения остатков
         file_name_stock_rem_fbo = (
             uploaddir_today /
             f"{str(date.today())}_Остатки_fbo.csv"
@@ -3197,6 +3267,7 @@ def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
         df_fbo_reminders.to_csv(file_name_stock_rem_fbo, sep=";", index=False, encoding='utf-8-sig')
 
     return df_fbo_reminders
+
 
 # Список складов FBS
 def get_ozon_warehouses_fbs(
@@ -3258,184 +3329,250 @@ def get_ozon_warehouses_fbs(
 
 
 # Остатки FBS
-def getStockReminders_fbs(headers: dict, to_save: bool = True) -> pd.DataFrame:
+def getStockReminders_fbs(
+    headers: dict,
+    df_products: pd.DataFrame | None = None,
+    to_save: bool = True,
+    step: int = 500,
+) -> pd.DataFrame:
     """
-    Получить отчет по остаткам на FBS-складах Ozon, сохранить (опционально) в CSV
-    и вернуть как pandas.DataFrame.
+    Получить остатки товаров на FBS-складах Ozon по новому методу:
+    POST /v2/product/info/stocks-by-warehouse/fbs
 
-    :param headers: Заголовки для Ozon Seller API (Client-Id, Api-Key, Content-Type).
-    :param to_save: Если True — сохраняет файл в uploaddir_today, в любом случае
-                    возвращает DataFrame.
+    Используется только список SKU (без offer_id).
+    Для каждого чанка SKU выполняется постраничная выборка по cursor/has_next.
+
+    :param headers: Заголовки для Ozon Seller API:
+    :param df_products: DataFrame со списком товаров с колонкой 'SKU'.
+                        Если None — список берётся из файла
+                        `{today}_Товары.csv` в каталоге `uploaddir_today`.
+    :param to_save: Если True — сохраняет итоговый CSV `{today}_Остатки_fbs.csv`
+                    в `uploaddir_today`.
+    :param step: Размер чанка по SKU (количество SKU в одном цикле cursor-пагинации).
+                 Не должен превышать 1000 (ограничение Ozon API).
+    :return: pandas.DataFrame с колонками:
+             - "SKU"
+             - "Артикул"
+             - "Идентификатор склада"
+             - "Название склада"
+             - "Доступно на моем складе, шт"
+             - "Зарезервировано на моем складе, шт"
+             - "Всего на складе, шт"
+             - "product_id"
     """
-    logger.info("Запуск формирования отчета по остаткам FBS")
 
-    # Имя файла для сохранения
+    logger.info(f"Выгрузка остатков FBS (v2) на {str(date.today())}")
+
+    sleep_interval = 5
+    max_retries = 5
+    api_url = f"{ozon_seller_api_url}/v2/product/info/stocks-by-warehouse/fbs"
+
     file_name_stock_rem_fbs = (
         uploaddir_today /
         f"{str(date.today())}_Остатки_fbs.csv"
     )
 
-    # Колонки итогового DataFrame
-    fbs_reminders_columns = [
+    result_columns = [
+        "SKU",
+        "Артикул",
         "Идентификатор склада",
         "Название склада",
-        "Артикул",
-        "Наименование товара",
         "Доступно на моем складе, шт",
         "Зарезервировано на моем складе, шт",
+        "Всего на складе, шт",
+        "product_id",
     ]
 
-    # Получаем список FBS-складов
-    logger.info("Получаем список FBS-складов")
-    fbs_warehouses = get_ozon_warehouses_fbs(headers)  # <- твоя функция получения складов FBS
+    # 1. Список товаров
+    if df_products is None:
+        file_name_products = (
+            uploaddir_today /
+            f"{str(date.today())}_Товары.csv"
+        )
+        logger.info(f"Загружаем список товаров из файла: {file_name_products}")
+        df_products_ = pd.read_csv(file_name_products, sep=';')
+    else:
+        df_products_ = df_products.copy()
 
-    if fbs_warehouses.empty:
-        logger.warning("Не найдено ни одного FBS-склада. Возвращаем пустой DataFrame.")
-        df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
+    if 'SKU' not in df_products_.columns:
+        raise ValueError("В df_products отсутствует колонка 'SKU'")
+
+    # Удаляем дубликаты и SKU = 0
+    df_products_ = (
+        df_products_
+        .drop_duplicates(subset=['SKU'])
+        .loc[~df_products_['SKU'].isin([0, '0']), :]
+        .reset_index(drop=True)
+    )
+
+    if df_products_.empty:
+        logger.warning("Список товаров пуст. Возвращаем пустой DataFrame по остаткам FBS.")
+        df_empty = pd.DataFrame(columns=result_columns)
         if to_save:
-            df_fbs_reminders.to_csv(
-                file_name_stock_rem_fbs,
-                sep=";",
-                encoding="utf-8-sig",
-                index=False,
-            )
-            logger.info(f"Пустой отчет по остаткам FBS сохранен в файл: {file_name_stock_rem_fbs}")
+            df_empty.to_csv(file_name_stock_rem_fbs, sep=";", index=False, encoding="utf-8-sig")
+        return df_empty
 
-        return df_fbs_reminders
+    # 2. Чанкование по SKU
+    if step > 1000:
+        step = 1000  # ограничение API
+    df_products_['chunk'] = (df_products_.index // step) + 1
 
-    # Формируем запрос на генерацию отчёта по остаткам
-    warehouse_ids = fbs_warehouses["warehouse_id"].tolist()
-    logger.info(f"Формируем отчет по остаткам для {len(warehouse_ids)} FBS-складов")
+    df_fbs_reminders_api = pd.DataFrame()
+    uploaded_products_count = 0
+    total_products_count = df_products_.shape[0]
+    total_chunks = int(df_products_['chunk'].max())
 
-    payload_stock_report = {
-        "language": "DEFAULT",
-        "warehouseId": warehouse_ids,
-    }
+    # 3. Обработка чанков + пагинация по cursor для каждого чанка
+    for chunk in sorted(df_products_['chunk'].unique()):
+        df_chunk = df_products_.loc[df_products_['chunk'] == chunk, :]
+        products_count_in_chunk = df_chunk.shape[0]
 
-    try:
-        resp = requests.post(
-            f"{ozon_seller_api_url}/v1/report/warehouse/stock",
-            headers=headers,
-            json=payload_stock_report,
-            timeout=30,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        logger.error(f"Ошибка при запросе генерации отчета по остаткам FBS: {exc}")
-        raise
+        sku_list = df_chunk['SKU'].astype(str).tolist()
 
-    stock_report_data = resp.json()
-    report_code = stock_report_data.get("result", {}).get("code")
-
-    if not report_code:
-        logger.error(f"Не удалось получить код отчета из ответа: {stock_report_data}")
-        raise RuntimeError("Ozon API не вернул код отчета по остаткам FBS")
-
-    logger.info(f"Код отчета по остаткам FBS: {report_code}")
-
-    # Ожидаем готовности отчета и получаем ссылку на файл
-    payload_report_info = {"code": report_code}
-    report_file_url: str | None = None
-
-    MAX_INFO_TRIES = 30
-    INFO_DELAY_SEC = 2
-
-    logger.info("Ожидаем генерацию отчета по остаткам FBS")
-
-    for attempt in range(1, MAX_INFO_TRIES + 1):
-        try:
-            info_resp = requests.post(
-                f"{ozon_seller_api_url}/v1/report/info",
-                headers=headers,
-                json=payload_report_info,
-                timeout=30,
-            )
-            info_resp.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning(
-                f"Попытка {attempt}/{MAX_INFO_TRIES}: ошибка при запросе info по отчету FBS: {exc}"
-            )
-            time.sleep(INFO_DELAY_SEC)
-            continue
-
-        info_data = info_resp.json()
-        report_file_url = info_data.get("result", {}).get("file")
-
-        if report_file_url:
-            logger.info("Получена ссылка на отчет по остаткам FBS")
-            break
-
-        logger.debug(
-            f"Попытка {attempt}/{MAX_INFO_TRIES}: отчет ещё не готов, ссылки нет. Ждём {INFO_DELAY_SEC} сек."
-        )
-        time.sleep(INFO_DELAY_SEC)
-    else:
-        logger.error("Не удалось получить ссылку на отчет по остаткам FBS в отведенное число попыток")
-        raise RuntimeError("Не удалось получить ссылку на отчет по остаткам FBS")
-
-    # Небольшая пауза «на всякий случай», чтобы файл точно появился на стороне Ozon
-    time.sleep(5)
-
-    # Качаем файл отчёта
-    MAX_DOWNLOAD_TRIES = 20
-    DOWNLOAD_DELAY_SEC = 3
-    report_content: bytes | None = None
-
-    logger.info("Скачиваем файл отчета по остаткам FBS")
-
-    for attempt in range(1, MAX_DOWNLOAD_TRIES + 1):
-        try:
-            download_resp = requests.get(
-                report_file_url,
-                stream=True,
-                timeout=60,
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                f"Попытка {attempt}/{MAX_DOWNLOAD_TRIES}: ошибка при скачивании отчета FBS: {exc}"
-            )
-            time.sleep(DOWNLOAD_DELAY_SEC)
-            continue
-
-        if download_resp.status_code == 200:
-            report_content = download_resp.content
-            logger.info(f"Файл отчета FBS успешно скачан на попытке {attempt}")
-            break
-
-        logger.warning(
-            f"Попытка {attempt}/{MAX_DOWNLOAD_TRIES}: файл еще не доступен "
-            f"(status_code={download_resp.status_code}). Ждем {DOWNLOAD_DELAY_SEC} сек."
-        )
-        time.sleep(DOWNLOAD_DELAY_SEC)
-    else:
-        logger.error("Файл отчета по остаткам FBS так и не стал доступен для скачивания")
-        raise RuntimeError("Файл отчета по остаткам FBS так и не стал доступен для скачивания")
-
-    # Читаем Excel-отчет в pandas
-    df_fbs_reminders = pd.read_excel(BytesIO(report_content))
-
-    if df_fbs_reminders.empty:
-        logger.warning("Отчет по остаткам FBS пуст. Формируем пустой DataFrame с нужными колонками.")
-        df_fbs_reminders = pd.DataFrame(columns=fbs_reminders_columns)
-    else:
-        # Переименовываем колонки в желаемый вид
-        df_fbs_reminders.columns = fbs_reminders_columns
         logger.info(
-            f"Получен отчет по остаткам FBS: {df_fbs_reminders.shape[0]} строк, "
-            f"{df_fbs_reminders.shape[1]} колонок"
+            f"Обработка чанка {chunk}/{total_chunks} "
+            f"(товаров в чанке: {products_count_in_chunk})"
         )
 
-    # Сохраняем при необходимости
+        cursor = ""
+        has_next = True
+        page_num = 0
+        products_in_chunk_returned = 0  # сколько строк вернулось по этому чанку
+
+        # Для каждого чанка крутимся по cursor, пока has_next == True
+        while has_next:
+            page_num += 1
+            payload = {
+                "cursor": cursor,
+                "limit": len(sku_list),  # можно <=1000
+                "sku": sku_list,
+            }
+
+            attempt = 1
+            while attempt <= max_retries:
+                try:
+                    resp = requests.post(
+                        api_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=60,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Ошибка сети/запроса при получении остатков FBS "
+                        f"(чанк {chunk}/{total_chunks}, страница {page_num}, "
+                        f"попытка {attempt}/{max_retries}): {e}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток для чанка {chunk}, "
+                            f"страница {page_num}. Переходим к следующему чанку."
+                        )
+                        has_next = False
+                        break
+                    logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                    time.sleep(sleep_interval)
+                    attempt += 1
+                    continue
+
+                if resp.status_code == 200:
+                    resp_data = resp.json()
+                    products = resp_data.get("products", [])
+
+                    # Сколько товаров вернулось на этой странице
+                    page_items_count = len(products)
+                    products_in_chunk_returned += page_items_count
+
+                    logger.info(
+                        f"Чанк {chunk}/{total_chunks}, страница {page_num}: "
+                        f"получено {page_items_count} товаров, "
+                        f"итого по чанку: {products_in_chunk_returned}"
+                    )
+
+                    tmp_df = pd.DataFrame(products)
+                    if not tmp_df.empty:
+                        df_fbs_reminders_api = pd.concat(
+                            [df_fbs_reminders_api, tmp_df],
+                            ignore_index=True
+                        )
+
+                    # Обновляем cursor и has_next по ответу
+                    cursor = resp_data.get("cursor", "")
+                    has_next = bool(resp_data.get("has_next", False))
+
+                    logger.info(
+                        f"Чанк {chunk}/{total_chunks}, страница {page_num}: has_next={has_next}"
+                    )
+
+                    logger.info(f"Пауза {sleep_interval} секунд перед следующим запросом...")
+                    time.sleep(sleep_interval)
+                    break
+                else:
+                    logger.error(
+                        f"Ошибка ответа при получении остатков FBS "
+                        f"(чанк {chunk}/{total_chunks}, страница {page_num}, "
+                        f"попытка {attempt}/{max_retries}): "
+                        f"{resp.status_code} {resp.text}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток для чанка {chunk}, "
+                            f"страница {page_num}. Переходим к следующему чанку."
+                        )
+                        has_next = False
+                        break
+                    logger.info(f"Пауза {sleep_interval} секунд перед повторной попыткой...")
+                    time.sleep(sleep_interval)
+                    attempt += 1
+
+        uploaded_products_count += products_count_in_chunk
+        logger.info(
+            f"Завершена обработка чанка {chunk}/{total_chunks}. "
+            f"Обработано товаров: {uploaded_products_count} из {total_products_count}"
+        )
+
+    # 4. Приведение к нужному виду
+    if df_fbs_reminders_api.empty:
+        logger.warning("Остатки FBS не получены. Формируем пустой DataFrame.")
+        df_result = pd.DataFrame(columns=result_columns)
+    else:
+        # Ожидаемые поля:
+        # free_stock, offer_id, present, product_id, reserved, sku, warehouse_id, warehouse_name
+        rename_dict = {
+            "sku": "SKU",
+            "offer_id": "Артикул",
+            "warehouse_id": "Идентификатор склада",
+            "warehouse_name": "Название склада",
+            "free_stock": "Доступно на моем складе, шт",
+            "reserved": "Зарезервировано на моем складе, шт",
+            "present": "Всего на складе, шт",
+            # product_id оставляем как есть
+        }
+        df_fbs_reminders_api = df_fbs_reminders_api.rename(columns=rename_dict)
+
+        # Гарантируем наличие всех нужных колонок
+        df_result = df_fbs_reminders_api.copy()
+        for col in result_columns:
+            if col not in df_result.columns:
+                df_result[col] = None
+        df_result = df_result[result_columns]
+
+        logger.info(
+            f"Получены остатки FBS (v2): {df_result.shape[0]} строк, "
+            f"{df_result.shape[1]} колонок"
+        )
+
+    # 5. Сохранение
     if to_save:
-        df_fbs_reminders.to_csv(
+        df_result.to_csv(
             file_name_stock_rem_fbs,
             sep=";",
             encoding="utf-8-sig",
             index=False,
         )
-        logger.info(f"Отчет по остаткам FBS сохранен в файл: {file_name_stock_rem_fbs}")
+        logger.info(f"Отчет по остаткам FBS (v2) сохранен в файл: {file_name_stock_rem_fbs}")
 
-    return df_fbs_reminders
+    return df_result
 
 # Функция выгрузки списка заявок на поставку
 def get_supply_order_list(
@@ -4059,7 +4196,9 @@ if __name__ == '__main__':
     df_returns = getReturns_v2(headers, date_start, date_end)
 
     # Остатки FBS
+    # %%
     df_stock_rem_fbs = getStockReminders_fbs(headers)
+    # %%
     # Остатки FBO
     df_stock_rem_fbo = getStockReminders_fbo_v2(headers)
 
