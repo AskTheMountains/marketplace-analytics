@@ -41,13 +41,14 @@ client_name = settings['client_name'][client_number]
 client_ru_name = settings['client_ru_name'][client_number]
 
 # Тип магазина
-shop_type = ''
-if client_name in ['SENS', 'SENS_IP']:
-    shop_type = 'clothes'
-elif client_name in ['Water_Power']:
-    shop_type = 'sanitary_items'
-elif client_name in ['Neva_Metall']:
-    shop_type = 'dishes'
+shop_type_map = {
+    'SENS': 'clothes',
+    'SENS_IP': 'clothes',
+    'Water_Power': 'sanitary_items',
+    'Neva_Metall': 'dishes',
+    'KMS': 'clothes',
+}
+shop_type = shop_type_map.get(client_name, 'other')  # Если клиента нет в мапе, по умолчанию ставим 'other'
 
 # Список колонок для некоторых эндпоинтов АПИ, на случай, если придут пустые данные
 api_columns = {
@@ -667,6 +668,239 @@ PROMOTION_COMPANIES = {
         22715204,
     ],
 }
+
+
+# Маппинг форматирования столбцов в отчете РК
+CLIENT_SUMMARY_COL_FORMAT = {
+    'SKU': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Артикул': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'}
+    },
+    'Название товара': {
+        'width': 47.8,  # округлено до одного знака
+        'alignment': {'horizontal': 'left', 'vertical': 'center'}
+    },
+    'Средняя цена продажи': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'РК': {
+        'width': 12.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Заказы ОЗЗ 5%, шт.': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Расход ОЗЗ 5%, руб.': {
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Кол-во заказов': {
+        'width': 10.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Сумма заказов': {
+        'width': 12.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'ДРР': {
+        'width': 9.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Остаток': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+}
+CAMPAIGNS_REPORT_COL_FORMAT = {
+    'Номер кампании': {
+        'length': 14,
+        'width': 12.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'SKU': {
+        'length': 3,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Артикул': {
+        'length': 7,
+        'width': 32.1,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Название товара': {
+        'length': 15,
+        'width': 31.1,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Тип товара': {
+        'length': 10,
+        'width': 14.4,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Цена товара, руб.': {
+        'length': 17,
+        'width': 10.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Показы': {
+        'length': 6,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Клики': {
+        'length': 5,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'CTR (%)': {
+        'length': 7,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'В корзину': {
+        'length': 9,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Ср. цена клика, руб.': {
+        'length': 20,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, шт. (РК)': {
+        'length': 15,
+        'width': 11.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, руб. (РК)': {
+        'length': 16,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, шт. (Заказы)': {
+        'length': 19,
+        'width': 10.8,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, руб. (Заказы)': {
+        'length': 20,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы модели, шт. (РК)': {
+        'length': 22,
+        'width': 11.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы модели, руб. (РК)': {
+        'length': 23,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы модели, шт. (Заказы)': {
+        'length': 26,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы модели, руб. (Заказы)': {
+        'length': 27,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Кол-во размеров в артикуле': {
+        'length': 26,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы размеров, шт. (Заказы)': {
+        'length': 28,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы размеров, руб. (Заказы)': {
+        'length': 29,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы всего, шт.': {
+        'length': 16,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы всего, руб.': {
+        'length': 17,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы ОЗЗ 5%, шт.': {
+        'length': 18,
+        'width': 12.3,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход ОЗЗ 5%, руб.': {
+        'length': 19,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы по размерам ОЗЗ 5%, шт.': {
+        'length': 30,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход по размерам ОЗЗ 5%, руб.': {
+        'length': 30,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход РК, руб.': {
+        'length': 15,
+        'width': 16.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход РК и ОЗЗ, руб.': {
+        'length': 21,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход РК по размерам, руб.': {
+        'length': 27,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход РК и ОЗЗ по размерам, руб.': {
+        'length': 32,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'ДРР': {
+        'length': 3,
+        'width': 11.8,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'ДРР артикула': {
+        'length': 12,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Остаток': {
+        'length': 7,
+        'width': 9.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Дата добавления': {
+        'length': 15,
+        'width': 17.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+}
+
+
 
 
 # Директория загрузки файлов по отчетам начислений (для отчета маржинальности)
