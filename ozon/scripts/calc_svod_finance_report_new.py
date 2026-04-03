@@ -512,28 +512,30 @@ def parse_companies_files(current_report_dir, date_report):
     # Директория, куда будем складывать обработанные файлы
     companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
 
-    # Префикс файлов отчёта по продвижению с оплатой за заказ
-    orders_report_prefix = "search_promo_all_skus_orders_report_"
+    # Префиксы файлов отчётов по продвижению с оплатой за заказ
+    orders_report_all_skus_prefix = "search_promo_all_skus_orders_report_"
+    orders_report_org_prefix = "search_promo_organisation_orders_report_"
 
     # ==============================
     # 1. ПАРСИМ ОБЫЧНЫЕ КАМПАНИИ (ПО ID)
     # ==============================
-
     filenames_companies = {"path": []}
     companies_stats_extensions = ['.csv', '.xlsx']
-
     # Осуществляем поиск файлов с заданным расширением
     for ext in companies_stats_extensions:
         for file in companies_stats_dir.glob(f'*{ext}'):
-            # Пропускаем файлы отчёта по продвижению с оплатой за заказ —
+            # Пропускаем файлы отчётов по продвижению с оплатой за заказ —
             # у них нет ID кампании
-            if file.name.startswith(orders_report_prefix):
+            if (
+                file.name.startswith(orders_report_all_skus_prefix)
+                or file.name.startswith(orders_report_org_prefix)
+            ):
                 continue
             filenames_companies['path'].append(file)
 
-    # Если файлов кампаний нет — логируем и переходим к отчёту по заказам
+    # Если файлов кампаний нет — логируем и переходим к отчётам по заказам
     if not filenames_companies['path']:
-        logger.info(
+        logger.warning(
             f"В директории {companies_stats_dir} не найдено файлов статистики кампаний "
             f"(исключая отчёты по оплате за заказ)"
         )
@@ -552,12 +554,10 @@ def parse_companies_files(current_report_dir, date_report):
             ascending=False,
             ignore_index=True
         )
-
         # Обработка csv/xlsx по статистике кампаний в цикле
         for idx, row in filenames_companies.iterrows():
             # Считываем файл (первую строку с описанием пропускаем)
             df_company = pd.read_csv(row['path'], sep=';', decimal=',', skiprows=1)
-
             # Если в отчёте по кампании есть строки, начинаем их обрабатывать
             if df_company.shape[0] >= 2:
                 # Определяем тип отчета (по имени первой колонки)
@@ -603,77 +603,110 @@ def parse_companies_files(current_report_dir, date_report):
                     )
 
     # ==============================
-    # 2. ПАРСИМ ОТЧЁТ ПО ПРОДВИЖЕНИЮ С ОПЛАТОЙ ЗА ЗАКАЗ
+    # 2. ПАРСИМ ОТЧЕТЫ ПО ПРОДВИЖЕНИЮ С ОПЛАТОЙ ЗА ЗАКАЗ
     # ==============================
+    def _parse_orders_file(path: Path, source_label: str) -> pd.DataFrame:
+        """
+        Парсинг одного отчета по оплате за заказ.
+        Берём SKU, Название товара и Расход, ₽, добавляем метку источника.
+        """
+        logger.info(f"Найден отчёт по оплате за заказ ({source_label}): {path.name}, начинаем парсинг")
+        df = pd.read_csv(path, sep=';', decimal=',', skiprows=1)
+        if df.empty:
+            logger.warning(f"Отчёт по оплате за заказ пуст: {path.name}")
+            return pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы', 'Источник'])
 
-    orders_files = list(companies_stats_dir.glob(f"{orders_report_prefix}*.csv"))
-    if not orders_files:
-        logger.info(
-            f"Отчёт по продвижению с оплатой за заказ "
-            f"({orders_report_prefix}*.csv) в директории {companies_stats_dir} не найден"
+        # Определяем колонку с SKU
+        sku_col = None
+        if 'SKU продвигаемого товара' in df.columns:
+            sku_col = 'SKU продвигаемого товара'
+        elif 'SKU' in df.columns:
+            sku_col = 'SKU'
+
+        # Колонка с расходом
+        cost_col = 'Расход, ₽' if 'Расход, ₽' in df.columns else None
+
+        # Колонка с названием товара
+        name_col = None
+        if 'Название товара' in df.columns:
+            name_col = 'Название товара'
+        elif 'Наименование товара' in df.columns:
+            name_col = 'Наименование товара'
+
+        if sku_col is None or cost_col is None:
+            logger.warning(
+                f"В отчёте {path.name} не найдены необходимые колонки "
+                f"(SKU и/или 'Расход, ₽'). Колонки: {list(df.columns)}"
+            )
+            return pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы', 'Источник'])
+
+        # Собираем список нужных колонок
+        use_cols = [sku_col, cost_col]
+        if name_col is not None:
+            use_cols.append(name_col)
+
+        df = df[use_cols].copy()
+
+        rename_map = {sku_col: 'sku', cost_col: 'Расходы'}
+        if name_col is not None:
+            rename_map[name_col] = 'Наименование товара'
+        df = df.rename(columns=rename_map)
+
+        # Гарантируем наличие колонки "Наименование товара"
+        if 'Наименование товара' not in df.columns:
+            df['Наименование товара'] = None
+
+        df['Источник'] = source_label
+        return df
+
+    # Ищем оба файла
+    orders_files_all_skus = list(companies_stats_dir.glob(f"{orders_report_all_skus_prefix}*.csv"))
+    orders_files_org = list(companies_stats_dir.glob(f"{orders_report_org_prefix}*.csv"))
+
+    if not orders_files_all_skus and not orders_files_org:
+        logger.warning(
+            f"Отчёты по продвижению с оплатой за заказ "
+            f"({orders_report_all_skus_prefix}*.csv и {orders_report_org_prefix}*.csv) "
+            f"в директории {companies_stats_dir} не найдены"
         )
         return
 
-    # Предполагаем один отчёт на период; если их несколько — берём первый по имени
-    orders_file = sorted(orders_files)[0]
-    logger.info(f"Найден отчёт по оплате за заказ: {orders_file.name}, начинаем парсинг")
+    # Берём по одному отчёту каждого типа (если их несколько — первый в сортировке)
+    df_orders_all = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы', 'Источник'])
+    df_orders_org = pd.DataFrame(columns=['sku', 'Наименование товара', 'Расходы', 'Источник'])
 
-    # В первой строке файла — описание отчёта, во второй — заголовок, поэтому skiprows=1
-    df_orders = pd.read_csv(orders_file, sep=';', decimal=',', skiprows=1)
+    if orders_files_all_skus:
+        orders_file_all = sorted(orders_files_all_skus)[0]
+        df_orders_all = _parse_orders_file(orders_file_all, source_label='all_skus')
 
-    if df_orders.empty:
-        logger.warning(f"Отчёт по оплате за заказ пуст: {orders_file.name}")
+    if orders_files_org:
+        orders_file_org = sorted(orders_files_org)[0]
+        df_orders_org = _parse_orders_file(orders_file_org, source_label='organisation')
+
+    # Объединяем оба отчёта
+    df_orders_combined = pd.concat(
+        [df_orders_all, df_orders_org],
+        ignore_index=True
+    )
+
+    if df_orders_combined.empty:
+        logger.warning(
+            "После парсинга отчётов по оплате за заказ не осталось данных "
+            "(возможно, проблемы со структурой файлов)."
+        )
         return
 
-    # На всякий случай убираем строки "Всего" / "Корректировка", если они присутствуют в колонке 'Дата'
-    if 'Дата' in df_orders.columns:
-        df_orders = df_orders.loc[
-            ~df_orders['Дата'].isin(['Всего', 'Корректировка']),
-            :
-        ]
-
-    # Переименовываем колонки под общий формат:
-    # - SKU продвигаемого товара -> 'sku'
-    # - Название товара -> 'Наименование товара'
-    # - Расход, ₽ -> 'Расходы'
-    rename_map = {}
-    if 'SKU продвигаемого товара' in df_orders.columns:
-        rename_map['SKU продвигаемого товара'] = 'sku'
-    elif 'SKU' in df_orders.columns:
-        rename_map['SKU'] = 'sku'
-
-    if 'Название товара' in df_orders.columns:
-        rename_map['Название товара'] = 'Наименование товара'
-
-    if 'Расход, ₽' in df_orders.columns:
-        rename_map['Расход, ₽'] = 'Расходы'
-
-    df_orders = df_orders.rename(columns=rename_map)
-
-    # Оставляем только нужные для дальнейших расчётов колонки
-    needed_cols = [c for c in [
-        'Дата',
-        'ID заказа',
-        'Номер заказа',
-        'sku',
-        'Наименование товара',
-        'Расходы'
-    ] if c in df_orders.columns]
-
-    df_orders = df_orders[needed_cols]
-
-    # Сохраняем обработанный отчёт по оплате за заказ в отдельный файл
-    # (без ID кампании, т.к. его нет в этом отчёте)
+    # Сохраняем объединённый отчёт по оплате за заказ
     orders_parsed_path = companies_parsed_dir / "orders_report.csv"
-    df_orders.to_csv(
+    df_orders_combined.to_csv(
         orders_parsed_path,
         sep=';',
         encoding='utf-8-sig',
         index=False
     )
-
     logger.info(
-        f"Обработанный отчёт по продвижению с оплатой за заказ сохранён в {orders_parsed_path}"
+        f"Обработанный объединённый отчёт по продвижению с оплатой за заказ "
+        f"сохранён в {orders_parsed_path}"
     )
 
 # Функция расчета расходов по рекламным кампаниям (в т.ч. оплата за заказ)
@@ -900,7 +933,6 @@ def calc_companies_costs(
     # Директория, где будут лежать данные по рекламным кампаниям
     companies_stats_dir: Path = current_report_dir / f"{date_report}_Кампании"
     companies_stats_dir.mkdir(parents=True, exist_ok=True)
-
     # Директория, куда будем складывать обработанные файлы
     companies_parsed_dir: Path = current_report_dir / f"{date_report}_Кампании_parsed"
     companies_parsed_dir.mkdir(parents=True, exist_ok=True)
@@ -910,12 +942,10 @@ def calc_companies_costs(
     if not companies_costs_ids:
         logger.info("В финансовом отчёте не найдено расходов по рекламным кампаниям")
         return
-
     logger.info("Найдены расходы по рекламным кампаниям")
 
     # Все кампании, по которым есть расходы
     df_companies_ids = get_companies_ids(df_finance_report, companies_costs_ids)
-
     ACCRUAL_COL = "Тип начисления"
     ORDERS_TYPE = "Продвижение с оплатой за заказ"
     CAMPAIGN_ID_COL = "Номер кампании"
@@ -923,7 +953,6 @@ def calc_companies_costs(
     # --- Разделяем на обычные кампании и "оплату за заказ" ---
     df_regular = df_companies_ids.copy()
     df_orders = pd.DataFrame()
-
     if ACCRUAL_COL in df_companies_ids.columns:
         mask_orders = df_companies_ids[ACCRUAL_COL] == ORDERS_TYPE
         df_orders = df_companies_ids[mask_orders].copy()
@@ -939,15 +968,12 @@ def calc_companies_costs(
     # 1. ОПРЕДЕЛЯЕМ, КАКИЕ КАМПАНИИ ДОКАЧАТЬ
     # ==========================
     df_missing_regular = pd.DataFrame()
-
     if not df_regular.empty:
         # Все требуемые ID кампаний
         required_campaign_ids = set(df_regular[CAMPAIGN_ID_COL].astype(str))
-
         # Уже имеющиеся .csv по кампаниям: <id>_dd.mm.yyyy-dd.mm.yyyy.csv
         csv_files = list(companies_stats_dir.glob("*.csv"))
         existing_campaign_ids = set()
-
         for path in csv_files:
             stem = path.stem  # например: "23010536_01.02.2026-28.02.2026"
             parts = stem.split("_", 1)
@@ -959,12 +985,10 @@ def calc_companies_costs(
 
         # Кампании, по которым ещё нет файлов
         missing_campaign_ids = required_campaign_ids - existing_campaign_ids
-
         if missing_campaign_ids:
             df_missing_regular = df_regular[
                 df_regular[CAMPAIGN_ID_COL].astype(str).isin(missing_campaign_ids)
             ]
-
     need_regular_upload = not df_missing_regular.empty
 
     # ==========================
@@ -972,11 +996,16 @@ def calc_companies_costs(
     # ==========================
     has_orders_expenses = not df_orders.empty
 
-    # Есть ли уже файл отчёта по оплате за заказ:
-    # search_promo_all_skus_orders_report_24.02.2026-01.03.2026.csv
-    orders_report_exists = bool(
-        list(companies_stats_dir.glob("search_promo_all_skus_orders_report_*.csv"))
+    # Есть ли уже файл(ы) отчёта по оплате за заказ:
+    # - search_promo_all_skus_orders_report_24.02.2026-01.03.2026.csv
+    # - search_promo_organisation_orders_report_01.02.2026-01.03.2026.csv
+    orders_report_all_skus = list(
+        companies_stats_dir.glob("search_promo_all_skus_orders_report_*.csv")
     )
+    orders_report_org = list(
+        companies_stats_dir.glob("search_promo_organisation_orders_report_*.csv")
+    )
+    orders_report_exists = bool(orders_report_all_skus and orders_report_org)
 
     need_orders_upload = has_orders_expenses and not orders_report_exists
 
@@ -1004,7 +1033,6 @@ def calc_companies_costs(
             logger.info(
                 "Выгружаем только отчёт по продвижению с оплатой за заказ (mode='orders')"
             )
-
         upload_data_performane(
             date_start_performance,
             date_end_performance,
@@ -1022,25 +1050,21 @@ def calc_companies_costs(
             "Нет недостающих файлов статистики по кампаниям "
             "и отчёта по продвижению с оплатой за заказ — догрузка не требуется"
         )
-
     # ==========================
     # 4. Парсим всё, что есть
     # ==========================
     parse_companies_files(current_report_dir, date_report)
-
     # Считаем расходы по рекламным кампаниям
     result_companies_costs_no_article = calc_companies_cost_by_sku(
         date_report,
         df_finance_report,
         companies_costs_ids
     )
-
     # Добавляем артикул к SKU с рекламными расходами
     result_companies_costs = add_articles_to_companies_costs(
         result_companies_costs_no_article,
         df_products_processed
     )
-
     return result_companies_costs
 
 # Функция товаров в заявках на поставку
@@ -2046,7 +2070,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет_по_начислениям_01_02_2026_28_02_20266.xlsx"
+    report_file_name = "Отчет по начислениям_01.03.2026-31.03.2026 (2).xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -2062,8 +2086,8 @@ if __name__ == "__main__":
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2026-02-01',
-        date_end='2026-02-28'
+        date_start = '2026-03-01',
+        date_end='2026-03-31'
     )
 
     # Создаем директорию для текущего отчета
