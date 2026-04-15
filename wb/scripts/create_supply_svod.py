@@ -3,7 +3,7 @@
 Скрипт создает Excel-файл с расчетами потребности в товарах по складам,
 анализируя продажи, заказы и остатки за определенный период.
 """
-
+# %%
 import argparse
 from datetime import date, datetime
 from itertools import product
@@ -104,7 +104,9 @@ def read_catalog() -> pd.DataFrame:
     catalog_processed = catalog.copy()
 
     if "Размер" not in catalog_processed.columns:
-        catalog_processed["Размер"] = 0
+        catalog_processed["Размер"] = '0'
+
+    catalog_processed["Размер"] = catalog_processed["Размер"].fillna('0')
 
     if "Кратность коробов" not in catalog_processed.columns:
         logger.info(
@@ -128,7 +130,7 @@ def read_catalog() -> pd.DataFrame:
         catalog_processed["Размер"] = catalog_processed["Размер"].apply(
             lambda x: pd.to_numeric(x, errors="coerce")
         )
-        catalog_processed["Размер"] = catalog_processed["Размер"].fillna(0)
+        catalog_processed["Размер"] = catalog_processed["Размер"].fillna('0')
 
     return catalog_processed
 
@@ -630,11 +632,11 @@ def format_excel_file(
     """
     Форматирует Excel-файл (формулы, стили) через wb.scripts.format_supply_svod.
     """
-    format_supply_svod.copy_supply_svod_file(
-        SUPPLY_SVOD_DIR,
-        client_name,
-        date_metrics,
-    )
+    # format_supply_svod.copy_supply_svod_file(
+    #     SUPPLY_SVOD_DIR,
+    #     client_name,
+    #     date_metrics,
+    # )
 
     format_supply_svod.format_sheet_clusters(
         path_supply_svod=SUPPLY_SVOD_DIR,
@@ -708,6 +710,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
     )
 
     catalog = read_catalog()
+
 
     # Данные по всем кластерам (сырые)
     metrics_df_all_clusters = read_metrics_file(
@@ -809,6 +812,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
     )
 
 
+# %%
 # ============================================================================
 # ТОЧКА ВХОДА
 # ============================================================================

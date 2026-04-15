@@ -306,7 +306,7 @@ def format_sheet_total(
     """
     logger.info(f'Форматирование листа "{sheet_name}"')
 
-    file_path = path_supply_svod / f"{date_report_created}_Расчет_поставок_{client_name}_WB_formatted.xlsx"
+    file_path = path_supply_svod / f"{date_report_created}_Расчет_поставок_{client_name}_WB.xlsx"
     wb = openpyxl.load_workbook(file_path)
     ws = wb[sheet_name]
 
@@ -581,7 +581,7 @@ def format_sheet_clusters(
     logger.info(f'Форматирование листа "{sheet_name}"')
 
     # Открываем файл
-    file_path = path_supply_svod / f"{date_report_created}_Расчет_поставок_{client_name}_WB_formatted.xlsx"
+    file_path = path_supply_svod / f"{date_report_created}_Расчет_поставок_{client_name}_WB.xlsx"
     wb = openpyxl.load_workbook(file_path)
     ws = wb[sheet_name]
 
