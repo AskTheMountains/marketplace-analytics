@@ -35,9 +35,9 @@ from wb.scripts.constants import (
 from wb.scripts.uploadDataFromWB import getOrdersWB
 # Функция выгрузки для АПИ Продвижение
 from wb.scripts.uploadDataPerformanceWB import get_costs_history
-from wb.scripts.wb_generic_functions import get_company_stats_v2
 from wb.scripts.wb_generic_functions import(
     upload_realization_report as upload_realization_report_new,
+    get_company_stats,
     convert_currency
 )
 
@@ -1559,7 +1559,7 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             'date_end': [date_end_promotion] * len(companies_list),
         })
         # Получаем статистику кампаний
-        df_companies_stats = get_company_stats_v2(
+        df_companies_stats = get_company_stats(
             headers,
             df_input_companies,
             # groupby_cols=[]
@@ -1993,8 +1993,14 @@ def add_data_from_catalog(result_other_costs):
         if col not in catalog.columns:
             catalog[col] = np.nan
 
+    # Заполняем пропуски в размерах
+    catalog['Размер'] = catalog['Размер'].fillna('0')
+
     # Переводим артикул продавца в верхний регистр
     catalog['Артикул продавца'] = catalog['Артикул продавца'].str.upper()
+
+    # Переводим себестоимость в число
+    catalog['Себестоимость'] = pd.to_numeric(catalog['Себестоимость'], errors='coerce')
 
     # В каждой группе артикулов искуственно создаем артикул с размером 0, если такого размера нет
     # Словарь, где для каждого нужного столбца указана агрегация
@@ -2135,11 +2141,15 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     ]
 
     # 2. regex для колонок "Оказание услуг ... Продвижение, документ №..."
-    promo_regex = re.compile(
+    promo_regex_list = [
         r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
-        flags=re.IGNORECASE
-    )
-    # Все колонки df_final_costs, которые подходят под regex
+        r'^витрина\s+магазина(?:, документ №\d+)?$',
+        r'^предоставление\s+услуг\s+по\s+подписке\s+«джем»(?:, документ №\d+)?$',
+    ]
+
+    promo_regex = re.compile('|'.join(promo_regex_list), flags=re.IGNORECASE)
+
+    regex_promo_columns = [col for col in df_final_costs.columns if promo_regex.search(col)]    # Все колонки df_final_costs, которые подходят под regex
     regex_promo_columns = [
         col for col in df_final_costs.columns
         if promo_regex.search(col)
@@ -2695,8 +2705,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start,
         # date_end,
-        date_start = '2026-02-01',
-        date_end='2026-02-28'
+        date_start = '2026-03-01',
+        date_end='2026-03-31'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
