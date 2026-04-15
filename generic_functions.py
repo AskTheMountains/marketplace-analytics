@@ -2,6 +2,7 @@ import pandas as pd
 import warnings
 import json
 import ast
+from openpyxl import load_workbook
 # from loguru import logger
 
 
@@ -261,3 +262,52 @@ def custom_pd_explode(df,
     # 5. Возвращаем результат без индекса (как в оригинале)
     # ------------------------------------------------------------------
     return df_result.reset_index(drop=True)
+
+
+def get_columns_info(path_to_file: str, sheet_name: str = None) -> dict:
+    """
+    Возвращает словарь вида:
+    {
+        "Заголовок1": {
+            "length": длина_текста_заголовка,
+            "width": ширина_столбца (может быть None),
+            "alignment": {
+                "horizontal": тип_горизонтального_выравнивания (str или None),
+                "vertical": тип_вертикального_выравнивания (str или None),
+            }
+        },
+        ...
+    }
+    """
+    wb = load_workbook(path_to_file, data_only=True)
+    ws = wb[sheet_name] if sheet_name else wb.active
+
+    result = {}
+    header_row = ws[1]  # первая строка — заголовки
+
+    for cell in header_row:
+        header_value = str(cell.value) if cell.value is not None else ""
+        col_letter = cell.column_letter
+
+        # Ширина столбца
+        col_dim = ws.column_dimensions[col_letter]
+        width = col_dim.width  # может быть None
+
+        # Ячейка во второй строке того же столбца
+        data_cell = ws[f"{col_letter}2"]
+
+        # Выравнивание (может быть None, тогда атрибуты будут None)
+        alignment = data_cell.alignment
+        horizontal = alignment.horizontal if alignment is not None else None
+        vertical = alignment.vertical if alignment is not None else None
+
+        result[header_value] = {
+            "length": len(header_value),
+            "width": width,
+            "alignment": {
+                "horizontal": horizontal,
+                "vertical": vertical,
+            },
+        }
+
+    return result
