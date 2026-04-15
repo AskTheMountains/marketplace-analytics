@@ -1208,7 +1208,7 @@ if __name__ == '__main__':
 
     # Дата, за который считался (или считается) отчет
     date_report=str(date.today())
-    date_report = '2026-03-31'  # для теста
+    # date_report = '2026-03-31'  # для теста
     # Директория, куда будет сохраняться итоговый отчет
     client_rk_svod_dir = create_client_rk_svod_dir(client_name, date_report)
     # Директория, куда будет загружена статистика кампаний

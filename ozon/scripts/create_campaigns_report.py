@@ -1188,7 +1188,7 @@ def add_products_data_to_orders(df_orders_all, df_products_processed):
 def get_reminders(df_products, headers):
     # Выгружаем остатки FBO и FBS
     df_reminders_fbo = getStockReminders_fbo_v2(headers, df_products, to_save=False)
-    df_reminders_fbs = getStockReminders_fbs(headers, to_save=False)
+    df_reminders_fbs = getStockReminders_fbs(headers, df_products, to_save=False)
     # Переименовываем колонки для удобства
     df_reminders_fbo = df_reminders_fbo.rename(columns={
         'Доступный к продаже товар': 'Остатки FBO',
