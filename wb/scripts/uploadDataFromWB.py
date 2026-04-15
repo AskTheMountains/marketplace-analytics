@@ -362,7 +362,7 @@ def get_wb_product(headers, to_save=True):
     # Если стоит флаг сохранения, то сохраняем df через pathlib
     if to_save:
         products_file = uploaddir_today / f"{str(date.today())}_Товары.csv"
-        df_products_prices.to_csv(products_file, sep=';', index=False)
+        df_products_prices.to_csv(products_file, sep=';', encoding='utf-8-sig', index=False)
 
     return df_products_prices
 
