@@ -102,7 +102,7 @@ def get_orders(headers, date_start, date_end):
 def get_reminders_by_product(df_products, headers, to_agg=True, agg_col=['Артикул']):
     # Выгружаем остатки FBO и FBS
     df_reminders_fbo = getStockReminders_fbo_v2(headers, df_products, to_save=False)
-    df_reminders_fbs = getStockReminders_fbs(headers, to_save=False)
+    df_reminders_fbs = getStockReminders_fbs(headers, df_products, to_save=False)
     # Переименовываем колонки для удобства
     df_reminders_fbo = df_reminders_fbo.rename(columns={
         'Доступный к продаже товар': 'Остатки FBO',
