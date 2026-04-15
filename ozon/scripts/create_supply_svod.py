@@ -687,11 +687,11 @@ def format_excel_file(
     """
     path_supply_svod = SUPPLY_SVOD_DIR
 
-    format_supply_svod.copy_supply_svod_file(
-        path_supply_svod,
-        client_name,
-        date_metrics,
-    )
+    # format_supply_svod.copy_supply_svod_file(
+    #     path_supply_svod,
+    #     client_name,
+    #     date_metrics,
+    # )
 
     # Лист "Всего"
     format_supply_svod.format_sheet_total(

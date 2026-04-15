@@ -285,7 +285,7 @@ def format_sheet_total(
 
     file_path = (
         path_supply_svod
-        / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon_formatted.xlsx"
+        / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon.xlsx"
     )
     wb = openpyxl.load_workbook(file_path)
     ws = wb[sheet_name]
@@ -583,7 +583,7 @@ def format_sheet_clusters(
 
     file_path = (
         path_supply_svod
-        / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon_formatted.xlsx"
+        / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon.xlsx"
     )
     wb = openpyxl.load_workbook(file_path)
     ws = wb[sheet_name]
