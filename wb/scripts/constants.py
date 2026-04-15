@@ -63,12 +63,39 @@ cargo_multiplicity_map = {
     'kadiev': {
         'flag_multiplicity': False,
         'multiplicity': 2
+    },
+    'Neva_Metall': {
+        'flag_multiplicity': False,
+        'multiplicity': 4
     }
 }
 cargo_multiplicity = cargo_multiplicity_map.get(
     client_name,
     {'flag_multiplicity': False, 'multiplicity': 1}
 )
+
+# Маппинг артикулов для замены
+article_replacement_map = {
+    'Neva_Metall': {
+        # Артикул для замены: Артикул-замена
+        '2522': 'm2522',
+        '2524': 'm2524',
+        '2526': 'm2526',
+        '2528': 'm2528',
+        '256224': 'm256224',
+        '59024': 'm59024',
+        '59026': 'm59026',
+        '59028': 'm59028',
+        '59222': 'm59222',
+        '59224': 'm59224',
+        '6222кт': 'm6222кт',
+        '6224сл': 'm6224сл',
+        '9120': 'm9120'
+    }
+}
+article_replacement = article_replacement_map.get(client_name, {})
+
+
 
 # Столбцы, которые берем из каталога для расчета поставок
 catalog_supply_columns_map = {
@@ -102,7 +129,7 @@ DEMAND_PERIOD_1, DEMAND_PERIOD_2 = client_demand_periods_map.get(
 supply_svod_total_columns_map = {
     'SENS': [
         '№ товара', 'Артикул_Размер', 'Артикул продавца', 'Размер',
-        'Наименование товара', 'Предмет', 'Штрихкод', 'РРЦ',
+        'Наименование товара', 'Предмет', 'Штрихкод', 'Статус', 'РРЦ',
         'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs', 'Ожидаемое поступление',
         'Оборачиваемость',
         f'Потребность на {DEMAND_PERIOD_1} дней', f'Потребность на {DEMAND_PERIOD_2} дней',
@@ -116,7 +143,7 @@ supply_svod_total_columns_map = {
     ],
     'SENS_IP': [
         '№ товара', 'Артикул_Размер', 'Артикул продавца', 'Размер',
-        'Наименование товара', 'Предмет', 'Штрихкод', 'РРЦ',
+        'Наименование товара', 'Предмет', 'Штрихкод', 'Статус', 'РРЦ',
         'Заказы', 'Продажи', 'Остатки', 'Остатки_fbs', 'Ожидаемое поступление',
         'Оборачиваемость',
         f'Потребность на {DEMAND_PERIOD_1} дней', f'Потребность на {DEMAND_PERIOD_2} дней',
@@ -158,7 +185,7 @@ supply_svod_total_columns = supply_svod_total_columns_map.get(
 supply_svod_clusters_columns_map = {
     'SENS': [
         '№ товара', 'Артикул_Размер', 'Артикул продавца', 'Размер',
-        'Предмет', 'Наименование товара', 'Штрихкод', 'РРЦ',
+        'Предмет', 'Наименование товара', 'Штрихкод', 'Статус', 'РРЦ',
         'Склад',
         'Заказы', 'Продажи', 'Остатки', 'Ожидаемое поступление',
         'Оборачиваемость',
@@ -173,7 +200,7 @@ supply_svod_clusters_columns_map = {
     ],
     'SENS_IP': [
         '№ товара', 'Артикул_Размер', 'Артикул продавца', 'Размер',
-        'Предмет', 'Наименование товара', 'Штрихкод', 'РРЦ',
+        'Предмет', 'Наименование товара', 'Штрихкод', 'Статус', 'РРЦ',
         'Склад',
         'Заказы', 'Продажи', 'Остатки', 'Ожидаемое поступление',
         'Оборачиваемость',
@@ -335,6 +362,122 @@ PROMOTION_COMPANIES = {
         31545715,
         31596769,
         31599516,
+    ],
+    'Neva_Metall': [
+        35164023,
+        35155557,
+        35150902,
+        35149789,
+        35056743,
+        35032220,
+        35031828,
+        35031705,
+        35031644,
+        35030850,
+        35030761,
+        35030600,
+        35029323,
+        34960499,
+        34959867,
+        34959857,
+        34959828,
+        34836308,
+        34835100,
+        34758397,
+        34758308,
+        34680528,
+        34680354,
+        34678738,
+        34678473,
+        34678075,
+        34677524,
+        33737034,
+        33736493,
+        33736017,
+        33728596,
+        33727009,
+        33726465,
+        33278619,
+        33139738,
+        32956737,
+        32653143,
+        32650142,
+        32618000,
+        32604049,
+        32599215,
+        32317020,
+        32262009,
+        32261953,
+        32261897,
+        32143148,
+        32119716,
+        32119128,
+        32119035,
+        32118974,
+        32097475,
+        32097339,
+        32097185,
+        32094839,
+        32094579,
+        32094465,
+        32094370,
+        32094099,
+        32093986,
+        32093785,
+        32093670,
+        32092659,
+        32091571,
+        32054477,
+        32053868,
+        32053833,
+        32053801,
+        32053765,
+        32053727,
+        32053663,
+        32052698,
+        32003910,
+        32003902,
+        32003869,
+        32003840,
+        32003678,
+        32003652,
+        32003631,
+        32003596,
+        32003576,
+        32003533,
+        32003399,
+        32003381,
+        32003121,
+        32003082,
+        32003037,
+        32002931,
+        32002904,
+        32002759,
+        32002523,
+        32002500,
+        32002347,
+        32002320,
+        32002288,
+        32002187,
+        32002166,
+        32002061,
+        32001894,
+        32001536,
+        32001503,
+        31885585,
+        30512152,
+        30510532,
+        30505967,
+        30504466,
+        30504347,
+        30503433,
+        30406618,
+        30150522,
+        29726953,
+        29685998,
+        28771612,
+        28770529,
+        26718398,
     ]
 }
 
@@ -346,5 +489,129 @@ ARTICLE_REPORT_LIST = {
             'start_date': '2025-11-17',  # Дата начала статистики РК
             'end_date':   '2025-11-24'  # Дата окончания статистики РК
         },
+    },
+}
+
+# Список колонок с форматом Excel
+COMPANY_STATS_COL_FORMAT = {
+    'Номер кампании': {
+        'length': 14,
+        'width': 13.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Артикул WB': {
+        'length': 10,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Артикул продавца': {
+        'length': 16,
+        'width': 17.7,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Тип ставки': {
+        'length': 10,
+        'width': 13.3,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Название товара': {
+        'length': 15,
+        'width': 43.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Ставка в рекомендациях (руб.)': {
+        'length': 22,
+        'width': 14.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Ставка в поиске (руб.)': {
+        'length': 18,
+        'width': 10.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Показы': {
+        'length': 6,
+        'width': 9.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Клики (РК)': {
+        'length': 8,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Клики (общие)': {
+        'length': 11,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'CTR, %': {
+        'length': 6,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'CR, %': {
+        'length': 5,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'CPC': {
+        'length': 3,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'CPM': {
+        'length': 3,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Затраты, руб.': {
+        'length': 12,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Затраты артикула, руб.': {
+        'length': 21,
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Корзина (РК)': {
+        'length': 10,
+        'width': 9.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Корзина (общая)': {
+        'length': 13,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, шт. (РК)': {
+        'length': 15,
+        'width': 12.3,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы, руб. (РК)': {
+        'length': 16,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы артикула, шт. (Заказы)': {
+        'length': 27,
+        'width': 12.5,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы артикула, руб. (Заказы)': {
+        'length': 28,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'ДРР': {
+        'length': 3,
+        'width': 9.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'ДРР артикула': {
+        'length': 12,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
     },
 }

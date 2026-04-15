@@ -12,9 +12,12 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 warnings.simplefilter(action='ignore', category=FutureWarning)
 from wb.scripts.command_args_parser import cli_reference_date
 # Файл с константами
-from wb.scripts.constants import (cargo_type, client_name,
-                                  ignore_virtual_warehouses,
-                                  marketplace_dir_path)
+from wb.scripts.constants import (
+    cargo_type, client_name,
+    article_replacement,
+    ignore_virtual_warehouses,
+    marketplace_dir_path
+)
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -66,6 +69,9 @@ def calcMetrics(date_upload_files=str(date.today())):
         # Удаляем ненужную колонку
         if 'Unnamed: 0' in df.columns:
             tmp_df.drop(columns='Unnamed: 0', inplace=True)
+        # Если указано в настройках, то заменяем артикулы по словарю замены
+        if article_replacement and 'Артикул продавца' in tmp_df.columns:
+            tmp_df['Артикул продавца'] = tmp_df['Артикул продавца'].replace(article_replacement)
         # Создаем колонку Артикул+Размер
         tmp_df['Артикул_Размер'] = tmp_df[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
 
