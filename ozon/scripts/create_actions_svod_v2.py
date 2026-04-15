@@ -56,8 +56,8 @@ parser = argparse.ArgumentParser(
 )
 
 # Имя файла с данными по акциям
-actions_file_name = 'products-1977747 (13).xlsx'
-# actions_file_name = None
+# actions_file_name = 'products-1977747 (13).xlsx'
+actions_file_name = None
 
 # Функция парсинга аргументов командной строки пути к файлу по акциям
 def get_actions_file_path(arg_path: str | None, default_dir: Path, default_name: str | None) -> Path | None:
