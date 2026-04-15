@@ -1,9 +1,11 @@
 # %% Определение функций
 import argparse
 import copy
+from math import prod
 import time
 import re
 from datetime import date, datetime, timedelta
+from collections import defaultdict, deque
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +14,8 @@ import pandas as pd
 import requests
 # from loguru import logger
 from wb.scripts.wb_logger import wb_client_logger as logger
-from openpyxl.styles import Alignment, Border, Side
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
@@ -24,7 +27,9 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_companies
 # Файл с настройками и номером клиента
-from wb.scripts.constants import client_name, headers, PROMOTION_COMPANIES
+from wb.scripts.constants import (
+    client_name, headers, article_replacement, PROMOTION_COMPANIES, COMPANY_STATS_COL_FORMAT
+)
 # Функции выгрузки данных
 from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
 # Доп. функции
@@ -192,23 +197,23 @@ def create_companies_upload_df(
     df_input_companies = (
         pd.DataFrame(
             input_companies,
-            columns=['Номер кампании', 'date_start', 'date_end']
+            columns=['ID кампании', 'date_start', 'date_end']
         )
         # .reset_index()
         # .rename(columns={
-        #     'index': 'Номер кампании'
+        #     'index': 'ID кампании'
         # })
     )
     # Удаляем дубликаты
     df_input_companies = (
         df_input_companies
-        .loc[~df_input_companies['Номер кампании'].isin(['']), :]
-        .drop_duplicates(subset=['Номер кампании', 'date_start', 'date_end'])
+        .loc[~df_input_companies['ID кампании'].isin(['']), :]
+        .drop_duplicates(subset=['ID кампании', 'date_start', 'date_end'])
     )
     # Присваиваем каждой кампании уникальный ID по номеру кампании и дате
     df_input_companies['unique_company_id'] = (
         df_input_companies
-        .groupby(['Номер кампании', 'date_start', 'date_end'], as_index=False)
+        .groupby(['ID кампании', 'date_start', 'date_end'], as_index=False)
         .ngroup() + 1
     )
     # Сортировка
@@ -226,6 +231,10 @@ def create_companies_upload_df(
 def process_product_list(df_products):
     # Создаем копию для избежания изменений в оригинальном df
     df_products_processed = df_products.copy()
+    # Переименовываем колонки
+    df_products_processed = df_products_processed.rename(columns={
+        'nmID': 'Артикул WB',
+    })
 
     return df_products_processed
 
@@ -249,153 +258,171 @@ def get_company_list(
 
     return df_company_list
 
+# Функция получения "сырых" данных по доп. информации по кампаниям из WB API
+def fetch_companies_info_raw(headers, df_company_list_filtered, statuses='-1,4,7,8,9,11', payment_type=None):
+    """
+    Выполняет запросы к API WB /api/advert/v2/adverts для получения данных по кампаниям.
 
-# Функция получения информации о кампаниях
-def get_companies_info(headers, df_input_companies):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_company_list_ = df_input_companies.copy()
-    # Разбиваем df с кампаниями на интервалы по 50 кампаний
+    :param headers: dict с обязательным Authorization
+    :param df_company_list_filtered: pd.DataFrame с колонкой 'ID кампании', содержащий кампании для запроса
+    :param statuses: строка со статусами кампаний для фильтра (по умолчанию все актуальные)
+    :param payment_type: опционально, 'cpm' или 'cpc'
+    :return: список словарей с данными по кампаниям (синоним json ответа 'adverts')
+    """
+    if df_company_list_filtered.empty:
+        logger.warning("Нет кампаний для запроса.")
+        return []
+
+    # Разбиваем на чанки по 50 кампаний
     step = 50
-    df_company_list_['id'] = np.arange(0, len(df_company_list_))
-    df_company_list_['chunks'] = df_company_list_['id'].apply(lambda x: int(x/step) + 1)
-    # df для каждого из типов кампаний
-    df_companies_6 = pd.DataFrame()
-    df_companies_8 = pd.DataFrame()
-    df_companies_9 = pd.DataFrame()
-    logger.info("Uploading companies info")
-    # Цикл по каждому интервалу
-    for chunk in df_company_list_['chunks'].unique():
-        # Получаем список кампаний
-        df_company_list_chunk = df_company_list_.loc[df_company_list_['chunks'] == chunk, :]
-        company_list = df_company_list_chunk['Номер кампании'].to_list()
-        # Переводим номера кампаний в int для запроса
-        # company_list_int = [int(elem) for elem in company_list]
-        # Параметры запроса
-        # params_companies_info = {company_list}
-        resp_data_companies_info = requests.post("https://advert-api.wildberries.ru/adv/v1/promotion/adverts", headers=headers, json=company_list).json()
-        # Переводим в df
-        tmp_df_companies_info = pd.DataFrame(resp_data_companies_info)
-        # Переводим колонки с датой в timestamp
-        for col in ['endTime', 'createTime', 'changeTime', 'startTime']:
-            tmp_df_companies_info[col] = pd.to_datetime(tmp_df_companies_info[col], format='mixed')
-            # Убираем нахуй таймзону
-            tmp_df_companies_info[col] = tmp_df_companies_info[col].dt.tz_localize(None)
-        # Делаем выборку на каждый из типов кампаний
-        tmp_df_companies_6 = tmp_df_companies_info.loc[~tmp_df_companies_info['type'].isin([8, 9]), :]
-        tmp_df_companies_8 = tmp_df_companies_info.loc[tmp_df_companies_info['type'] == 8, :]
-        tmp_df_companies_9 = tmp_df_companies_info.loc[tmp_df_companies_info['type'] == 9, :]
-        # Объединяем с предыдущей итерацией цикла
-        df_companies_6 = pd.concat([df_companies_6, tmp_df_companies_6])
-        df_companies_8 = pd.concat([df_companies_8, tmp_df_companies_8])
-        df_companies_9 = pd.concat([df_companies_9, tmp_df_companies_9])
+    df = df_company_list_filtered.reset_index(drop=True)
+    df['chunk'] = df.index // step
 
-    # Обработка данных кампаний со статусами, отличными от 8 и 9
-    if not df_companies_6.empty:
-        # Делаем reset_index после loc
-        df_companies_6 = df_companies_6.reset_index(drop=True)
-        # Убираем лишние колонки
-        df_companies_6 = df_companies_6.loc[:, ~df_companies_6.columns.isin(['nmCPM', 'unitedParams', 'autoParams'])]
-        # Переводим колонки с датой в timestamp
-        # for col in ['endTime', 'createTime', 'changeTime', 'startTime']:
-        #     df_companies_6[col] = pd.to_datetime(df_companies_6[col], format='mixed')
-        # Получаем параметры кампании из списка
-        df_companies_6_params = (
-            df_companies_6
-            .loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'params']]
-            .explode(column='params')
-            .reset_index(drop=True)
-        )
-        # Получаем параметры кампании в виде столбцов df
-        df_companies_6_params = pd.concat([
-            df_companies_6_params,
-            pd.json_normalize(df_companies_6_params['params'])
-        ], axis=1)
-        # Получаем список номенклатур кампании
-        df_companies_6_nms = df_companies_6_params.explode(column='nms').reset_index(drop=True)
-        # Получаем список номенклатур кампании в виде столбцов df
-        df_companies_6_nms = pd.concat([df_companies_6_nms, pd.json_normalize(df_companies_6_nms['nms'])], axis=1)
-        # Убираем лишние колонки
-        df_companies_6_nms = df_companies_6_nms.loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'nm']]
-        # Переименовываем колонку чтобы дальше использовать concat
-        df_companies_6_nms = df_companies_6_nms.rename(columns={'nm': 'nms'})
-    else:
-        df_companies_6_nms = pd.DataFrame()
+    REQUEST_LIMIT = 5       # Максимум запросов в секунду
+    REQUEST_INTERVAL = 0.2  # Пауза 200 мс
+    TIME_WINDOW = 1.0       # Временное окно для лимита в секундах
+    request_times = deque()
 
-    # Обработка данных кампаний со статусом 8
-    if not df_companies_8.empty:
-        # Делаем reset_index после loc
-        df_companies_8 = df_companies_8.reset_index(drop=True)
-        # Убираем лишние колонки
-        df_companies_8 = df_companies_8.loc[:, ~df_companies_8.columns.isin(['nmCPM', 'unitedParams'])]
-        # Переводим колонки с датой в timestamp
-        # for col in ['endTime', 'createTime', 'changeTime', 'startTime']:
-        #     df_companies_8[col] = pd.to_datetime(df_companies_8[col], format='mixed')
-        # Получаем параметры кампании из списка
-        df_companies_8_params = (
-            df_companies_8
-            .loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'autoParams']]
-        )
-        # Получаем параметры кампании в виде столбцов df
-        df_companies_8_params = pd.concat([df_companies_8_params, pd.json_normalize(df_companies_8_params['autoParams'])], axis=1)
-        # Получаем список номенклатур
-        df_companies_8_nms = df_companies_8_params.explode(column='nms')
-        # Убираем лишние колонки
-        df_companies_8_nms = df_companies_8_nms.loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'nms']]
-    else:
-        df_companies_8_nms = pd.DataFrame()
+    all_adverts_info = []
+    session = requests.Session()
+    base_url = "https://advert-api.wildberries.ru/api/advert/v2/adverts"
 
-    # Обработка данных кампаний со статусами, отличными от 8 и 9
-    if not df_companies_9.empty:
-        # Делаем reset_index после loc
-        df_companies_9 = df_companies_9.reset_index(drop=True)
-        # Убираем лишние колонки
-        df_companies_9 = df_companies_9.loc[:, ~df_companies_9.columns.isin(['nmCPM', 'autoParams'])]
-        # Переводим колонки с датой в timestamp
-        # for col in ['endTime', 'createTime', 'changeTime', 'startTime']:
-        #     df_companies_9[col] = pd.to_datetime(df_companies_9[col], format='mixed')
-        # Получаем параметры кампании из списка
-        df_companies_9_params = (
-            df_companies_9
-            .loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'unitedParams']]
-            .explode(column='unitedParams')
-            .reset_index(drop=True)
-        )
-        # Получаем параметры кампании в виде столбцов df
-        df_companies_9_params = pd.concat([
-            df_companies_9_params,
-            pd.json_normalize(df_companies_9_params['unitedParams'])
-        ], axis=1)
-        # Получаем список номенклатур кампании
-        df_companies_9_nms = df_companies_9_params.explode(column='nms').reset_index(drop=True)
-        # Получаем список номенклатур кампании в виде столбцов df
-        # df_companies_9_nms = pd.concat([df_companies_9_nms, pd.json_normalize(df_companies_9_nms['nms'])], axis=1)
-        # Убираем лишние колонки
-        df_companies_9_nms = df_companies_9_nms.loc[:, ['endTime', 'createTime', 'changeTime', 'startTime', 'advertId', 'nms']]
-    else:
-        df_companies_9_nms = pd.DataFrame()
+    for chunk_id in df['chunk'].unique():
+        now = time.time()
+        while request_times and now - request_times[0] > TIME_WINDOW:
+            request_times.popleft()
+        if len(request_times) >= REQUEST_LIMIT:
+            time_to_wait = TIME_WINDOW - (now - request_times[0])
+            logger.info(f"Достигнут лимит запросов API, ждем {round(time_to_wait,3)} сек")
+            time.sleep(max(time_to_wait, REQUEST_INTERVAL))
+        else:
+            time.sleep(REQUEST_INTERVAL)
+        request_times.append(time.time())
 
-    # Формируем итоговый список номенклатур по всем кампаниям
-    df_companies_nms_all = pd.concat([df_companies_6_nms, df_companies_8_nms, df_companies_9_nms])
-    # Переименовываем некоторые колонки для удобства
-    df_companies_nms_all = df_companies_nms_all.rename(columns={
-        'nms': 'Артикул WB',
-        'advertId': 'Номер кампании',
-    })
-    # Получаем количество артикулов в кампании
-    df_companies_nms_all['Количество артикулов в кампании'] = df_companies_nms_all.groupby('Номер кампании').transform('size')
-    # Перемещаем колонки в начало для удобства
-    df_companies_nms_all = move_columns(
-        df_companies_nms_all,
-        ['Номер кампании', 'Артикул WB', 'Количество артикулов в кампании'],
-        position=0
+        df_chunk = df[df['chunk'] == chunk_id]
+        ids_str = ",".join(str(x) for x in df_chunk['ID кампании'])
+
+        params = {
+            "ids": ids_str,
+            "statuses": statuses
+        }
+        if payment_type:
+            params["payment_type"] = payment_type
+
+        try:
+            resp = session.get(base_url, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()
+            adverts = result.get("adverts", [])
+            all_adverts_info.extend(adverts)
+            logger.info(f"Чанк {chunk_id+1}: получено {len(adverts)} кампаний")
+        except Exception as e:
+            logger.warning(f"Ошибка запроса по кампаниям [{ids_str}]: {e}")
+
+    return all_adverts_info
+
+# Функция обработки "сырых" данных доп. информации по кампаниям в DataFrame
+def process_companies_info_to_df(all_adverts_info):
+    """
+    Преобразует "сырые" данные по кампаниям из WB API в плоский DataFrame.
+
+    :param all_adverts_info: список словарей с данными по кампаниям (ключ 'adverts' из API)
+    :return: pd.DataFrame с распарсенными и обработанными данными
+    """
+    if not all_adverts_info:
+        return pd.DataFrame()
+
+    df_adverts_info = pd.json_normalize(
+        all_adverts_info,
+        record_path=['nm_settings'],
+        meta=[
+            'id',
+            ['settings', 'name'],
+            ['settings', 'payment_type'],
+            'status',
+            ['timestamps', 'created'],
+            ['timestamps', 'started'],
+            ['timestamps', 'updated'],
+            ['timestamps', 'deleted']
+        ],
+        errors='ignore'
     )
-    # Формируем словарь с результатами
-    result_companies_info = {
-        'df_companies_list': df_company_list,
-        'df_companies_nms_all': df_companies_nms_all
-    }
 
-    return df_companies_nms_all
+    # Переименование столбцов для удобства
+    df_adverts_info = df_adverts_info.rename(columns={
+        'id': 'ID кампании',
+        'nm_id': 'Артикул WB',
+        'subject.name': 'Категория',
+        'bids_kopecks.recommendations': 'Ставка в рекомендациях (коп.)',
+        'bids_kopecks.search': 'Ставка в поиске (коп.)',
+        'status': 'Статус кампании',
+        'settings.name': 'Название кампании',
+        'settings.payment_type': 'Тип ставки',
+        'timestamps.created': 'Дата создания',
+        'timestamps.started': 'Дата запуска',
+        'timestamps.updated': 'Дата последнего изменения',
+        'timestamps.deleted': 'Дата удаления'
+    })
+    # Приведение дат к datetime без таймзоны
+    date_cols = ['Дата создания', 'Дата запуска', 'Дата последнего изменения', 'Дата удаления']
+    for col in date_cols:
+        if col in df_adverts_info.columns:
+            df_adverts_info[col] = pd.to_datetime(df_adverts_info[col], errors='coerce').dt.tz_localize(None)
+    # Добавляем сегодняшнюю дату как дату выгрузки
+    df_adverts_info['Дата'] = pd.Timestamp.now().normalize()
+    # Перевод ставок из копеек в рубли
+    df_adverts_info =  df_adverts_info.assign(**{
+            'Ставка в рекомендациях (руб.)': df_adverts_info['Ставка в рекомендациях (коп.)'] / 100,
+            'Ставка в поиске (руб.)': df_adverts_info['Ставка в поиске (коп.)'] / 100,
+    })
+    # Удаляем колонки в копейках
+    df_adverts_info = df_adverts_info.drop(columns=[
+        'Ставка в рекомендациях (коп.)',
+        'Ставка в поиске (коп.)'
+    ])
+    # Отброс пустых артикулов
+    df_adverts_info = df_adverts_info.dropna(subset=['Артикул WB'])
+    # Приведение типов
+    df_adverts_info['ID кампании'] = df_adverts_info['ID кампании'].astype(int)
+    df_adverts_info['Артикул WB'] = df_adverts_info['Артикул WB'].astype(int)
+    # Переводим Тип ставки в верхний регистр
+    df_adverts_info['Тип ставки'] = df_adverts_info['Тип ставки'].str.upper()
+    # Заменяем коды статусов на текстовые значения
+    status_mapping = {
+        -1: 'Удалена',
+        4: 'Готова к запуску',
+        7: 'Завершена',
+        8: 'Отменена',
+        9: 'Активна',
+        11: 'На паузе'
+    }
+    df_adverts_info['Статус кампании'] = df_adverts_info['Статус кампании'].map(status_mapping)
+
+    # Выбираем нужные колонки
+    df_adverts_info = df_adverts_info[[
+        'ID кампании',
+        'Название кампании',
+        'Статус кампании',
+        'Тип ставки',
+        'Артикул WB',
+        'Ставка в рекомендациях (руб.)',
+        'Ставка в поиске (руб.)'
+    ]]
+
+    df_adverts_info = df_adverts_info.reset_index(drop=True)
+
+    return df_adverts_info
+
+# Функция получения информации о кампаниях с помощью двух предыдущих функций
+def get_companies_info(headers, df_company_list, statuses='-1,4,7,8,9,11', payment_type=None):
+    # Фильтруем по списку кампаний из входного df
+    df_company_list_filtered = df_company_list.loc[df_company_list['ID кампании'].isin(df_input_companies['ID кампании']), :]
+    # Получаем "сырые" данные по доп. информации по кампаниям из WB API
+    all_adverts_info = fetch_companies_info_raw(headers, df_company_list_filtered, statuses, payment_type)
+    # Обрабатываем "сырые" данные доп. информации по кампаниям в DataFrame
+    df_companies_info = process_companies_info_to_df(all_adverts_info)
+
+    return df_companies_info
 
 
 def split_into_intervals(start_date, end_date, max_days=31):
@@ -411,7 +438,7 @@ def split_into_intervals(start_date, end_date, max_days=31):
         current_start = current_end + timedelta(days=1)
     return intervals
 
-
+# Функция получения "сырых" данных по статистике кампаний из WB API
 def get_company_stats_raw(
         headers: dict,
         df_input_companies: pd.DataFrame,
@@ -434,7 +461,7 @@ def get_company_stats_raw(
       - сбор ответов в один DataFrame.
 
     Ожидаемые колонки в df_input_companies:
-      - 'Номер кампании'
+      - 'ID кампании'
       - 'date_start'
       - 'date_end'
     """
@@ -445,11 +472,11 @@ def get_company_stats_raw(
 
     df_companies = df_input_companies.copy()
 
-    total_companies = len(df_companies['Номер кампании'].unique())
+    total_companies = len(df_companies['ID кампании'].unique())
     logger.info(f"Всего уникальных кампаний в запросе: {total_companies}")
 
     # Разбиваем входные кампании на батчи по batch_size_companies
-    unique_ids = df_companies['Номер кампании'].unique()
+    unique_ids = df_companies['ID кампании'].unique()
     num_batches = (len(unique_ids) + batch_size_companies - 1) // batch_size_companies
 
     logger.info(
@@ -472,7 +499,7 @@ def get_company_stats_raw(
             # f"Кампании: {list(map(int, batch_ids))}"
         )
 
-        df_batch = df_companies[df_companies['Номер кампании'].isin(batch_ids)].copy()
+        df_batch = df_companies[df_companies['ID кампании'].isin(batch_ids)].copy()
 
         # Формируем интервалы не более max_days
         df_batch['intervals'] = df_batch.apply(
@@ -509,7 +536,7 @@ def get_company_stats_raw(
             company_ids = df_batch_full[
                 (df_batch_full['interval_begin'] == begin) &
                 (df_batch_full['interval_end'] == end)
-            ]['Номер кампании'].unique()
+            ]['ID кампании'].unique()
 
             # Разбиваем кампании на чанки по step (лимит 100 кампаний в одном запросе WB)
             num_chunks = (len(company_ids) + step - 1) // step
@@ -677,7 +704,7 @@ def process_company_stats(
     df_request_interval = (
         df_input_companies
         .rename(columns={
-            'Номер кампании': 'advertId',
+            'ID кампании': 'advertId',
             'date_start': 'Начальная дата запроса статистики РК',
             'date_end': 'Конечная дата запроса статистики РК'
         })
@@ -759,16 +786,16 @@ def process_company_stats(
 
     # Переименование колонок
     df_agg = df_agg.rename(columns={
-        'advertId': 'Номер кампании',
+        'advertId': 'ID кампании',
         'nmId': 'Артикул WB',
         'name': 'Наименование товара',
         'views': 'Показы',
-        'clicks': 'Клики РК',
-        'sum': 'Затраты руб',
-        'atbs': 'Корзина РК',
-        'orders': 'Заказы шт (из отчета РК)',
-        'sum_price': 'Заказы руб (из отчета РК)',
-        'shks': 'Заказанные товары шт (из отчета РК)',
+        'clicks': 'Клики (РК)',
+        'sum': 'Затраты, руб.',
+        'atbs': 'Корзина (РК)',
+        'orders': 'Заказы, шт. (РК)',
+        'sum_price': 'Заказы, руб. (РК)',
+        'shks': 'Заказанные товары, шт. (РК)',
         'ctr': 'CTR, %',
         'cr': 'CR, %',
         'cpc': 'CPC',
@@ -779,7 +806,7 @@ def process_company_stats(
     df_agg['unique_company_id'] = (
         df_agg
         .groupby(
-            ['Номер кампании',
+            ['ID кампании',
              'Начальная дата запроса статистики РК',
              'Конечная дата запроса статистики РК'],
             as_index=False
@@ -790,26 +817,86 @@ def process_company_stats(
     # Порядок колонок
     df_agg = df_agg.loc[:, [
         'unique_company_id',
-        'Номер кампании',
+        'ID кампании',
         'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
         'Артикул WB', 'Наименование товара',
-        'Показы', 'Клики РК',
+        'Показы', 'Клики (РК)',
         'CTR, %', 'CR, %', 'CPC', 'CPM',
-        'Затраты руб',
-        'Корзина РК',
-        'Заказы шт (из отчета РК)',
-        'Заказанные товары шт (из отчета РК)',
-        'Заказы руб (из отчета РК)',
+        'Затраты, руб.',
+        'Корзина (РК)',
+        'Заказы, шт. (РК)',
+        # 'Заказанные товары, шт. (РК)',
+        'Заказы, руб. (РК)',
     ]]
 
     # Фильтр по затратам
     df_agg = (
         df_agg
-        .loc[df_agg['Затраты руб'] > 0, :]
+        .loc[df_agg['Затраты, руб.'] > 0, :]
         .reset_index(drop=True)
     )
 
     return df_agg
+
+# Функция добавления доп. информации по кампаниям к статистике кампаний
+def add_companies_info_to_stats(
+        df_companies_stats,
+        df_companies_info
+):
+    # Выбираем нужные колонки из доп. информации по кампаниям
+    companies_info_columns = [
+        'ID кампании', 'Название кампании', 'Статус кампании',
+        'Тип ставки',
+        'Артикул WB',
+        'Ставка в рекомендациях (руб.)',
+        'Ставка в поиске (руб.)'
+    ]
+    missing_columns = [col for col in companies_info_columns if col not in df_companies_info.columns]
+    if missing_columns:
+        logger.warning(
+            f"В df_companies_info отсутствуют колонки: {missing_columns}. "
+        )
+        df_companies_info[missing_columns] = np.nan
+
+    # Мерджим статистику кампаний с доп. информацией по кампаниям
+    df_stats_with_info = (
+        df_companies_stats
+        .merge(
+            df_companies_info,
+            how='left',
+            on=['ID кампании', 'Артикул WB']
+        )
+    )
+
+    return df_stats_with_info
+
+
+# Функция добавления информации о товарах к статистике кампаний
+def add_product_info_to_stats(
+        df_companies_stats_with_info,
+        df_products_processed
+):
+    # Выбираем нужные колонки из списка товаров
+    product_info_columns = ['Артикул WB', 'Артикул продавца']
+    missing_columns = [col for col in product_info_columns if col not in df_products_processed.columns]
+    if missing_columns:
+        logger.warning(
+            f"В df_products_processed отсутствуют колонки: {missing_columns}. "
+        )
+        df_products_processed[missing_columns] = np.nan
+    df_products_processed = df_products_processed[product_info_columns]
+
+    # Мерджим статистику кампаний с информацией о товарах
+    df_stats_with_product_info = (
+        df_companies_stats_with_info
+        .merge(
+            df_products_processed.drop_duplicates(subset=['Артикул WB']),  # удаляем дубликаты по Артикулу WB
+            how='left',
+            on='Артикул WB'
+        )
+    )
+
+    return df_stats_with_product_info
 
 
 # Функция определения минимальной и максимальной даты в кампаниях
@@ -841,8 +928,11 @@ def get_min_max_dates(df_input_companies):
 
 # Функция выгрузки заказов
 def get_orders(headers, date_start, date_end):
-    # Выгружаем заказа
+    # Выгружаем заказы
     df_orders = getOrdersWB(headers, date_start, date_end, to_save=False)
+    # Заменяем некоторые артикулы по маппингу замен
+    if article_replacement and 'Артикул продавца' in df_orders.columns:
+        df_orders['Артикул продавца'] = df_orders['Артикул продавца'].replace(article_replacement)
     # Переводим колонку со временем заказа в timestamp
     df_orders['datetime_orders'] = pd.to_datetime(df_orders['date'])
     return df_orders
@@ -875,21 +965,21 @@ def calc_orders_for_company(
         df_orders_date_filtered
         .groupby(['Артикул WB'], as_index=False)
         .agg(**{
-            'Заказы артикула шт (из отчета по заказам)' : ('Артикул WB', 'count'),
-            'Заказы артикула руб (из отчета по заказам)': ('priceWithDisc', 'sum'),
+            'Заказы артикула, шт. (Заказы)' : ('Артикул WB', 'count'),
+            'Заказы артикула, руб. (Заказы)': ('priceWithDisc', 'sum'),
         })
     )
 
-    # Добавляем номер кампании к заказам
+    # Добавляем ID кампании к заказам
     # df_orders_for_company = df_orders_for_company.assign(**{
     #     'unique_company_id': unique_company_id,
-    #     'Номер кампании': company_number,
+    #     'ID кампании': company_number,
     #     'begin': begin_date_company,
     #     'end': end_date_company,
 
     # })
     # Колонки для заполнения пропусков
-    columns_to_fillna = ['Заказы артикула шт (из отчета по заказам)', 'Заказы артикула руб (из отчета по заказам)']
+    columns_to_fillna = ['Заказы артикула, шт. (Заказы)', 'Заказы артикула, руб. (Заказы)']
     # Мерджим заказы с компанией
     tmp_df_company_with_orders = (
         tmp_df_company
@@ -913,13 +1003,13 @@ def get_associated_products(
     # Удаляем дубликаты списка товаров, поскольку он распакован по размерам
     df_products_no_duplicates = (
         df_products_processed
-        .loc[:, ['nmID', 'imtID', 'Артикул продавца', 'Наименование товара']]
+        .loc[:, ['Артикул WB', 'imtID', 'Артикул продавца', 'Наименование товара']]
         .drop_duplicates(ignore_index=True)
     )
     # Получаем список связанных артикулов артикула РК из списка товаров
     associated_skus = (
         df_products_processed
-        .loc[df_products_processed['nmID'].isin(company_sku_list), 'imtID']
+        .loc[df_products_processed['Артикул WB'].isin(company_sku_list), 'imtID']
         .drop_duplicates()
         .to_list()
     )
@@ -929,7 +1019,7 @@ def get_associated_products(
         # Делаем выборку по ассоциированным артикулам
         .loc[
             df_products_processed['imtID'].isin(associated_skus),
-            ['nmID', 'imtID', 'Артикул продавца', 'Наименование товара']
+            ['Артикул WB', 'imtID', 'Артикул продавца', 'Наименование товара']
         ]
         # Удаляем дубликаты по артикулу
         .drop_duplicates(ignore_index=True)
@@ -941,13 +1031,13 @@ def get_associated_products(
     # Получаем df артикула РК и ID общего артикула
     df_company_sku = (
         df_associated_sku_all
-        .loc[df_associated_sku_all['nmID'].isin(company_sku_list), ['nmID', 'imtID']]
+        .loc[df_associated_sku_all['Артикул WB'].isin(company_sku_list), ['Артикул WB', 'imtID']]
         # .groupby(['imtID'], as_index=False)
         # .agg({
-        #     'nmID': lambda x: ';'.join(map(str, x))
+        #     'Артикул WB': lambda x: ';'.join(map(str, x))
         # })
         .rename(columns={
-            'nmID': 'Артикул РК'
+            'Артикул WB': 'Артикул РК'
         })
     )
     # Получаем df связанных артикулов НЕ ВКЛЮЧАЯ артикулы РК
@@ -963,12 +1053,12 @@ def get_associated_products(
         # Удаляем артикулы из РК
         .pipe(lambda df:
               df.loc[
-                  ~df['nmID'].isin(company_sku_list),
+                  ~df['Артикул WB'].isin(company_sku_list),
                   ~df.columns.isin(['imtID'])
                 ]
         )
         .rename(columns={
-            'nmID': 'Ассоциированный артикул'
+            'Артикул WB': 'Ассоциированный артикул'
         })
     )
 
@@ -1050,8 +1140,8 @@ def calc_associated_orders(
         df_orders_sku_date_filtered
         .groupby(['Артикул WB'], as_index=False)
         .agg(**{
-            'Заказы артикула шт (из отчета по заказам)' : ('Артикул WB', 'count'),
-            'Заказы артикула руб (из отчета по заказам)': ('priceWithDisc', 'sum'),
+            'Заказы артикула, шт. (Заказы)' : ('Артикул WB', 'count'),
+            'Заказы артикула, руб. (Заказы)': ('priceWithDisc', 'sum'),
         })
         .rename(columns={
             'Артикул WB': 'Ассоциированный артикул'
@@ -1063,13 +1153,14 @@ def calc_associated_orders(
         on='Ассоциированный артикул',
         how='left'
     )
+
     # Заполняем пропуски
     df_associated_sku_with_orders = df_associated_sku_with_orders.fillna(0)
 
-    # Добавляем номер кампании к заказам
+    # Добавляем ID кампании к заказам
     df_associated_sku_with_orders = df_associated_sku_with_orders.assign(**{
         # 'unique_company_id': unique_company_id,
-        'Номер кампании': company_number,
+        'ID кампании': company_number,
         'Начальная дата запроса статистики РК': datetime_start,
         'Конечная дата запроса статистики РК': datetime_end,
     })
@@ -1077,12 +1168,12 @@ def calc_associated_orders(
     df_associated_sku_with_orders = df_associated_sku_with_orders.loc[
         :,
         [
-            'Номер кампании',
+            'ID кампании',
             'Начальная дата запроса статистики РК', 'Конечная дата запроса статистики РК',
             'Ассоциированный артикул', 'Артикул РК',
             'Артикул продавца', 'Наименование товара',
-            'Заказы артикула шт (из отчета по заказам)',
-            'Заказы артикула руб (из отчета по заказам)',
+            'Заказы артикула, шт. (Заказы)',
+            'Заказы артикула, руб. (Заказы)',
         ]
     ]
 
@@ -1092,7 +1183,7 @@ def calc_associated_orders(
 def calc_orders_for_companies(
         df_input_companies,
         df_orders,
-        df_companies_stats
+        df_companies_stats_with_products,
 ):
     # df, куда будем помещать итоговый результат
     df_companies_stats_with_orders = pd.DataFrame()
@@ -1101,14 +1192,14 @@ def calc_orders_for_companies(
     for unique_company_id in df_input_companies['unique_company_id'].unique():
         # Временный df с данными текущей кампании
         tmp_df_company = (
-            df_companies_stats
-            .loc[df_companies_stats['unique_company_id'] == unique_company_id, :]
-            # .drop_duplicates(subset=['Номер кампании'])
+            df_companies_stats_with_products
+            .loc[df_companies_stats_with_products['unique_company_id'] == unique_company_id, :]
+            # .drop_duplicates(subset=['ID кампании'])
         )
         # Если вернулась статистика по данной РК, то начинаем расчет статистики
         if not tmp_df_company.empty:
-            # Получаем номер кампании
-            company_number = tmp_df_company['Номер кампании'].iloc[0]
+            # Получаем ID кампании
+            company_number = tmp_df_company['ID кампании'].iloc[0]
             # Получаем даты начала и окончания кампании (для фильтра заказов)
             datetime_start_orders = (
                 pd.to_datetime(tmp_df_company['Начальная дата запроса статистики РК'])
@@ -1153,7 +1244,7 @@ def calc_orders_for_companies(
         else:
             company_with_no_stats = df_input_companies.loc[
                 df_input_companies['unique_company_id'] == unique_company_id,
-                ['Номер кампании', 'date_start', 'date_end']
+                ['ID кампании', 'date_start', 'date_end']
             ]
             logger.warning(f"No company stats for company\n {company_with_no_stats}")
             tmp_df_company_with_orders = pd.DataFrame()
@@ -1219,13 +1310,13 @@ def add_data_from_sales_funnel(df_companies_stats_with_orders):
     df_sales_funnel = (
         df_sales_funnel
         .rename(columns={
-            'Количество переходов в карточку товара': 'Клики общие',
-            'Положили в корзину, шт.': 'Корзина общая'
+            'Количество переходов в карточку товара': 'Клики (общие)',
+            'Положили в корзину, шт.': 'Корзина (общая)'
         })
         .loc[:, [
             'Артикул WB',
-            'Клики общие',
-            'Корзина общая',
+            'Клики (общие)',
+            'Корзина (общая)',
             'Начальная дата запроса статистики РК',
             'Конечная дата запроса статистики РК',
         ]]
@@ -1244,13 +1335,13 @@ def add_data_from_sales_funnel(df_companies_stats_with_orders):
     # Перемещаем колонки
     df_companies_stats_with_sales_funnel = move_columns(
         df_companies_stats_with_sales_funnel,
-        'Клики общие',
-        'Клики РК',
+        'Клики (общие)',
+        'Клики (РК)',
     )
     df_companies_stats_with_sales_funnel = move_columns(
         df_companies_stats_with_sales_funnel,
-        'Корзина общая',
-        'Корзина РК',
+        'Корзина (общая)',
+        'Корзина (РК)',
     )
 
     return df_companies_stats_with_sales_funnel
@@ -1259,18 +1350,86 @@ def add_data_from_sales_funnel(df_companies_stats_with_orders):
 def calc_final_orders(df_companies_stats_with_sales_funnel):
     # Достаем df со статистикой РК из словаря
     df_companies_stats_final_orders = df_companies_stats_with_sales_funnel.copy()
+    # Считаем затраты артикула РК
+    df_companies_stats_final_orders['Затраты артикула, руб.'] = (
+        df_companies_stats_final_orders
+        .groupby(['Артикул WB'])['Затраты, руб.']
+        .transform('sum')
+    )
     # Считаем ДРР
-    df_companies_stats_final_orders['ДРР, %'] = np.where(
-        df_companies_stats_final_orders['Заказы артикула руб (из отчета по заказам)'] > 0,
+    df_companies_stats_final_orders['ДРР'] = np.where(
+        df_companies_stats_final_orders['Заказы артикула, руб. (Заказы)'] > 0,
         (
-            df_companies_stats_final_orders['Затраты руб']
-            / df_companies_stats_final_orders['Заказы артикула руб (из отчета по заказам)']
+            df_companies_stats_final_orders['Затраты, руб.']
+            / df_companies_stats_final_orders['Заказы артикула, руб. (Заказы)']
+            * 100
+        ),
+        np.nan
+    )
+    # Считаем ДРР артикула
+    df_companies_stats_final_orders['ДРР артикула'] = np.where(
+        df_companies_stats_final_orders['Заказы артикула, руб. (Заказы)'] > 0,
+        (
+            df_companies_stats_final_orders['Затраты артикула, руб.']
+            / df_companies_stats_final_orders['Заказы артикула, руб. (Заказы)']
             * 100
         ),
         np.nan
     )
 
     return df_companies_stats_final_orders
+
+
+# Функция создания df для записи в Excel
+def create_final_df_for_excel(df_final_orders):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_excel_companies_report = df_final_orders.copy()
+    # Переименовываем колонки
+    df_excel_companies_report = df_excel_companies_report.rename(columns={
+        'Наименование товара': 'Название товара',
+    })
+    # Формируем список колонок для итогового df
+    columns_for_excel = [
+        'ID кампании',
+        'Артикул WB',
+        'Артикул продавца',
+        'Тип ставки',
+        'Ставка в рекомендациях (руб.)',
+        'Ставка в поиске (руб.)',
+        'Название товара',
+        'Показы',
+        'Клики (РК)',
+        'Клики (общие)',
+        'CTR, %',
+        'CR, %',
+        'CPC',
+        'CPM',
+        'Затраты, руб.',
+        'Затраты артикула, руб.',
+        'Корзина (РК)',
+        'Корзина (общая)',
+        'Заказы, шт. (РК)',
+        'Заказы, руб. (РК)',
+        'Заказы артикула, шт. (Заказы)',
+        'Заказы артикула, руб. (Заказы)',
+        'ДРР',
+        'ДРР артикула'
+    ]
+    missing_columns = [col for col in columns_for_excel if col not in df_excel_companies_report.columns]
+    if missing_columns:
+        logger.warning(
+            f"В финальном df для Excel отсутствуют колонки: {missing_columns}. "
+            f"Итоговый df для Excel будет содержать NaN в этих колонках."
+        )
+        df_excel_companies_report[missing_columns] = np.nan
+    # Выбираем нужные колонки и переименовываем их для итогового df
+    df_excel_companies_report = df_excel_companies_report[columns_for_excel]
+
+    # Заменяем 0 и 0.0 на NaN во всех колонках
+    # df_final_for_excel = df_final_for_excel.replace({0: np.nan, 0.0: np.nan})
+
+
+    return df_excel_companies_report
 
 
 # Функция выгрузки статистики по ключевым словам
@@ -1282,8 +1441,8 @@ def get_keywords_stats(headers, df_input_companies):
 
     # Делаем цикл по каждой кампании
     for idx, row in df_input_companies.iterrows():
-        # Получаем номер кампании
-        company_number = row['Номер кампании']
+        # Получаем ID кампании
+        company_number = row['ID кампании']
         # Получаем даты, за которые нужно получить статистику
         date_start_company = pd.to_datetime(row['date_start'])
         date_end_company = pd.to_datetime(row['date_end'])
@@ -1340,8 +1499,8 @@ def get_keywords_stats(headers, df_input_companies):
                 resp_data_keyword_companies = resp_data_keyword_companies.json()
                 # Переводим в df
                 tmp_df_keyword_companies = pd.DataFrame(resp_data_keyword_companies)
-                # Добавляем номер кампании
-                tmp_df_keyword_companies['Номер кампании'] = company_number
+                # Добавляем ID кампании
+                tmp_df_keyword_companies['ID кампании'] = company_number
 
                 # Объединяем с предыдущим проходом цикла\
                 df_keyword_company_stats_api = pd.concat([
@@ -1394,7 +1553,7 @@ def get_keywords_stats(headers, df_input_companies):
         df_companies_keywords_stats = (
             df_companies_keywords_stats
             .sort_values(
-                by=['Номер кампании', 'Затраты'],
+                by=['ID кампании', 'Затраты'],
                 ascending=False,
                 ignore_index=True
             )
@@ -1403,7 +1562,7 @@ def get_keywords_stats(headers, df_input_companies):
         df_companies_keywords_stats = df_companies_keywords_stats.loc[
             :,
             [
-                'Номер кампании',
+                'ID кампании',
                 'Дата',
                 'Ключевая фраза',
                 'Затраты',
@@ -1425,7 +1584,7 @@ def calc_keyword_stats(df_companies_keywords_stats):
     # Считаем суммарные показатели
     df_keywords_stats = (
         df_keywords_stats
-        .groupby(['Номер кампании', 'Ключевая фраза'], as_index=False)
+        .groupby(['ID кампании', 'Ключевая фраза'], as_index=False)
         # Считаем суммы по кампании
         .agg(**{
             'Затраты': ('Затраты', 'sum'),
@@ -1442,131 +1601,297 @@ def calc_keyword_stats(df_companies_keywords_stats):
             )
         )
         # Сортировка
-        .sort_values(by=['Номер кампании', 'Затраты'], ascending=[True, False])
+        .sort_values(by=['ID кампании', 'Затраты'], ascending=[True, False])
     )
 
     return df_keywords_stats
 
 # Функция формирования словаря с итоговыми результатами
 def create_result_dictionary(
+        df_date_range,
         df_final_orders,
         df_associated_orders,
         df_companies_keywords_stats,
         df_keywords_stats,
 ):
-    # Убираем лишние колонки из статистики РК
-    df_final_orders_ = (
-        df_final_orders.drop(columns=[
-            'Начальная дата запроса статистики РК',
-            'Конечная дата запроса статистики РК'
-        ])
+    # # Убираем лишние колонки из статистики РК
+    # df_final_orders_ = (
+    #     df_final_orders.drop(columns=[
+    #         'Начальная дата запроса статистики РК',
+    #         'Конечная дата запроса статистики РК'
+    #     ])
+    # )
+
+    # Получаем мин. и макс. дату для записи на лист
+    date_start_excel = (
+        pd.to_datetime(df_date_range['date_start'])
+        .min()
+        .strftime('%d.%m')
     )
+    date_end_excel = (
+        pd.to_datetime(df_date_range['date_end'])
+        .max()
+        .strftime('%d.%m')
+    )
+
     # Добавляем статистику по ключевым словам в словарь с кампаниями
     result_companies_report = {
-        'Статистика РК': df_final_orders_,
+        f'{client_name} {date_start_excel}-{date_end_excel}': df_final_orders,
         'Ассоциированные заказы': df_associated_orders,
         'Ключевые слова (свод)': df_keywords_stats,
         # 'Ключевые слова': df_companies_keywords_stats
     }
+    # В каждом df заменяем 0 и 0.0 на NaN
+    for key in result_companies_report:
+        result_companies_report[key] = result_companies_report[key].replace({0: np.nan, 0.0: np.nan})
 
     return result_companies_report
 
 
-# Функция сохранения excel
-def save_and_format_excel(
-        report_path,
-        date_campaign_report,
-        client_name,
-        result_companies_report
-):
-    logger.info(f"Formatting campaigns report for client {client_name}")
+def format_all_sheets_common_wb(wb, exclude_columns=None):
+    """
+    Общее форматирование для всех листов книги (WB):
+    - границы
+    - заголовки: центр, перенос, жирный, общий цвет (RGB 204,192,218)
+    - данные: вертикальное выравнивание по центру, без переноса (по умолчанию)
+    - числовой формат (целое / с двумя знаками) для чисел, кроме исключённых колонок
+    - автоширина столбцов с небольшим запасом
+    - автофильтр по всей таблице
+    - дополнительное форматирование столбцов по COMPANY_STATS_COL_FORMAT:
+        * поиск по startswith(ключ)
+        * для совпавших — выставляем width и alignment из словаря
+        * для остальных — остаётся автоподбор ширины и базовое выравнивание
+    """
 
-    # Имя файла для сохранения
-    file_name = (
-        report_path / f"{date_campaign_report}_Отчет_РК_{client_name}_WB.xlsx"
+    if exclude_columns is None:
+        exclude_columns = [
+            "Артикул",
+            "Артикул WB",
+            "Артикул продавца",
+            "ID кампании",
+            "Ассоциированный артикул",
+            "Артикул РК"
+        ]
+
+    exclude_columns_lower = {col.lower() for col in exclude_columns}
+
+    # Граница
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
     )
 
-    # Создаем книгу excel и сохраняем в неё df из словаря с результатами
+    # Выравнивание: заголовок
+    header_alignment = Alignment(
+        horizontal='center',
+        vertical='center',
+        wrap_text=True
+    )
+
+    # Базовое выравнивание данных
+    data_alignment_default = Alignment(
+        vertical='center',
+        wrap_text=False
+    )
+
+    # Цвет заголовка (RGB 204, 192, 218)
+    HEADER_COLOR = "CCC0DA"
+
+    header_fill_common = PatternFill(
+        start_color=HEADER_COLOR,
+        end_color=HEADER_COLOR,
+        fill_type="solid"
+    )
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+
+        min_row = ws.min_row
+        max_row = ws.max_row
+        min_col = ws.min_column
+        max_col = ws.max_column
+
+        # Заголовки
+        header_row = next(ws.iter_rows(min_row=1, max_row=1))
+        headers = [cell.value for cell in header_row]
+
+        # Индексы столбцов, которые надо исключить из числового форматирования
+        exclude_idx = {
+            idx
+            for idx, header in enumerate(headers)
+            if isinstance(header, str) and header.lower() in exclude_columns_lower
+        }
+
+        # Высота первой строки (как у Ozon)
+        ws.row_dimensions[1].height = 45
+
+        # Базовое оформление: границы, заголовки, числа, базовое выравнивание
+        for row in ws.iter_rows(min_row=min_row, max_row=max_row,
+                                min_col=min_col, max_col=max_col):
+            for idx, cell in enumerate(row):
+                cell.border = thin_border
+
+                if cell.row == 1:
+                    # Заголовок
+                    cell.font = Font(name="Calibri", size=11, bold=True, color="000000")
+                    cell.alignment = header_alignment
+                    cell.fill = header_fill_common
+                else:
+                    # Данные — базовое выравнивание
+                    cell.alignment = data_alignment_default
+
+                    # Числовой формат
+                    if idx not in exclude_idx and isinstance(cell.value, (int, float)):
+                        if float(cell.value).is_integer():
+                            cell.number_format = '#,##0'
+                        else:
+                            cell.number_format = '#,##0.00'
+
+        # Базовый автофит ширины
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max_len + 2
+
+        # Автофильтр по всей таблице
+        ws.auto_filter.ref = ws.dimensions
+
+        # Дополнительное форматирование по COMPANY_STATS_COL_FORMAT
+        # Для каждой колонки листа ищем первый key, который является префиксом заголовка
+        for col_idx, header in enumerate(headers, start=1):
+            if not isinstance(header, str):
+                continue
+
+            fmt = None
+            for key, cfg in COMPANY_STATS_COL_FORMAT.items():
+                if header.startswith(key):
+                    fmt = cfg
+                    break
+
+            if fmt is None:
+                continue  # для этой колонки остаётся автофит и базовое выравнивание
+
+            width = fmt.get('width')
+            align_kwargs = fmt.get('alignment', {})
+            alignment = Alignment(**align_kwargs)
+
+            col_letter = get_column_letter(col_idx)
+
+            # переопределяем ширину
+            if width is not None:
+                ws.column_dimensions[col_letter].width = width
+
+            # выравнивание только данных (со 2-й строки)
+            for row in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row, column=col_idx)
+                cell.alignment = alignment
+
+
+def format_wb_client_sheet(
+        wb,
+        sheet_name: str,
+        df_client: pd.DataFrame,
+        percent_cols=None,
+):
+    """
+    Форматирование листа сводного отчёта по клиенту (WB):
+    - делим значения ДРР на 100
+    - задаём формат процентов
+    - условное форматирование (градиент) по % столбцам
+    """
+    if sheet_name not in wb.sheetnames:
+        return
+
+    if percent_cols is None:
+        percent_cols = ['ДРР', 'ДРР артикула']
+
+    ws = wb[sheet_name]
+
+    # --- 1. Процентный формат ---
+    for col_name in percent_cols:
+        if col_name not in df_client.columns:
+            continue
+
+        col_idx = list(df_client.columns).index(col_name) + 1  # Excel: 1-based
+        for row in range(2, ws.max_row + 1):  # пропускаем заголовок
+            cell = ws.cell(row=row, column=col_idx)
+            if cell.value is not None:
+                # если в df уже проценты (15.3 → 15.3%), делим на 100
+                cell.value = cell.value * 0.01
+            cell.number_format = '0.00%'
+
+    # --- 2. Градиентное условное форматирование по тем же столбцам ---
+    for col_name in percent_cols:
+        if col_name not in df_client.columns:
+            continue
+
+        col_idx = list(df_client.columns).index(col_name) + 1
+        col_letter = ws.cell(row=1, column=col_idx).column_letter
+        cell_range = f"{col_letter}2:{col_letter}{ws.max_row}"
+
+        rule = ColorScaleRule(
+            start_type='min', start_color='63BE7B',           # зелёный
+            mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
+            end_type='max', end_color='E06967',               # красный
+        )
+        ws.conditional_formatting.add(cell_range, rule)
+
+
+def save_and_format_excel(
+        report_path: Path,
+        date_campaign_report: str,
+        client_name: str,
+        result_companies_report: dict,
+        df_date_range: pd.DataFrame,
+):
+    """
+    Сохранение и форматирование отчёта РК по WB.
+
+    result_companies_report: dict[sheet_name -> DataFrame]
+    """
+    # Имя файла для сохранения
+    file_name = report_path / f"{date_campaign_report}_Отчет_РК_{client_name}_WB.xlsx"
+
+    report_path.mkdir(parents=True, exist_ok=True)
+
+    # Создаём книгу и записываем все dfs по листам
     with pd.ExcelWriter(file_name) as w:
         for sheet_name, df in result_companies_report.items():
             df.to_excel(w, index=False, sheet_name=sheet_name)
 
-    # Форматирование файла с отчетом
-    # GPT START----
+    # Открываем и форматируем
     wb = openpyxl.load_workbook(file_name)
 
-    # Создаем границы для ячеек
-    thin = Side(border_style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    # 1) Общее форматирование всех листов (границы, заголовки, числа, ширина, формат по маппингу)
+    format_all_sheets_common_wb(wb)
 
+    # 2) Форматирование листа по клиенту (ДРР и ДРР артикула)
+    date_start_excel = (
+        pd.to_datetime(df_date_range['date_start'])
+        .min()
+        .strftime('%d.%m')
+    )
+    date_end_excel = (
+        pd.to_datetime(df_date_range['date_end'])
+        .max()
+        .strftime('%d.%m')
+    )
+    sheet_name_client = f"{client_name} {date_start_excel}-{date_end_excel}"
 
-    # 1. Задаем список названий столбцов, которые НЕ надо форматировать как числа
-    exclude_format_headers = [
-     'Номер кампании', 'Артикул', 'Ассоциированный артикул', 'Артикул РК', 'Артикул WB',
-    ]
-    # Цикл по каждому листу
-    for ws in wb.worksheets:
-        # 2. Сохраняем названия колонок для дальнейшей фильтрации
-        headers = [cell.value for cell in ws[1]]
-
-        # 3. Определяем индексы столбцов, которые НЕ нужно форматировать как числа
-        exclude_format_idx = [
-            idx + 1  # openpyxl считает колонки с 1
-            for idx, header in enumerate(headers)
-            if header in exclude_format_headers
-        ]
-
-        # 4. Обходим все ячейки данных (начиная со 2-й строки)
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=ws.max_column):
-            for col_idx, cell in enumerate(row, start=1):
-                # 5. Пропускаем столбцы, для которых не нужно форматирование чисел
-                if col_idx in exclude_format_idx:
-                    continue
-                # 6. Форматируем целые числа: разделитель тысяч, без дробной части
-                if isinstance(cell.value, int):
-                    cell.number_format = '#,##0'
-                # 7. Форматируем дробные числа:
-                #    - Если значение "целое" по факту (например, 10000.0), показываем без знаков после запятой
-                #    - Иначе — 2 знака после запятой, разделитель тысяч
-                elif isinstance(cell.value, float):
-                    if cell.value % 1 == 0:
-                        cell.number_format = '#,##0'
-                    else:
-                        cell.number_format = '#,##0.00'
-
-        # Границы и автоподбор ширины
-        column_widths = {}
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.border = border
-                cell_value_len = len(str(cell.value)) if cell.value is not None else 0
-                column_widths[cell.column] = max(column_widths.get(cell.column, 0), cell_value_len)
-
-        for col_idx, width in column_widths.items():
-            # Для строк заголовков добавляем запас под фильтр
-            header_len = len(str(ws.cell(row=1, column=col_idx).value)) if ws.cell(row=1, column=col_idx).value else 0
-            # Даём больше места, если ширина определилась по заголовку
-            reserve = 5 if width == header_len else 2
-            ws.column_dimensions[get_column_letter(col_idx)].width = width + reserve
-
-        # Высота загловков
-        ws.row_dimensions[1].height = 25
-        # Фильтр на первый ряд (заголовки)
-        ws.auto_filter.ref = ws.dimensions
-
-        # Перенос текста в заголовках (первая строка)
-        for cell in ws[1]:
-            cell.alignment = Alignment(
-                vertical='center',
-                horizontal='left',
-                wrap_text=True
-            )
+    format_wb_client_sheet(
+        wb,
+        sheet_name=sheet_name_client,
+        df_client=result_companies_report.get(sheet_name_client, pd.DataFrame()),
+        percent_cols=['ДРР', 'ДРР артикула']
+    )
 
     wb.save(file_name)
-
     return file_name
-
-    # GPT END----
 
 
 # %% Вызов всех функций
@@ -1603,12 +1928,18 @@ if __name__ == '__main__':
 
     # Получаем список кампаний
     df_company_list = get_company_list(headers)
-    # Получаем список номенклатур кампании
-    # df_companies_nms = get_companies_info(headers, df_input_companies)
+    # Получаем доп. информацию по кампаниям
+    df_companies_info = get_companies_info(headers, df_input_companies)
+
+
     # Получаем статистику кампаний
     df_companies_stats_raw = get_company_stats_raw(headers, df_input_companies)
-    # Обрабатываем статистику кампаний
-    df_companies_stats = process_company_stats(df_companies_stats_raw, df_input_companies)
+
+    # Получаем статистику по ключевым фразам в поиске
+    df_companies_keywords_stats = get_keywords_stats(
+        headers,
+        df_input_companies
+    )
 
     # Получаем список товаров
     df_products = getWBProduct(headers, to_save=False)
@@ -1620,23 +1951,28 @@ if __name__ == '__main__':
     # Выгружаем заказы
     df_orders = get_orders(headers, date_start_orders, date_end_orders)
 
+    # Обрабатываем статистику кампаний
+    df_companies_stats = process_company_stats(df_companies_stats_raw, df_input_companies)
+    # Добавляем к статистике кампаний информацию по SKU из кампании
+    df_companies_stats_with_info = add_companies_info_to_stats(df_companies_stats, df_companies_info)
+
+
+    # Добавляем данные по товарам в статистику кампаний
+    df_companies_stats_with_products = add_product_info_to_stats(
+        df_companies_stats_with_info,
+        df_products_processed
+    )
+
     # Считаем заказы для каждой кампании
     df_companies_stats_with_orders, df_associated_orders = calc_orders_for_companies(
         df_input_companies,
         df_orders,
-        df_companies_stats
+        df_companies_stats_with_products
     )
     # Добавляем данные из воронки продаж
     df_companies_stats_with_sales_funnel = add_data_from_sales_funnel(
         df_companies_stats_with_orders
     )
-    # Получаем статистику по ключевым фразам в поиске
-    df_companies_keywords_stats = get_keywords_stats(
-        headers,
-        df_input_companies
-    )
-    # Считаем статистику по ключевым словам с группировкой
-    df_keywords_stats = calc_keyword_stats(df_companies_keywords_stats)
     # Получаем историю затрат (для корректных расходов на кампании)
     # df_costs_history_stats = get_costs_history(headers, date_start, date_end)
     # Считаем расходы на номенклатуры в кампании
@@ -1644,9 +1980,16 @@ if __name__ == '__main__':
 
     # Считаем ДРР и итоговые заказы
     df_final_orders = calc_final_orders(df_companies_stats_with_sales_funnel)
+    # Создаем df для записи в Excel
+    df_final_orders_for_excel = create_final_df_for_excel(df_final_orders)
+
+     # Считаем статистику по ключевым словам с группировкой
+    df_keywords_stats = calc_keyword_stats(df_companies_keywords_stats)
+
     # Создаем итоговый словарь с результатами
     result_companies_report = create_result_dictionary(
-        df_final_orders,
+        df_date_range,
+        df_final_orders_for_excel,
         df_associated_orders,
         df_companies_keywords_stats,
         df_keywords_stats,
@@ -1658,7 +2001,8 @@ if __name__ == '__main__':
         report_path,
         date_campaign_report,
         client_name,
-        result_companies_report
+        result_companies_report,
+        df_date_range
     )
     logger.info(f"Done creating campaigns report for client {client_name}")
     logger.info(f"Campaigns report saved in {filepath_report}")
