@@ -25,10 +25,12 @@ from generic_functions import move_columns
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
 from wb.scripts.constants import client_name, headers, marketplace_dir_path
-from wb.scripts.wb_generic_functions import get_company_stats_v2
 from wb.scripts.wb_generic_functions import upload_realization_report
-from wb.scripts.calc_svod_finance_report_WB_v2 import (  # filter_report_dates
-    add_new_columns, rename_report_columns)
+from wb.scripts.calc_svod_finance_report_WB_v3 import (
+    # filter_report_dates
+    add_new_columns, rename_report_columns
+)
+
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
     description="Get sales and returns from realization report (WB)",
@@ -303,8 +305,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2026-01-01',
-        date_end='2026-02-28'
+        date_start='2025-08-01',
+        date_end='2026-03-31'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
