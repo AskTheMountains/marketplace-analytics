@@ -273,6 +273,8 @@ def process_campaigns_report(df_campaigns_report):
         'Количество размеров в артикуле': 'Кол-во размеров в артикуле',
         'Заказы ОЗЗ 5% по размерам, шт.': 'Заказы по размерам ОЗЗ 5%, шт.',
         'Расход ОЗЗ 5% по размерам, руб.': 'Расход по размерам ОЗЗ 5%, руб.',
+        'Заказы ОЗЗ ст. по размерам, шт.': 'Заказы по размерам ОЗЗ ст., шт.',
+        'Расход ОЗЗ ст. по размерам, руб.': 'Расход по размерам ОЗЗ ст., руб.',
     })
     # Делаем порядок колонок
     column_order = [
@@ -304,6 +306,10 @@ def process_campaigns_report(df_campaigns_report):
         'Расход ОЗЗ 5%, руб.',
         'Заказы по размерам ОЗЗ 5%, шт.',
         'Расход по размерам ОЗЗ 5%, руб.',
+        'Заказы ОЗЗ ст., шт.',
+        'Расход ОЗЗ ст., руб.',
+        'Заказы по размерам ОЗЗ ст., шт.',
+        'Расход по размерам ОЗЗ ст., руб.',
         'Расход РК, руб.',
         'Расход РК и ОЗЗ, руб.',
         'Расход РК по размерам, руб.',
@@ -323,6 +329,8 @@ def process_campaigns_report(df_campaigns_report):
         'Заказы размеров, руб. (Заказы)',
         'Заказы по размерам ОЗЗ 5%, шт.',
         'Расход по размерам ОЗЗ 5%, руб.',
+        'Заказы по размерам ОЗЗ ст., шт.',
+        'Расход по размерам ОЗЗ ст., руб.',
         'Расход РК по размерам, руб.',
         'Расход РК и ОЗЗ по размерам, руб.'
     ]
@@ -380,8 +388,10 @@ def process_payment_orders_report(df_payment_orders_report):
         df_payment_orders_report_processed
         .groupby('Артикул', as_index=False)
         .agg(**{
-            'Заказы ОЗЗ 5%, шт.': ('Количество', 'sum'),
-            'Расход ОЗЗ 5%, руб.': ('Расход, ₽', 'sum')
+            'Заказы ОЗЗ 5%, шт.': ('Заказы ОЗЗ 5%, шт.', 'sum'),
+            'Расход ОЗЗ 5%, руб.': ('Расход ОЗЗ 5%, руб.', 'sum'),
+            'Расход ОЗЗ ст., руб.': ('Расход ОЗЗ ст., руб.', 'sum'),
+            'Заказы ОЗЗ ст., шт.': ('Заказы ОЗЗ ст., шт.', 'sum'),
         })
     )
     # Переводим Артикул в строку
@@ -520,7 +530,7 @@ def add_data_to_product_list(
         {"df": df_reminders, "columns": ["Остаток",], "on": "Артикул"},
         {"df": df_campaigns_report_by_article, "columns": ["РК"], "on": "Артикул"},
         {"df": df_orders_by_products, "columns": ["Сумма заказов", "Кол-во заказов"], "on": "Артикул"},
-        {"df": df_payment_orders_report_processed, "columns": ["Заказы ОЗЗ 5%, шт.", "Расход ОЗЗ 5%, руб."], "on": "Артикул"},
+        {"df": df_payment_orders_report_processed, "columns": ["Заказы ОЗЗ 5%, шт.", "Расход ОЗЗ 5%, руб.", "Заказы ОЗЗ ст., шт.", "Расход ОЗЗ ст., руб."], "on": "Артикул"},
     ]
 
     # Начинаем с основного датафрейма
@@ -560,7 +570,7 @@ def calc_additional_columns(df_products_svod):
     )
     # ДРР %
     df_client_svod['ДРР'] = (
-        df_client_svod[['РК', 'Расход ОЗЗ 5%, руб.']].sum(axis=1)
+        df_client_svod[['РК', 'Расход ОЗЗ 5%, руб.', 'Расход ОЗЗ ст., руб.']].sum(axis=1)
         / df_client_svod['Сумма заказов'].replace(0, np.nan) * 100
     )
     df_client_svod['ДРР'] = df_client_svod['ДРР'].replace([-np.inf, np.inf], np.nan)
@@ -581,6 +591,7 @@ def create_client_svod_excel(df_client_svod, date_report):
         'Средняя цена продажи',
         'РК',
         'Заказы ОЗЗ 5%, шт.', 'Расход ОЗЗ 5%, руб.',
+        'Заказы ОЗЗ ст., шт.', 'Расход ОЗЗ ст., руб.',
         'Кол-во заказов', 'Сумма заказов',
         'ДРР',
         f'Остаток {date_report_formatted}',
@@ -721,6 +732,7 @@ def format_all_sheets_common(wb, exclude_columns=None):
     BLUE_1 = "8DB4E2"  # 141, 180, 226
     ORANGE = "FCD5B4"  # 252, 213, 180
     BLUE_2 = "DAEEF3"  # 218, 238, 243
+    BROWN = "C4BD97"  # 196, 189, 151
 
     blue1_headers = {
         "Номер кампании",
@@ -760,6 +772,12 @@ def format_all_sheets_common(wb, exclude_columns=None):
         "Расход РК по размерам, руб.",
         "Расход РК и ОЗЗ по размерам, руб.",
     }
+    brown_headers = {
+        "Расход ОЗЗ ст., руб.",
+        "Заказы ОЗЗ ст., шт.",
+        "Заказы по размерам ОЗЗ ст., шт.",
+        "Расход по размерам ОЗЗ ст., руб.",
+    }
 
     header_color_map = {}
     for h in blue1_headers:
@@ -768,6 +786,8 @@ def format_all_sheets_common(wb, exclude_columns=None):
         header_color_map[h] = ORANGE
     for h in blue2_headers:
         header_color_map[h] = BLUE_2
+    for h in brown_headers:
+        header_color_map[h] = BROWN
 
     def get_header_fill(header_value):
         if not isinstance(header_value, str) or not header_value.strip():

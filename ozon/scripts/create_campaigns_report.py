@@ -683,10 +683,12 @@ def get_promo_orders(
     # Получаем даты начала и окончания выгрузки отчета
     date_start = df_date_range['date_start'].iloc[0]
     date_end = df_date_range['date_end'].iloc[0]
+
     # Переводим даты в часовой пояс UTC
     date_start_msk = msk_boundary_to_utc(date_start)
     date_end_msk = msk_boundary_to_utc(date_end, True)
-    # Переводим дату в формат, в котором они будут в имени файла
+
+    # Формат для имени файла
     date_start_file = (
         pd.to_datetime(date_start)
         .tz_localize(None)
@@ -697,54 +699,211 @@ def get_promo_orders(
         .tz_localize(None)
         .strftime('%d.%m.%Y')
     )
-    # Формируем имя ожидаемого файла с отчетом
-    payment_orders_report_file_name = (
-        upload_path / f"search_promo_all_skus_orders_report_{date_start_file}-{date_end_file}.csv"
-    )
-    # Проверяем наличие файла
-    payment_orders_report_exists = payment_orders_report_file_name.is_file()
 
-    # Если отчета нет, начинаем загрузку отчета
-    if not payment_orders_report_exists:
-        date_start_performance, date_end_performance = get_start_end_date(df_date_range, type_dates='orders')
-        get_search_promo_orders(
-            auth_token,
-            date_start_msk,
-            date_end_msk,
-            upload_path,
-            report_type='all_sku',
-        )
+    # Пути к двум возможным отчётам
+    org_file = upload_path / f"search_promo_organisation_orders_report_{date_start_file}-{date_end_file}.csv"
+    all_file = upload_path / f"search_promo_all_skus_orders_report_{date_start_file}-{date_end_file}.csv"
+
+    has_org = org_file.is_file()
+    has_all = all_file.is_file()
+
+    # Определяем report_type по наличию файлов
+    if has_org and has_all:
+        # оба есть — ничего не запрашиваем
+        report_type = 'both'
+        logger.info("Оба отчёта по товарам в оплате за заказ уже загружены")
     else:
-        logger.info(f"Products orders payment report already downloaded")
+        # хотя бы одного не хватает — нужно вызвать API
+        if has_org and not has_all:
+            report_type = 'selected_sku'
+        elif not has_org and has_all:
+            report_type = 'all_sku'
+        else:
+            # нет ни одного файла
+            report_type = 'both'
 
-    return payment_orders_report_file_name
+        logger.info(
+            f"Запрашиваем отчёт по товарам в оплате за заказ, report_type='{report_type}'"
+        )
+        date_start_performance, date_end_performance = get_start_end_date(
+            df_date_range, type_dates='orders'
+        )
+        get_search_promo_orders(
+            auth_token=auth_token,
+            date_start=date_start_msk,
+            date_end=date_end_msk,
+            companies_stats_dir=upload_path,
+            report_type=report_type,
+        )
+
+    # После возможной загрузки файлов ещё раз формируем пути (на случай, если только что скачали)
+    # и возвращаем их (или один, если тебе нужен только all_sku)
+    return {
+        'organisation': org_file,
+        'all_sku': all_file,
+        'report_type': report_type,
+    }
+
+# Функция объединения отчётов по товарам в оплате за заказ
+def concat_search_promo_reports(reports_info: dict) -> pd.DataFrame:
+    """
+    Объединяет отчёты по товарам в оплате за заказ (all_sku + selected_sku)
+    БЕЗ агрегации, как есть, с дополнительной колонкой 'Тип ОЗЗ'.
+
+    reports_info — словарь, который возвращает get_promo_orders:
+        {
+            'organisation': Path или None,
+            'all_sku': Path или None,
+            'report_type': 'selected_sku' | 'all_sku' | 'both'
+        }
+
+    Возвращает единый DataFrame, где:
+        - строки из all_sku имеют 'Тип ОЗЗ' = 'Все товары'
+        - строки из organisation имеют 'Тип ОЗЗ' = 'Выбранные товары'
+    """
+    org_path: Path | None = reports_info.get('organisation')
+    all_path: Path | None = reports_info.get('all_sku')
+
+    dfs = []
+
+    def _read_raw(path: Path) -> pd.DataFrame:
+        df = pd.read_csv(
+            path,
+            sep=';',
+            decimal=',',
+            skiprows=1,
+        )
+        # убираем строку итогов (последнюю)
+        df = df.iloc[:-1].copy()
+
+        if 'Артикул' in df.columns:
+            df['Артикул'] = df['Артикул'].astype(str, errors='ignore')
+        if 'SKU' in df.columns:
+            df['SKU'] = df['SKU'].astype(str, errors='ignore')
+
+        return df
+
+    # Все товары (all_sku)
+    if all_path is not None and all_path.is_file():
+        df_all = _read_raw(all_path)
+        df_all['Тип ОЗЗ'] = 'Все товары'
+        dfs.append(df_all)
+
+    # Выбранные товары (organisation / selected_sku)
+    if org_path is not None and org_path.is_file():
+        df_org = _read_raw(org_path)
+        df_org['Тип ОЗЗ'] = 'Выбранные товары'
+        dfs.append(df_org)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    # Объединяем как есть
+    df_concat = pd.concat(dfs, ignore_index=True)
+
+    return df_concat
 
 # Функция обработки отчета по товарам в оплате за заказ
-def parse_search_promo_report(
-        payment_orders_report_file_name
-):
-    # Считываем отчет csv
-    df_payment_orders_report = pd.read_csv(
-        payment_orders_report_file_name,
-        sep=';',
-        decimal=',',
-        skiprows=1,
-    )
-    # Убираем последнюю строку (с итогами)
-    df_payment_orders_report = df_payment_orders_report.iloc[:-1]
+def parse_search_promo_reports(df_promo_concat: pd.DataFrame) -> pd.DataFrame:
+    """
+    Расчёт метрик ОЗЗ по (SKU, Артикул) из объединённого датафрейма
+    (concat_search_promo_reports).
 
-    # Считаем расходы на каждый артикул
-    # df_payment_orders_costs = (
-    #     df_payment_orders_report
-    #     .groupby(['SKU', 'Название товара'], as_index=False)
-    #     .agg(**{
-    #         'Расход в оплате за заказ, руб.': ('Расход, ₽', 'sum'),
-    #     })
-    # )
-    # Переводим столбец с SKU в int, чтобы не было ошибок при merge
-    df_payment_orders_report['SKU'] = df_payment_orders_report['SKU'].astype(int)
+    Ожидаемые колонки во входном df:
+        - 'SKU'
+        - 'Артикул'
+        - 'Расход, ₽'
+        - 'Количество'
+        - 'Тип ОЗЗ' ∈ {'Все товары', 'Выбранные товары'}
 
-    return df_payment_orders_report
+    Результат всегда имеет колонки:
+        'SKU', 'Артикул',
+        'Расход ОЗЗ 5%, руб.',
+        'Заказы ОЗЗ 5%, шт.',
+        'Расход ОЗЗ ст., руб.',
+        'Заказы ОЗЗ ст., шт.'
+    """
+    df = df_promo_concat.copy()
+
+    # Проверим наличие ключевых колонок
+    if 'SKU' not in df.columns or 'Артикул' not in df.columns:
+        return pd.DataFrame(columns=[
+            'SKU', 'Артикул',
+            'Расход ОЗЗ 5%, руб.',
+            'Заказы ОЗЗ 5%, шт.',
+            'Расход ОЗЗ ст., руб.',
+            'Заказы ОЗЗ ст., шт.',
+        ])
+
+    # SKU -> int, если возможно
+    df['SKU'] = df['SKU'].astype('float').astype('int')
+    # Артикул -> str
+    df['Артикул'] = df['Артикул'].astype(str)
+
+    group_keys = ['SKU', 'Артикул']
+
+    # --- Все товары (all_sku) -> ОЗЗ 5% ---
+    mask_all = df.get('Тип ОЗЗ').eq('Все товары') if 'Тип ОЗЗ' in df.columns else pd.Series(False, index=df.index)
+    df_all = df[mask_all]
+
+    if not df_all.empty:
+        df_all_agg = (
+            df_all
+            .groupby(group_keys, as_index=False)
+            .agg({
+                'Расход, ₽': 'sum',
+                'Количество': 'sum',
+            })
+            .rename(columns={
+                'Расход, ₽': 'Расход ОЗЗ 5%, руб.',
+                'Количество': 'Заказы ОЗЗ 5%, шт.',
+            })
+        )
+    else:
+        df_all_agg = pd.DataFrame(columns=group_keys + ['Расход ОЗЗ 5%, руб.', 'Заказы ОЗЗ 5%, шт.'])
+
+    # --- Выбранные товары (organisation) -> ОЗЗ ст. ---
+    mask_sel = df.get('Тип ОЗЗ').eq('Выбранные товары') if 'Тип ОЗЗ' in df.columns else pd.Series(False, index=df.index)
+    df_sel = df[mask_sel]
+
+    if not df_sel.empty:
+        df_sel_agg = (
+            df_sel
+            .groupby(group_keys, as_index=False)
+            .agg({
+                'Расход, ₽': 'sum',
+                'Количество': 'sum',
+            })
+            .rename(columns={
+                'Расход, ₽': 'Расход ОЗЗ ст., руб.',
+                'Количество': 'Заказы ОЗЗ ст., шт.',
+            })
+        )
+    else:
+        df_sel_agg = pd.DataFrame(columns=group_keys + ['Расход ОЗЗ ст., руб.', 'Заказы ОЗЗ ст., шт.'])
+
+    # --- Объединяем обе части по (SKU, Артикул) ---
+    df_agg = pd.merge(df_all_agg, df_sel_agg, on=group_keys, how='outer')
+
+    # Гарантируем наличие всех итоговых колонок
+    for col in [
+        'Расход ОЗЗ 5%, руб.',
+        'Заказы ОЗЗ 5%, шт.',
+        'Расход ОЗЗ ст., руб.',
+        'Заказы ОЗЗ ст., шт.',
+    ]:
+        if col not in df_agg.columns:
+            df_agg[col] = pd.NA
+
+    df_agg = df_agg[
+        ['SKU', 'Артикул',
+         'Расход ОЗЗ 5%, руб.',
+         'Заказы ОЗЗ 5%, шт.',
+         'Расход ОЗЗ ст., руб.',
+         'Заказы ОЗЗ ст., шт.']
+    ]
+
+    return df_agg
 
 # Функция добавления данных по заказам к оплате за заказ
 def add_orders_to_payment_orders_report(
@@ -837,26 +996,48 @@ def calc_payment_orders_costs_v2(
         'sum': [
             # по SKU (артикулу)
             {
-                'agg_col': 'Расход, ₽',
+                'agg_col': 'Расход ОЗЗ 5%, руб.',
                 'group_col': 'SKU',
                 'new_col': 'Расход ОЗЗ 5%, руб.',
             },
             {
-                'agg_col': 'Количество',
+                'agg_col': 'Заказы ОЗЗ 5%, шт.',
                 'group_col': 'SKU',
                 'new_col': 'Заказы ОЗЗ 5%, шт.',
+            },
+            {
+                'agg_col': 'Расход ОЗЗ ст., руб.',
+                'group_col': 'SKU',
+                'new_col': 'Расход ОЗЗ ст., руб.',
+            },
+            {
+                'agg_col': 'Заказы ОЗЗ ст., шт.',
+                'group_col': 'SKU',
+                'new_col': 'Заказы ОЗЗ ст., шт.',
             },
 
             # по Артикул размера
             {
-                'agg_col': 'Расход, ₽',
+                'agg_col': 'Расход ОЗЗ 5%, руб.',
                 'group_col': 'Артикул размера',
                 'new_col': 'Расход ОЗЗ 5% по размерам, руб.',
             },
             {
-                'agg_col': 'Количество',
+                'agg_col': 'Заказы ОЗЗ 5%, шт.',
                 'group_col': 'Артикул размера',
                 'new_col': 'Заказы ОЗЗ 5% по размерам, шт.',
+            },
+            {
+                'agg_col': 'Расход ОЗЗ ст., руб.',
+                'group_col': 'Артикул размера',
+                'new_col': 'Расход ОЗЗ ст. по размерам, руб.',
+                'group_col': 'Артикул размера',
+                'new_col': 'Расход ОЗЗ ст. по размерам, руб.',
+            },
+            {
+                'agg_col': 'Заказы ОЗЗ ст., шт.',
+                'group_col': 'Артикул размера',
+                'new_col': 'Заказы ОЗЗ ст. по размерам, шт.',
             },
         ],
     }
@@ -2102,6 +2283,7 @@ def calc_final_orders(df_companies_with_orders_and_reminders):
     df_final_orders['Расход РК и ОЗЗ, руб.'] = (
         df_final_orders['Расход по кампаниям с НДС, руб.']
         + df_final_orders['Расход ОЗЗ 5%, руб.']
+        + df_final_orders['Расход ОЗЗ ст., руб.']
     )
 
     # 4. Расходы по РК и РК+ОЗЗ по размерам (по "Артикулу размера")
@@ -2114,6 +2296,7 @@ def calc_final_orders(df_companies_with_orders_and_reminders):
     df_final_orders['Расход РК и ОЗЗ по размерам руб.'] = (
         df_final_orders['Расход РК по размерам, руб.']
         + df_final_orders['Расход ОЗЗ 5% по размерам, руб.']
+        + df_final_orders['Расход ОЗЗ ст. по размерам, руб.']
     )
 
     # Маски наличия / отсутствия размеров
@@ -2224,6 +2407,10 @@ def create_excel_report(df_final_orders):
         'Расход ОЗЗ 5%, руб.',
         'Заказы ОЗЗ 5% по размерам, шт.',
         'Расход ОЗЗ 5% по размерам, руб.',
+        'Заказы ОЗЗ ст., шт.',
+        'Расход ОЗЗ ст., руб.',
+        'Заказы ОЗЗ ст. по размерам, шт.',
+        'Расход ОЗЗ ст. по размерам, руб.',
 
         # Расходы и заказы по РК
         'Расход по кампаниям с НДС, руб.',
@@ -2424,7 +2611,7 @@ def create_campaigns_report(
         task_id=None,
     )
     # Выгружаем отчет по товарам с оплатой за заказ
-    payment_orders_report_file_name = get_promo_orders(
+    payment_orders_report_files = get_promo_orders(
         df_date_range,
         upload_path,
         auth_token
@@ -2446,19 +2633,23 @@ def create_campaigns_report(
         date_campaign_report,
         df_input_companies_parsed
     )
+    # Объединяем данные по отчетам в оплате за заказ
+    df_payment_orders_concat = concat_search_promo_reports(
+        payment_orders_report_files
+    )
     # Обрабатываем данные отчета по товарам с оплатой за заказ
-    df_payment_orders_report = parse_search_promo_report(
-        payment_orders_report_file_name
+    df_payment_orders_report_processed = parse_search_promo_reports(
+        df_payment_orders_concat
     )
 
     # Добавляем данные по заказам к оплате за заказ
     df_payment_orders_report_with_orders = add_orders_to_payment_orders_report(
-        df_payment_orders_report,
+        df_payment_orders_concat,
         df_orders_all,
     )
     # Добавляем данные по товарам к отчету по заказам с оплатой за заказ
     df_payment_orders_report_with_products = add_products_data_to_payment_orders_report(
-        df_payment_orders_report_with_orders,
+        df_payment_orders_report_processed,
         df_products_processed
     )
     # Считаем расходы по оплате за заказ
@@ -2588,7 +2779,7 @@ if __name__ == '__main__':
         task_id=None,
     )
     # Выгружаем отчет по товарам с оплатой за заказ
-    payment_orders_report_file_name = get_promo_orders(
+    payment_orders_report_files = get_promo_orders(
         df_date_range,
         upload_path,
         auth_token
@@ -2610,19 +2801,23 @@ if __name__ == '__main__':
         date_campaign_report,
         df_input_companies_parsed
     )
+    # Объединяем данные по отчетам в оплате за заказ
+    df_payment_orders_concat = concat_search_promo_reports(
+        payment_orders_report_files
+    )
     # Обрабатываем данные отчета по товарам с оплатой за заказ
-    df_payment_orders_report = parse_search_promo_report(
-        payment_orders_report_file_name
+    df_payment_orders_report_processed = parse_search_promo_reports(
+        df_payment_orders_concat
     )
 
     # Добавляем данные по заказам к оплате за заказ
     df_payment_orders_report_with_orders = add_orders_to_payment_orders_report(
-        df_payment_orders_report,
+        df_payment_orders_concat,
         df_orders_all,
     )
     # Добавляем данные по товарам к отчету по заказам с оплатой за заказ
     df_payment_orders_report_with_products = add_products_data_to_payment_orders_report(
-        df_payment_orders_report_with_orders,
+        df_payment_orders_report_processed,
         df_products_processed
     )
     # Считаем расходы по оплате за заказ

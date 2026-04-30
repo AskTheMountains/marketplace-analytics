@@ -435,10 +435,10 @@ default_path_download_actions = (
 )
 
 # Коэффициент себестоимости для акций
-if client_name in ['KU_And_KU']:
-    net_cost_koef = 0.48
-else:
-    net_cost_koef = 0.48
+net_cost_koef_map = {
+    'KU_And_KU': 0.48
+}
+net_cost_koef = net_cost_koef_map.get(client_name, 0.65)  # Дефолтное значение 0.65, если клиента нет в мапе
 
 # Колонки, которые берем из справочной таблицы для свода по акциям
 catalog_action_columns_map = {
@@ -579,52 +579,12 @@ PROMOTION_COMPANIES = {
         17207301,
     ],
     'Neva_Metall': [
-        16997711,
-        18238035,
-        18363027,
-        18363000,
-        18238030,
-        22363316,
-        18363057,
-        18142668,
-        17069729,
-        22363546,
-        13687629,
-        22363189,
-        18953584,
-        19418268,
-        22363581,
-        18344123,
-        22604446,
-        22363248,
-        22363597,
-        22363399,
-        17727368,
-        22363128,
-        22067977,
-        18142692,
-        22363212,
-        22363279,
-        20706231,
-        18953553,
-        20707002,
-        21666379,
-        20705867,
-        22363622,
-        20707389,
-        22363632,
-        21666220,
-        21666260,
-        18953482,
-        19234193,
-        19416953,
-        19234215,
-        20460758,
-        19415077,
-        22363480,
-        19419105,
-        18344411,
-        22636792,
+        24702757,
+        24702720,
+        24702699,
+        24702639,
+        24702627,
+        24702612
     ],
     'Orsk_Combinat': [
         19364356,
@@ -693,6 +653,14 @@ CLIENT_SUMMARY_COL_FORMAT = {
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },
     'Расход ОЗЗ 5%, руб.': {
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Заказы ОЗЗ ст., шт.': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Расход ОЗЗ ст., руб.': {
         'width': 13.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },
@@ -850,6 +818,26 @@ CAMPAIGNS_REPORT_COL_FORMAT = {
         'alignment': {'horizontal': 'center', 'vertical': 'center'},
     },
     'Расход по размерам ОЗЗ 5%, руб.': {
+        'length': 30,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы ОЗЗ ст., шт.': {
+        'length': 18,
+        'width': 12.3,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход ОЗЗ ст., руб.': {
+        'length': 19,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Заказы по размерам ОЗЗ ст., шт.': {
+        'length': 30,
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'},
+    },
+    'Расход по размерам ОЗЗ ст., руб.': {
         'length': 30,
         'width': 13.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'},
