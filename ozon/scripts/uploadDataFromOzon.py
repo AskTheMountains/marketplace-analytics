@@ -755,6 +755,22 @@ def merge_products_data(
     return df_products_all_data
 
 
+# Функция доп. обработки df с товарами
+def process_products(df_products_all_data):
+    # Убираем товары с квантами
+    if 'Количество товара в кванте' in df_products_all_data.columns:
+        # В каждой группе товаров берем первый товар, у которого количество товара в кванте равно 0
+        df_products_all_data['Количество товара в кванте'] = df_products_all_data['Количество товара в кванте'].fillna(0)
+        df_products_all_data = (
+            df_products_all_data
+            .sort_values(by=['Артикул', 'Количество товара в кванте'])
+            .groupby('Артикул', as_index=False)
+            .first()
+        )
+        df_products_all_data = df_products_all_data.reset_index(drop=True)
+
+    return df_products_all_data
+
 # Функция выгрузки списка товаров и их характеристик
 def get_ozon_product(headers, to_save=True):
     # Выгрузка списка товаров
@@ -772,16 +788,18 @@ def get_ozon_product(headers, to_save=True):
         df_products_with_attributes,
         df_products_with_prices,
     )
+    # Доп. обработка df с товарами
+    df_products_final = process_products(df_products_all_data)
     # Если стоит флаг сохранения, то сохраняем файл в папку текущей выгрузки
     if to_save:
         file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
-        df_products_all_data.to_csv(
+        df_products_final.to_csv(
             file_name_products,
             sep=';',
             encoding='utf-8-sig',
             index=False
         )
-    return df_products_all_data
+    return df_products_final
 
 
 # Отчет по отправлениям (заказы)
@@ -3138,7 +3156,7 @@ def getSalesFBS(headers):
 def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
     logger.info(f"Выгрузка остатков FBO на {str(date.today())}")
     # Интервал между запросами (в секундах)
-    sleep_interval = 10
+    sleep_interval = 5
     max_retries = 5
 
     # Если список товаров не задан, считываем его из текущей выгрузки
@@ -4196,9 +4214,7 @@ if __name__ == '__main__':
     df_returns = getReturns_v2(headers, date_start, date_end)
 
     # Остатки FBS
-    # %%
     df_stock_rem_fbs = getStockReminders_fbs(headers)
-    # %%
     # Остатки FBO
     df_stock_rem_fbo = getStockReminders_fbo_v2(headers)
 
