@@ -219,37 +219,47 @@ def _create_demand_rounded_formula(
     apply_rounding: bool = False
 ) -> str:
     """
-    Создает формулу Excel для округленной потребности с учетом кратности коробов.
+    Формирует Excel-формулу для расчета округленной потребности по дефициту.
 
-    Логика (аналог твоей формулы):
-    1. Если дефицит/избыток > 0 (избыток) → потребность = 0
-    2. Иначе (дефицит):
-       a. Если остаток от деления < половины короба → округляем обычным ROUNDUP
-       b. Иначе → округляем до кратности короба
-
-    Без округления: =ROUNDUP(IF(deficit>0, 0, -deficit), 0)
-    С округлением: =IF(deficit>0, 0, IF(MOD(-deficit, multiplicity)<multiplicity/2, -ROUNDUP(deficit, 0), ROUNDUP(-deficit/multiplicity, 0)*multiplicity))
+    Логика:
+    - если дефицит неотрицательный, возвращается 0;
+    - если дефицит отрицательный, берется его модуль (объем потребности);
+    - при ``apply_rounding=False`` используется простое округление вверх до целого;
+    - при ``apply_rounding=True`` применяется логика округления с учетом
+      кратности коробов.
 
     Args:
-        deficit_cell: Адрес ячейки с дефицитом/избытком (может быть отрицательным)
-        box_multiplicity_cell: Адрес ячейки с кратностью коробов
-        apply_rounding: Применять ли округление по кратности
+        deficit_cell: Ссылка на ячейку Excel с дефицитом/избытком.
+        box_multiplicity_cell: Ссылка на ячейку Excel с кратностью коробов.
+            Используется только при ``apply_rounding=True``.
+        apply_rounding: Признак применения округления по кратности коробов.
 
     Returns:
-        Формула Excel
+        Строка Excel-формулы (начинается с ``=``), готовая для записи в ячейку.
     """
     if not apply_rounding:
-        # Стандартная формула без учета кратности коробов
-        return f"= ROUNDUP(IF({deficit_cell} > 0, 0, -{deficit_cell}), 0)"
+        # Базовая формула без сложной логики по кратности
+        return f"=ROUNDUP(IF({deficit_cell} > 0, 0, -{deficit_cell}), 0)"
 
-    # Формула с учетом кратности коробов (аналог твоей)
+    # Переменные для краткости записи
+    d = deficit_cell
+    m = box_multiplicity_cell
+
+    # Аналог русской формулы c использованием английских функций Excel
     formula = (
-        f"= IF({deficit_cell} > 0, 0, "
-        f"IF(MOD(-{deficit_cell}, {box_multiplicity_cell}) < {box_multiplicity_cell}/2, "
-        f"-ROUNDUP({deficit_cell}, 0), "
-        f"ROUNDUP(-{deficit_cell}/{box_multiplicity_cell}, 0) * {box_multiplicity_cell}))"
+        f"=IF({d}>=0,0,\n"
+        f"   IF(-{d}<={m}/2,\n"
+        f"      -{d},\n"
+        f"      IF(-{d}<={m},\n"
+        f"         {m},\n"
+        f"         IF((-{d}-ROUNDDOWN(-{d}/{m},0)*{m})>{m}/2,\n"
+        f"            (ROUNDDOWN(-{d}/{m},0)+1)*{m},\n"
+        f"            ROUNDDOWN(-{d}/{m},0)*{m} + (-{d}-ROUNDDOWN(-{d}/{m},0)*{m})\n"
+        f"         )\n"
+        f"      )\n"
+        f"   )\n"
+        f")"
     )
-
     return formula
 
 

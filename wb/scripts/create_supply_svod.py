@@ -812,11 +812,12 @@ def create_supply_svod_report(date_metrics: str) -> None:
     )
 
 
-# %%
+
 # ============================================================================
 # ТОЧКА ВХОДА
 # ============================================================================
 
+# %%
 if __name__ == "__main__":
     date_metrics = cli_reference_date(parser)
     create_supply_svod_report(date_metrics)
