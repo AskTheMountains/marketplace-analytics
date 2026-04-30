@@ -20,11 +20,13 @@ df_products_ = (
 # %%
 path_to_file = Path(
     'd:\\artem\\Downloads\\'
-    '2026-03-10_Сводная_РК_Water_Power_Ozon.xlsx'
+    'Сила_Воды_Модели.xlsx'
 )
-sheet_name='Список товаров'
-df = pd.read_excel(path_to_file, sheet_name=sheet_name)
+
+
 wb = load_workbook(path_to_file)
+sheet_name='Список товаров' if 'Список товаров' in wb.sheetnames else wb.sheetnames[0]
+df = pd.read_excel(path_to_file, sheet_name=sheet_name)
 ws = wb[sheet_name]
 
 # Границы листа
@@ -111,7 +113,7 @@ for idx in campaign_col_idxs:
                     left=c.border.left,
                     right=c.border.right,
                     top=c.border.top,
-                    bottom=Side(style='thick')
+                    bottom=Side(style='medium')
                 )
 wb.save(path_to_file)
 
