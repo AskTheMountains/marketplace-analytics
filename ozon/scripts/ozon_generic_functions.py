@@ -47,6 +47,7 @@ def get_orders(headers, date_start, date_end):
         'Название товара',
         'OZON id', 'Статус',
         'Принят в обработку',
+        'Количество',
         'Сумма отправления',
         'Номер заказа',
         'Схема доставки',
@@ -85,7 +86,7 @@ def get_orders(headers, date_start, date_end):
         .dt.tz_localize(None)
     )
     # Указываем, какие колонки считаем за заказы в штуках и рублях
-    df_orders_all['Заказы шт'] = 1
+    df_orders_all['Заказы шт'] = df_orders_all['Количество'] if 'Количество' in df_orders_all.columns else 1
     df_orders_all['Заказы руб'] = df_orders_all['Сумма отправления']
     # Переименовываем колонку с Ozon ID
     df_orders_all = df_orders_all.rename(columns={
@@ -363,3 +364,5 @@ def get_common_article(df_products: pd.DataFrame) -> pd.Series:
         df_products_processed['Артикул размерного ряда'] = df_products_processed['Артикул']
 
     return df_products_processed['Артикул размерного ряда']
+
+# %%
