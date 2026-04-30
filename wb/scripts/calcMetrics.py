@@ -1,3 +1,4 @@
+# %%
 import argparse
 import warnings
 from datetime import date
@@ -268,10 +269,12 @@ def calcMetrics(date_upload_files=str(date.today())):
     logger.info(f"Metrics saved in: {metrics_file_name}")
 
 
-
+# %%
 if __name__ == '__main__':
     metricsdir = marketplace_dir_path / "Clients" / client_name / "Metrics"
     if not metricsdir.exists():
         metricsdir.mkdir(parents=True, exist_ok=True)
     date_upload_files = cli_reference_date(parser)
     calcMetrics(date_upload_files)
+
+# %%
