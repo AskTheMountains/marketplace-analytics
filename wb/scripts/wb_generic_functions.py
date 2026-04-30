@@ -16,6 +16,10 @@ pd.options.mode.chained_assignment = None  # default='warn'
 # Некоторые вспомогательные функции
 from generic_functions import move_columns
 
+from wb.scripts.constants import (
+    realization_report_column_map
+)
+
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
 
@@ -417,7 +421,7 @@ def get_company_stats(
 ## Вспомогательные функции
 def wildberries_get_report_detail(
     headers, date_from, date_to, rrdid=0, limit=100000,
-    last_call_time=None, max_retries=5
+    last_call_time=None, max_retries=5, period='weekly',
 ):
     """
     Запрос за один кусок отчёта с лимитом 1 запрос в минуту.
@@ -434,17 +438,18 @@ def wildberries_get_report_detail(
       limit (int): лимит строк в ответе (максимум 100000).
       last_call_time (float): время последнего успешного запроса (секунды UNIX).
       max_retries (int): максимальное число повторных попыток при 429.
+      period (str): тип периода отчета - недельный или по дням ('weekly' или 'daily').
     Возвращает:
       tuple: (response_data, время успешного запроса).
     """
 
-    url = 'https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod'
+    url = 'https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed'
     params = {
         'dateFrom': date_from,
         'dateTo': date_to,
         'rrdid': rrdid,
         'limit': limit,
-        'period': 'weekly',
+        'period': period,
     }
 
     attempt = 1  # счётчик попыток (включая первую)
@@ -460,7 +465,7 @@ def wildberries_get_report_detail(
                 time.sleep(wait)
 
         try:
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.post(url, headers=headers, json=params)
         except Exception as e:
             if logger:
                 logger.error(
@@ -524,8 +529,8 @@ def wildberries_get_report_detail(
         logger.error("Не удалось получить отчёт WB после всех попыток.")
     raise RuntimeError("wildberries_get_report_detail: превышено число попыток запроса")
 
-## Основная логика (обработка недель, rrd_id и бинарный сплит)
-def upload_realization_report(headers, date_start, date_end, verbose=False):
+## Основная логика (обработка недель, rrdId и бинарный сплит)
+def upload_realization_report(headers, date_start, date_end,  period='weekly', verbose=False,):
     """
     Выгружает финансовый отчет Wildberries по частям (по недельным окнам) с контролем лимита
     1 запрос в минуту.
@@ -534,6 +539,7 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
       headers (dict): Заголовки запроса с токеном.
       date_start (str): Дата начала ('YYYY-MM-DD').
       date_end (str): Дата конца ('YYYY-MM-DD').
+      period (str): тип периода отчета - недельный или по дням ('weekly' или 'daily').
       verbose (bool): Выводить ли подробный лог.
 
     Возвращает:
@@ -541,7 +547,7 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
     """
 
     all_rows = []             # Список для сбора всех строк отчета
-    dedup_key_set = set()     # Для дедупликации по (realizationreport_id, rrd_id)
+    dedup_key_set = set()     # Для дедупликации по (realizationreport_id, rrdId)
 
     cursor_start = datetime.strptime(date_start, "%Y-%m-%d")  # Текущая начальная дата окна
     end_date = datetime.strptime(date_end, "%Y-%m-%d")       # Конечная дата всего периода
@@ -573,26 +579,28 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
                     temp_from.strftime("%Y-%m-%d"),
                     temp_to.strftime("%Y-%m-%d"),
                     rrdid=rrdid,
-                    last_call_time=last_call_time)
+                    last_call_time=last_call_time,
+                    period=period
+                    )
 
                 rows = json_resp
                 if not rows:
                     # Нет данных — выходим из пагинации для этого окна
                     break
 
-                # Дедупликация по ключу (realizationreport_id, rrd_id)
+                # Дедупликация по ключу (realizationreport_id, rrdId)
                 for row in rows:
-                    key = (row.get('realizationreport_id'), row.get('rrd_id'))
+                    key = (row.get('realizationreport_id'), row.get('rrdId'))
                     if key not in dedup_key_set:
                         dedup_key_set.add(key)
                         all_rows.append(row)
                         rows_in_window.append(row)
 
                 # Обновляем rrdid для следующего запроса по пагинации
-                max_rrd = max(row['rrd_id'] for row in rows)
+                max_rrd = max(row['rrdId'] for row in rows)
 
                 # Запоминаем максимальную дату из выгруженных данных
-                last_max_date_to = max(pd.to_datetime(row['date_to']) for row in rows)
+                last_max_date_to = max(pd.to_datetime(row['dateTo']) for row in rows)
 
                 if verbose:
                     logger.info(f"  rrdid={rrdid}: получено {len(rows)} строк; max_rrd={max_rrd}")
@@ -636,6 +644,284 @@ def upload_realization_report(headers, date_start, date_end, verbose=False):
 
     return df
 # --- Конец выгрузки отчета реализации --- #
+
+# Функция переименования столбцов отчета по реализации на русский
+def rename_report_columns(df_realization_report):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_realization_report_ = df_realization_report.copy()
+    # Считывание файла с соответствием колонки из апи её описанию из документации
+    api_report_columns = pd.DataFrame(
+        list(realization_report_column_map.items()),
+        columns=['api_name', 'ru_name']
+    )
+    # Создаем df с колонками из отчета по апи
+    df_realization_report_columns = pd.DataFrame({'api_name': df_realization_report_.columns})
+    # Мерджим с колонками отчета, который выгрузили по апи
+    all_columns = df_realization_report_columns.merge(
+        api_report_columns,
+        how='outer',
+        on='api_name',
+        indicator=True
+    )
+    # Находим общие колонки
+    columns_to_rename = all_columns.loc[all_columns['_merge'] == 'both', ['api_name', 'ru_name']]
+    # Переименовываем колонки
+    # df_realization_report_ = df_realization_report_.rename(columns=columns_to_rename.set_index('api_name')['ru_name'])
+    df_realization_report_ = df_realization_report_.rename(columns=realization_report_column_map)
+    df_realization_report_renamed = df_realization_report_.copy()
+
+    return df_realization_report_renamed
+
+
+# Функция создания доп. колонок для расчетов
+def add_new_columns(df_realization_report_renamed):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_realization_report_new_columns = df_realization_report_renamed.copy()
+    # Создаем столбец с id строки
+    df_realization_report_new_columns['id'] = np.arange(1, df_realization_report_new_columns.shape[0] + 1)
+    # Создание колонок, которые не всегда приходят с апи
+    variable_api_columns = [
+        'Обоснование штрафов и доплат',
+        'Возмещение издержек по перевозке',
+        'Возмещение издержек по эквайрингу',
+        'Тип платежа за Эквайринг/Комиссии за организацию платежей',
+        'Вознаграждение с продаж до вычета услуг поверенного, без НДС',
+        'Сумма, удержанная за начисленные баллы программы лояльности',
+        'Компенсация скидки по программе лояльности',
+        'Разовое изменение срока перечисления денежных средств',
+    ]
+    for col in variable_api_columns:
+        if col not in df_realization_report_new_columns.columns:
+            df_realization_report_new_columns[col] = 0
+
+    # Перевод в datetime некоторых колонок с датой
+    for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Дата заказа', 'Дата продажи', 'Дата операции']:
+        # Преобразуем всё в строку для корректной конвертации (это уберет смешение типов)
+        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].astype(str)
+        # Переводим в datetime
+        df_realization_report_new_columns[col] = pd.to_datetime(
+            df_realization_report_new_columns[col],
+            format='mixed',
+            utc=True
+        )
+        # Убираем миллисекунды
+        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].dt.floor('s')
+        # Убираем тайм зоны
+        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].dt.tz_localize(None)
+
+    # Переводим некоторые колонки в числа
+    col_to_numbers = [
+        'Цена розничная',
+        'Сумма продаж (возвратов)',
+        'Согласованная скидка',
+        'Процент комиссии',
+        'Цена розничная с учетом согласованной скидки',
+        'Стоимость логистики',
+        'Скидка постоянного покупателя',
+        'Размер кВВ без НДС, % базовый',
+        'Итоговый кВВ без НДС, %', 'Размер снижения кВВ из-за рейтинга',
+        'Размер снижения кВВ из-за акции',
+        'Вознаграждение с продаж до вычета услуг поверенного, без НДС',
+        'К перечислению продавцу за реализованный товар',
+        'Возмещение за выдачу и возврат товаров на ПВЗ',
+        'Возмещение издержек по эквайрингу',
+        'Размер комиссии за эквайринг без НДС, %',
+        'Вознаграждение WB без НДС',
+        'НДС с вознаграждения WB',
+        'Штрафы',
+        'Доплаты',
+        'Возмещение издержек по перевозке',
+        'Стоимость хранения',
+        'Прочие удержания/выплаты',
+        'Стоимость платной приёмки',
+        'Сумма, удержанная за начисленные баллы программы лояльности',
+        'Компенсация скидки по программе лояльности',
+        'Стоимость участия в программе лояльности',
+        'Размер скидки лояльности от продавца, %',
+        'Разовое изменение срока перечисления денежных средств',
+    ]
+    existing_col_to_numbers = [col for col in col_to_numbers if col in df_realization_report_new_columns.columns]
+    df_realization_report_new_columns[existing_col_to_numbers] = df_realization_report_new_columns[existing_col_to_numbers].apply(pd.to_numeric, errors='coerce')
+
+    # Год и месяц из даты продажи
+    df_realization_report_new_columns['Год даты продажи'] = df_realization_report_new_columns['Дата продажи'].dt.year
+    df_realization_report_new_columns['Месяц даты продажи'] = df_realization_report_new_columns['Дата продажи'].dt.month
+
+    # Переносим строки с датами в начало df
+    df_realization_report_new_columns = move_columns(
+        df_realization_report_new_columns,
+        [
+            'Номер отчёта', 'Номер строки',
+            'Дата начала отчётного периода', 'Дата конца отчётного периода',
+            'Дата заказа', 'Дата продажи','Дата операции',
+            'Дата формирования отчёта',
+            'Дата начала действия фиксации', 'Дата окончания действия фиксации',
+            'Артикул WB',
+            'Артикул продавца',
+            'Размер',
+            'Предмет',
+            'Бренд',
+            'Тип документа',
+            'Обоснование для оплаты',
+            'Обоснование штрафов и доплат',
+            'Цена розничная',
+            'Цена розничная с учетом согласованной скидки',
+            'Сумма продаж (возвратов)',
+            'К перечислению продавцу за реализованный товар',
+            'Вознаграждение WB без НДС',
+            'НДС с вознаграждения WB',
+            'Размер кВВ без НДС, % базовый',
+            'Итоговый кВВ без НДС, %',
+            'Размер снижения кВВ из-за рейтинга',
+            'Размер снижения кВВ из-за акции',
+            'Стоимость логистики',
+            'Тип платежа за Эквайринг/Комиссии за организацию платежей',
+            'Возмещение издержек по эквайрингу',
+            'Возмещение за выдачу и возврат товаров на ПВЗ',
+            'Возмещение издержек по перевозке',
+            'Штрафы',
+            'Доплаты',
+            'Прочие удержания/выплаты',
+            'Стоимость хранения',
+            'Стоимость платной приёмки',
+            'Сумма, удержанная за начисленные баллы программы лояльности',
+            'Компенсация скидки по программе лояльности'
+        ],
+        position=0,
+        insert_type='after'
+    )
+    # Заменяем некоторые название групп расходов
+    other_costs_replace_patterns = {
+        # r'^Списание за отзыв .+: акция №\d+, товар \d+': 'Списания за отзывы',
+        'Платная приемка': 'Платная приемка (Отчет реализации)',
+        'Хранение': 'Хранение (Отчет реализации)',
+        'Возмещение за выдачу и возврат товаров на ПВЗ': 'Возмещение за выдачу и возврат товаров на ПВЗ (не разбито по SKU)',
+    }
+    # Колонки, в которых заменяем
+    cols_to_replace_patterns = [
+        'Обоснование для оплаты',
+        'Обоснование штрафов и доплат'
+    ]
+    df_realization_report_new_columns[cols_to_replace_patterns] = (
+        df_realization_report_new_columns[cols_to_replace_patterns]
+        .replace(
+            other_costs_replace_patterns,
+            regex=False
+        )
+    )
+    # У некоторых групп расходов заменяем лишь часть значений
+    other_costs_combo_replace_patterns = {
+        'Возмещение издержек по перевозке/по складским операциям с товаром': 'Возмещение издержек по перевозке/по складским операциям с товаром (не разбито по SKU)'
+    }
+    # Там, где нет Артикула продавца или он равен '', делаем замену расходов на (не разбито по SKU)
+    mask = (df_realization_report_new_columns['Артикул продавца'].isna()) | \
+        (df_realization_report_new_columns['Артикул продавца'] == '')
+
+    # Итерация по колонкам, где делаем замену
+    for col in cols_to_replace_patterns:
+        df_realization_report_new_columns.loc[
+            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
+            col
+        ] = df_realization_report_new_columns.loc[
+            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
+            col
+        ].map(other_costs_combo_replace_patterns)
+
+    # Заменяем пустые строки в размере на пропуски
+    df_realization_report_new_columns['Размер'] = df_realization_report_new_columns['Размер'].replace('', np.nan)
+
+    # Считаем НДС в долях
+    df_realization_report_new_columns['НДС'] = (
+        df_realization_report_new_columns['НДС с вознаграждения WB'] / df_realization_report_new_columns['Вознаграждение WB без НДС']
+    )
+
+    # Колонки, по которым считаем прочие расходы
+    other_costs_columns = [
+        'Стоимость логистики',
+        # 'К перечислению продавцу за реализованный товар',
+        'Возмещение за выдачу и возврат товаров на ПВЗ',
+        # 'Возмещение издержек по эквайрингу',
+        # 'Размер комиссии за эквайринг без НДС, %',
+        # 'Вознаграждение WB без НДС',
+        # 'НДС с вознаграждения WB',
+        'Возмещение издержек по перевозке',
+        'Стоимость хранения',
+        'Прочие удержания/выплаты',
+        'Стоимость платной приёмки',
+        'Компенсация скидки по программе лояльности',
+        'Штрафы',
+        'Доплаты',
+        'Разовое изменение срока перечисления денежных средств',
+    ]
+
+    # Итоговая колонка с прочими расходами
+    df_realization_report_new_columns['Итого руб'] = df_realization_report_new_columns.loc[:, other_costs_columns].sum(axis=1)
+
+    return df_realization_report_new_columns
+
+# Функция исключения переходных недель из отчета
+def filter_report_dates(date_start, date_end, df_realization_report_new_columns, period='daily', filter_dates=False):
+    if period not in ['daily', 'weekly']:
+        logger.error(f"Некорректное значение периода для фильтрации: {period}. Допустимые значения: 'daily' или 'weekly'.")
+        raise ValueError(f"Некорректное значение периода для фильтрации: {period}. Допустимые значения: 'daily' или 'weekly'.")
+    # Создаем копию для избежания изменений в оригинальном df
+    df_realization_report_date_filtered = df_realization_report_new_columns.copy()
+    # Если указан флаг фильтра по датам, то делаем фильтр по датам
+    if filter_dates:
+        # Переводим даты выгрузки в Timestamp
+        dt_start = pd.to_datetime(date_start, format='mixed')
+        dt_end = pd.to_datetime(date_end, format='mixed')
+
+        if period == 'weekly':
+            logger.info("Фильтруем отчет реализации по переходным неделям")
+            # Ищем id строк переходных недель
+            tmp_df_transitional_weeks = df_realization_report_date_filtered.loc[
+                (df_realization_report_date_filtered['Дата начала отчётного периода'] < dt_start) | (df_realization_report_date_filtered['Дата конца отчётного периода'] > dt_end),
+                :]
+            # Внутри переходных недель ищем id строк, у которых дата продажи не соответствует датам начала и окончания выгрузки
+            transitional_weeks_ids = tmp_df_transitional_weeks.loc[(tmp_df_transitional_weeks['Дата продажи'] < dt_start) | (tmp_df_transitional_weeks['Дата продажи'] > dt_end), 'id'].to_list()
+            # Убираем найденные строки из отчета
+            df_realization_report_date_filtered = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(transitional_weeks_ids), :]
+            # Делаем фильтр по дате продажи в пределах указанного диапазона
+            # df_realization_report_date_filtered = df_realization_report_date_filtered.loc[(df_realization_report_date_filtered['Дата продажи'] >= dt_start) & (df_realization_report_date_filtered['Дата продажи'] <= dt_end), :]
+
+            # Делаем reset_index после concat
+            df_realization_report_date_filtered = df_realization_report_date_filtered.reset_index(drop=True)
+
+        elif period == 'daily':
+            logger.info("Фильтруем отчет реализации по дате продажи в пределах указанного диапазона")
+            # Делаем фильтр по дате продажи в пределах указанного диапазона
+            df_realization_report_date_filtered = (
+                df_realization_report_date_filtered
+                .loc[
+                    (df_realization_report_date_filtered['Дата продажи'] >= dt_start)
+                    & (df_realization_report_date_filtered['Дата продажи'] <= dt_end),
+                    :
+                ]
+                .reset_index(drop=True)
+            )
+
+
+
+    return df_realization_report_date_filtered
+
+
+# Функция получения дат отчета
+def get_report_dates(df_realization_report_date_filtered):
+    # Создание копии для избежания изменений в оригинальном df
+    df_dates = df_realization_report_date_filtered.copy()
+    # Убираем время в Дате продажи, иначе получается очень большой список
+    df_dates['Дата продажи (без времени)'] = df_dates['Дата продажи'].dt.date
+    # Формируем df со списком дат в отчете
+    report_dates = (
+        df_dates
+        .groupby(['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Дата продажи (без времени)'])
+        .size()
+        .reset_index()
+        .drop(columns=0)
+    )
+
+    return report_dates
 
 
 # Функция перевода столбцов в другую валюту
@@ -795,4 +1081,135 @@ def get_sales_funnel(
     df = pd.DataFrame(rows)
 
     return df
+
+
+class WbRateLimiter:
+    """
+    Универсальный лимитер для методов WB API.
+
+    Параметры:
+      period_seconds  – длительность окна (например, 60 секунд),
+      period_limit    – макс. количество запросов за окно,
+      min_interval    – минимальный интервал между запросами, сек,
+      max_burst       – необязательный параметр "всплеска" (сколько запросов подряд
+                        можно сделать без доп. паузы; если 0 или None – не используется).
+    """
+
+    def __init__(self, period_seconds, period_limit, min_interval, max_burst=None):
+        self.period_seconds = period_seconds
+        self.period_limit = period_limit
+        self.min_interval = float(min_interval)
+        self.max_burst = max_burst if max_burst is not None else 0
+
+        self._last_request_ts = None
+        self._window_start_ts = None
+        self._requests_in_window = 0
+        self._burst_counter = 0
+
+    def _wait_if_needed(self):
+        now = time.time()
+
+        # Инициализация окна
+        if self._window_start_ts is None:
+            self._window_start_ts = now
+            self._requests_in_window = 0
+            self._burst_counter = 0
+            return
+
+        # 1) Проверка минутного окна
+        if now - self._window_start_ts >= self.period_seconds:
+            # Новое окно
+            logger.info("Начинается новое минутное окно лимита. Сбрасываю счётчики.")
+            self._window_start_ts = now
+            self._requests_in_window = 0
+            self._burst_counter = 0
+            return
+
+        # Если превысили лимит запросов за окно — ждём до его конца
+        if self._requests_in_window >= self.period_limit:
+            sleep_time = self.period_seconds - (now - self._window_start_ts)
+            if sleep_time > 0:
+                logger.warning(
+                    "Достигнут лимит {0} запросов за {1} секунд. Пауза {2:.1f} сек."
+                    .format(self.period_limit, self.period_seconds, sleep_time)
+                )
+                time.sleep(sleep_time)
+            # После паузы открываем новое окно
+            self._window_start_ts = time.time()
+            self._requests_in_window = 0
+            self._burst_counter = 0
+            return
+
+        # 2) Минимальный интервал между запросами
+        if self._last_request_ts is not None:
+            dt = now - self._last_request_ts
+            if dt < self.min_interval:
+                sleep_time = self.min_interval - dt
+                logger.info(
+                    "Выдерживаем минимальный интервал {0} сек. Пауза {1:.2f} сек."
+                    .format(self.min_interval, sleep_time)
+                )
+                time.sleep(sleep_time)
+
+        # 3) Контроль "всплеска" (если указан)
+        if self.max_burst and self._burst_counter >= self.max_burst:
+            logger.info(
+                "Достигнут всплеск {0} запросов подряд, делаем небольшую паузу 2 сек."
+                .format(self.max_burst)
+            )
+            time.sleep(2.0)
+            self._burst_counter = 0
+
+    def request(self, method, url, headers=None, params=None, json=None, max_retries=3):
+        """
+        Выполняет HTTP-запрос с учётом лимита.
+        method: "GET" или "POST".
+        Возвращает (response, success_flag).
+        """
+        for attempt in range(1, max_retries + 1):
+            # Ждём, если нужно (лимиты окна/интервала/всплеска)
+            self._wait_if_needed()
+
+            # Делаем запрос
+            try:
+                if method == "GET":
+                    resp = requests.get(url, headers=headers, params=params)
+                else:
+                    resp = requests.post(url, headers=headers, json=json)
+            except Exception as e:
+                logger.error(
+                    "Ошибка соединения при запросе {0} {1} (попытка {2}/{3}): {4}"
+                    .format(method, url, attempt, max_retries, e)
+                )
+                if attempt == max_retries:
+                    return None, False
+                time.sleep(3)
+                continue
+
+            # Обновляем счётчики после успешной отправки запроса
+            now = time.time()
+            self._last_request_ts = now
+            # инициализируем окно при первом запросе
+            if self._window_start_ts is None:
+                self._window_start_ts = now
+            self._requests_in_window += 1
+            self._burst_counter += 1
+
+            # Обработка 429
+            if resp.status_code == 429:
+                logger.warning(
+                    "Получен статус 429 Too Many Requests на {0} {1} (попытка {2}/{3}). "
+                    "Пауза 65 сек."
+                    .format(method, url, attempt, max_retries)
+                )
+                time.sleep(65)
+                if attempt == max_retries:
+                    return resp, False
+                continue
+
+            # Остальные статусы отдаём наружу
+            return resp, True
+
+        return None, False
+
 # %%
