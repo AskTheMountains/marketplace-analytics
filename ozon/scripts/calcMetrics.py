@@ -74,10 +74,10 @@ def calcMetrics(date_upload_files = str(date.today())):
         order = order_fbo
 
     # Обработка данных заказов
-    order = order[['Артикул', 'Кластер доставки', 'Статус', 'Схема доставки', 'Сумма отправления']]
+    order = order[['Артикул', 'Кластер доставки', 'Статус', 'Схема доставки', 'Количество', 'Сумма отправления']]
     order = order.rename(columns={'Кластер доставки': 'Кластер'})
-    order['Заказы'] = np.where(order['Статус'].notnull(), 1, 0)
-    order['Заказы, руб.'] = np.where(order['Заказы'] == 1, order['Сумма отправления'], 0)
+    order['Заказы'] = np.where(order['Статус'].notnull(), order['Количество'], 0)
+    order['Заказы, руб.'] = np.where(order['Статус'].notnull(), order['Сумма отправления'], 0)
     pd.set_option('display.max_columns', None)
 
     # Объединение данных продаж FBO и FBS
