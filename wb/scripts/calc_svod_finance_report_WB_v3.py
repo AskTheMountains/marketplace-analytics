@@ -29,7 +29,10 @@ from generic_functions import move_columns
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
 from wb.scripts.constants import (
-    client_name, headers, marketplace_dir_path, k_currency_to_rub, catalog_finace_svod_columns
+    client_name, headers, marketplace_dir_path,
+    realization_report_column_map,
+    k_currency_to_rub,
+    catalog_finace_svod_columns
 )
 # Уже написанные ранее функции выгрузки данных из АПИ
 from wb.scripts.uploadDataFromWB import getOrdersWB
@@ -37,6 +40,9 @@ from wb.scripts.uploadDataFromWB import getOrdersWB
 from wb.scripts.uploadDataPerformanceWB import get_costs_history
 from wb.scripts.wb_generic_functions import(
     upload_realization_report as upload_realization_report_new,
+    rename_report_columns,
+    add_new_columns,
+    filter_report_dates,
     get_company_stats,
     convert_currency
 )
@@ -107,8 +113,8 @@ def upload_realization_report(headers, date_start, date_end):
     "rrdid": 0
 }
     # Запрос к апи
-    resp_data_realization_report = requests.get("https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
-                                                headers=headers, params=params_realization_report).json()
+    resp_data_realization_report = requests.post("https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed",
+                                                headers=headers, json=params_realization_report).json()
     # Создаем df с отчетом
     df_realization_report = pd.DataFrame(resp_data_realization_report)
     # Добавляем столбцы года и месяца, за который был сформирован отчет
@@ -151,10 +157,10 @@ def upload_realization_report_v2(headers, date_start, date_end):
         # Запрос к апи
         resp_data_realization_report = (
             requests
-            .get(
-                "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
+            .post(
+                "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed",
                 headers=headers,
-                params=params_realization_report
+                json=params_realization_report
             )
             .json()
         )
@@ -231,209 +237,6 @@ def read_report_dates(df_realization_report):
                                     index=[0])
 
     return df_report_dates
-
-
-# Функция переименования столбцов отчета по реализации на русский
-def rename_report_columns(df_realization_report):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_realization_report_ = df_realization_report.copy()
-    # Считывание файла с соответствием колонки из апи её описанию из документации
-    api_report_columns = pd.read_csv(f'{marketplace_dir_path}/scripts/Столбцы отчета о реализации из апи.csv', sep=';')
-    # Создаем df с колонками из отчета по апи
-    df_realization_report_columns = pd.DataFrame({'api_name': df_realization_report_.columns})
-    # Мерджим с колонками отчета, который выгрузили по апи
-    all_columns = df_realization_report_columns.merge(api_report_columns,
-                                                            how='outer',
-                                                            on='api_name',
-                                                            indicator=True)
-    # Находим общие колонки
-    columns_to_rename = all_columns.loc[all_columns['_merge'] == 'both', ['api_name', 'ru_name']]
-    # Переименовываем колонки
-    df_realization_report_ = df_realization_report_.rename(columns=columns_to_rename.set_index('api_name')['ru_name'])
-    # Старый способ переименовывания колонок через цикл по каждой колонке
-    # for i in range(api_report_columns.shape[0]):
-    #     if api_report_columns['api_name'][i] in df_realization_report.columns_:
-    #         df_realization_report_ = df_realization_report_.rename(columns={api_report_columns['api_name'][i]: api_report_columns['ru_name'][i]})
-
-    df_realization_report_renamed = df_realization_report_.copy()
-
-    return df_realization_report_renamed
-
-
-# Функция создания доп. колонок для расчетов
-def add_new_columns(df_realization_report_renamed):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_realization_report_new_columns = df_realization_report_renamed.copy()
-    # Создаем столбец с id строки
-    df_realization_report_new_columns['id'] = np.arange(1, df_realization_report_new_columns.shape[0] + 1)
-    # Создание колонок, которые не всегда приходят с апи
-    variable_api_columns = [
-        'Обоснование штрафов и доплат',
-        'Возмещение издержек по перевозке',
-        'Возмещение издержек по эквайрингу',
-        'Тип платежа за Эквайринг/Комиссии за организацию платежей',
-        'Вознаграждение с продаж до вычета услуг поверенного, без НДС',
-        'Сумма, удержанная за начисленные баллы программы лояльности',
-        'Компенсация скидки по программе лояльности',
-        'Разовое изменение срока перечисления денежных средств',
-    ]
-    for col in variable_api_columns:
-        if col not in df_realization_report_new_columns.columns:
-            df_realization_report_new_columns[col] = 0
-
-    # Перевод в datetime некоторых колонок с датой
-    for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Дата заказа', 'Дата продажи', 'Дата операции']:
-        # Преобразуем всё в строку для корректной конвертации (это уберет смешение типов)
-        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].astype(str)
-        # Переводим в datetime
-        df_realization_report_new_columns[col] = pd.to_datetime(
-            df_realization_report_new_columns[col],
-            format='mixed',
-            utc=True
-        )
-        # Убираем миллисекунды
-        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].dt.floor('s')
-        # Убираем тайм зоны
-        df_realization_report_new_columns[col] = df_realization_report_new_columns[col].dt.tz_localize(None)
-    # Год и месяц из даты продажи
-    df_realization_report_new_columns['Год даты продажи'] = df_realization_report_new_columns['Дата продажи'].dt.year
-    df_realization_report_new_columns['Месяц даты продажи'] = df_realization_report_new_columns['Дата продажи'].dt.month
-
-    # Переносим строки с датами в начало df
-    df_realization_report_new_columns = move_columns(
-        df_realization_report_new_columns,
-        [
-            'Номер отчёта', 'Номер строки',
-            'Дата начала отчётного периода', 'Дата конца отчётного периода',
-            'Дата заказа', 'Дата продажи','Дата операции',
-            'Дата формирования отчёта',
-            'Дата начала действия фиксации', 'Дата окончания действия фиксации',
-            'Артикул WB',
-            'Артикул продавца',
-            'Размер',
-            'Предмет',
-            'Бренд',
-            'Тип документа',
-            'Обоснование для оплаты',
-            'Обоснование штрафов и доплат',
-            'Цена розничная',
-            'Цена розничная с учетом согласованной скидки',
-            'Сумма продаж (возвратов)',
-            'К перечислению продавцу за реализованный товар',
-            'Вознаграждение WB без НДС',
-            'НДС с вознаграждения WB',
-            'Размер кВВ без НДС, % базовый',
-            'Итоговый кВВ без НДС, %',
-            'Размер снижения кВВ из-за рейтинга',
-            'Размер снижения кВВ из-за акции',
-            'Стоимость логистики',
-            'Тип платежа за Эквайринг/Комиссии за организацию платежей',
-            'Возмещение издержек по эквайрингу',
-            'Возмещение за выдачу и возврат товаров на ПВЗ',
-            'Возмещение издержек по перевозке',
-            'Штрафы',
-            'Доплаты',
-            'Прочие удержания/выплаты',
-            'Стоимость хранения',
-            'Стоимость платной приёмки',
-            'Сумма, удержанная за начисленные баллы программы лояльности',
-            'Компенсация скидки по программе лояльности'
-        ],
-        position=0,
-        insert_type='after'
-    )
-    # Заменяем некоторые название групп расходов
-    other_costs_replace_patterns = {
-        # r'^Списание за отзыв .+: акция №\d+, товар \d+': 'Списания за отзывы',
-        'Платная приемка': 'Платная приемка (Отчет реализации)',
-        'Хранение': 'Хранение (Отчет реализации)',
-        'Возмещение за выдачу и возврат товаров на ПВЗ': 'Возмещение за выдачу и возврат товаров на ПВЗ (не разбито по SKU)',
-    }
-    # Колонки, в которых заменяем
-    cols_to_replace_patterns = [
-        'Обоснование для оплаты',
-        'Обоснование штрафов и доплат'
-    ]
-    df_realization_report_new_columns[cols_to_replace_patterns] = (
-        df_realization_report_new_columns[cols_to_replace_patterns]
-        .replace(
-            other_costs_replace_patterns,
-            regex=False
-        )
-    )
-    # У некоторых групп расходов заменяем лишь часть значений
-    other_costs_combo_replace_patterns = {
-        'Возмещение издержек по перевозке/по складским операциям с товаром': 'Возмещение издержек по перевозке/по складским операциям с товаром (не разбито по SKU)'
-    }
-    # Там, где нет Артикула продавца или он равен '', делаем замену расходов на (не разбито по SKU)
-    mask = (df_realization_report_new_columns['Артикул продавца'].isna()) | \
-        (df_realization_report_new_columns['Артикул продавца'] == '')
-
-    # Итерация по колонкам, где делаем замену
-    for col in cols_to_replace_patterns:
-        df_realization_report_new_columns.loc[
-            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
-            col
-        ] = df_realization_report_new_columns.loc[
-            mask & (df_realization_report_new_columns[col].isin(other_costs_combo_replace_patterns.keys())),
-            col
-        ].map(other_costs_combo_replace_patterns)
-
-    # Заменяем пустые строки в размере на пропуски
-    df_realization_report_new_columns['Размер'] = df_realization_report_new_columns['Размер'].replace('', np.nan)
-
-    # Считаем НДС в долях
-    df_realization_report_new_columns['НДС'] = (
-        df_realization_report_new_columns['НДС с вознаграждения WB'] / df_realization_report_new_columns['Вознаграждение WB без НДС']
-    )
-
-    # Колонки, по которым считаем прочие расходы
-    other_costs_columns = [
-        'Стоимость логистики',
-        # 'К перечислению продавцу за реализованный товар',
-        'Возмещение за выдачу и возврат товаров на ПВЗ',
-        # 'Возмещение издержек по эквайрингу',
-        # 'Размер комиссии за эквайринг без НДС, %',
-        # 'Вознаграждение WB без НДС',
-        # 'НДС с вознаграждения WB',
-        'Возмещение издержек по перевозке',
-        'Стоимость хранения',
-        'Прочие удержания/выплаты',
-        'Стоимость платной приёмки',
-        'Компенсация скидки по программе лояльности',
-        'Штрафы',
-        'Доплаты',
-        'Разовое изменение срока перечисления денежных средств',
-    ]
-
-    # Итоговая колонка с прочими расходами
-    df_realization_report_new_columns['Итого руб'] = df_realization_report_new_columns.loc[:, other_costs_columns].sum(axis=1)
-
-    return df_realization_report_new_columns
-
-# Функция исключения переходных недель из отчета
-def filter_report_dates(date_start, date_end, df_realization_report_new_columns, filter_dates=False):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_realization_report_date_filtered = df_realization_report_new_columns.copy()
-    # Если указан флаг фильтра по датам, то делаем фильтр по датам
-    if filter_dates:
-        # Переводим даты выгрузки в Timestamp
-        dt_start = pd.to_datetime(date_start, format='mixed')
-        dt_end = pd.to_datetime(date_end, format='mixed')
-        # Ищем id строк переходных недель
-        tmp_df_transitional_weeks = df_realization_report_date_filtered.loc[
-            (df_realization_report_date_filtered['Дата начала отчётного периода'] < dt_start) | (df_realization_report_date_filtered['Дата конца отчётного периода'] > dt_end),
-            :]
-        # Внутри переходных недель ищем id строк, у которых дата продажи не соответствует датам начала и окончания выгрузки
-        transitional_weeks_ids = tmp_df_transitional_weeks.loc[(tmp_df_transitional_weeks['Дата продажи'] < dt_start) | (tmp_df_transitional_weeks['Дата продажи'] > dt_end), 'id'].to_list()
-        # Убираем найденные строки из отчета
-        df_realization_report_date_filtered = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(transitional_weeks_ids), :]
-        # Делаем фильтр по дате продажи в пределах указанного диапазона
-        # df_realization_report_date_filtered = df_realization_report_date_filtered.loc[(df_realization_report_date_filtered['Дата продажи'] >= dt_start) & (df_realization_report_date_filtered['Дата продажи'] <= dt_end), :]
-        # Делаем reset_index после concat
-        df_realization_report_date_filtered = df_realization_report_date_filtered.reset_index(drop=True)
-
-    return df_realization_report_date_filtered
 
 
 # Функция получения дат отчета
@@ -2715,6 +2518,7 @@ if __name__ == '__main__':
         headers,
         date_start,
         date_end,
+        period='weekly',
         verbose=True
     )
     # Переименование колонок отчета о реализации в русские названия
@@ -2730,7 +2534,8 @@ if __name__ == '__main__':
         date_start,
         date_end,
         df_realization_report_new_columns,
-        filter_dates=True
+        filter_dates=True,
+        period='weekly',
     )
     # Получаем список дат отчета
     report_dates = get_report_dates(

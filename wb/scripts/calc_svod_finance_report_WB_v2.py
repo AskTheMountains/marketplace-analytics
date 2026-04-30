@@ -32,7 +32,7 @@ from wb.scripts.constants import (
 from wb.scripts.uploadDataFromWB import getOrdersWB
 # Функция выгрузки для АПИ Продвижение
 from wb.scripts.uploadDataPerformanceWB import get_costs_history
-from wb.scripts.wb_generic_functions import get_company_stats_v2
+from wb.scripts.wb_generic_functions import get_company_stats
 from wb.scripts.wb_generic_functions import(
     upload_realization_report as upload_realization_report_new,
     convert_currency
@@ -104,8 +104,8 @@ def upload_realization_report(headers, date_start, date_end):
     "rrdid": 0
 }
     # Запрос к апи
-    resp_data_realization_report = requests.get("https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
-                                                headers=headers, params=params_realization_report).json()
+    resp_data_realization_report = requests.post("https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed",
+                                                headers=headers, json=params_realization_report).json()
     # Создаем df с отчетом
     df_realization_report = pd.DataFrame(resp_data_realization_report)
     # Добавляем столбцы года и месяца, за который был сформирован отчет
@@ -148,10 +148,10 @@ def upload_realization_report_v2(headers, date_start, date_end):
         # Запрос к апи
         resp_data_realization_report = (
             requests
-            .get(
-                "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod",
+            .post(
+                "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed",
                 headers=headers,
-                params=params_realization_report
+                json=params_realization_report
             )
             .json()
         )
@@ -2463,7 +2463,7 @@ def calc_companies_costs_v2(df_realization_report_date_filtered, df_sku_sizes_co
             'date_end': [date_end_promotion] * len(companies_list),
         })
         # Получаем статистику кампаний
-        df_companies_stats = get_company_stats_v2(
+        df_companies_stats = get_company_stats(
             headers,
             df_input_companies,
             # groupby_cols=[]
