@@ -31,7 +31,7 @@ from generic_functions import move_columns
 # Парсинг аргументов командной строки
 from wb.scripts.command_args_parser import cli_date_range
 # Некоторые константы
-from wb.scripts.constants import client_name, headers, marketplace_dir_path
+from wb.scripts.constants import client_name, headers, marketplace_dir_path, article_replacement
 # Функции выгрузки данных по API WB
 from wb.scripts.uploadDataFromWB import getOrdersWB as get_orders
 from wb.scripts.uploadDataFromWB import getWBProduct
@@ -318,6 +318,9 @@ def calc_orders(
     # df_orders_processed = df_orders_processed.rename(columns={
     #     'Артикул продавца': 'Артикул',
     # })
+    # Заменяем некоторые артикулы по маппингу замен
+    if article_replacement and 'Артикул продавца' in df_orders_processed.columns:
+        df_orders_processed['Артикул продавца'] = df_orders_processed['Артикул продавца'].replace(article_replacement)
     # Создаем колонку Артикул_Размер для мерджа
     df_orders_processed['Артикул_Размер'] = (
         df_orders_processed[['Артикул продавца', 'Размер']]
