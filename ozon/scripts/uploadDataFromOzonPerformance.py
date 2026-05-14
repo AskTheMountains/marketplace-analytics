@@ -14,6 +14,7 @@ from ozon.scripts.constants import (client_id_performance, client_name,
                                     client_secret_performance,
                                     marketplace_dir_path,
                                     ozon_performance_api_url)
+from ozon.scripts.ozon_generic_functions import msk_boundary_to_utc
 
 # Файл с настройками и номером клиента
 # from options import settings, client_number
@@ -577,21 +578,57 @@ def upload_data_performane(
         mode='all',  # 'all' | 'campaigns' | 'orders'
 ):
     """
-    mode:
-        'all'       - выгружать и кампании, и оплату за заказ
-        'campaigns' - только кампании
-        'orders'    - только оплату за заказ
+    Выгружает данные из Ozon Performance API:
+      - статистику по рекламным кампаниям,
+      - отчёты по продвижению с оплатой за заказ.
 
-    Пары дат:
-        - для кампаний:
-            можно передавать либо date_start/date_end (с временем),
-            либо оставить их пустыми и передать date_from/date_to (только дата).
+    Параметры
+    ---------
+    date_start : str
+        Дата/время начала периода в формате, ожидаемом Performance API
+        (например, '2025-12-01T00:00:00Z'). Может быть пустой строкой, если
+        используется пара date_from/date_to.
+    date_end : str
+        Дата/время окончания периода в формате, ожидаемом Performance API
+        (например, '2025-12-31T23:59:59Z'). Может быть пустой строкой.
+    client_id_performance : str
+        Идентификатор клиента для Ozon Performance API.
+    client_secret_performance : str
+        Секретный ключ клиента для Ozon Performance API.
+    companies_stats_dir : pathlib.Path
+        Директория, куда будут сохранены выгруженные файлы статистики.
+    date_from : str, optional
+        Дата начала периода без времени (обычно 'YYYY-MM-DD').
+        Используется для статистики кампаний и, при отсутствии date_start/date_end,
+        для формирования периода отчёта по оплате за заказ.
+    date_to : str, optional
+        Дата окончания периода без времени (обычно 'YYYY-MM-DD').
+    df_companies : pandas.DataFrame | None, optional
+        DataFrame со списком кампаний (как минимум с колонкой "Номер кампании").
+        Обязателен, если mode включает выгрузку кампаний ('all' или 'campaigns').
+    task_id : str | None, optional
+        ID уже созданного задания на отчёт по кампаниям или оплате за заказ.
+        Если передан, функция попытается продолжить с этого задания;
+        если None, будет создано новое задание.
+    mode : {'all', 'campaigns', 'orders'}, optional
+        Режим работы:
+          - 'all'       — выгружать и статистику по кампаниям, и отчёты по оплате за заказ;
+          - 'campaigns' — выгружать только статистику по кампаниям;
+          - 'orders'    — выгружать только отчёты по оплате за заказ.
 
-        - для оплаты за заказ:
-            всегда требуются даты с временем;
-            если date_start/date_end пустые, но заданы date_from/date_to,
-            они будут автоматически преобразованы в
-            date_from + 'T00:00:00Z' и date_to + 'T23:59:59Z'.
+    Использование дат
+    ------------------
+    Статистика по кампаниям:
+      - можно передать либо date_start/date_end (с временем),
+      - либо оставить их пустыми и передать date_from/date_to (только даты).
+
+    Отчёты по оплате за заказ:
+      - всегда требуют дат с временем;
+      - если date_start/date_end не заданы, но указаны date_from/date_to
+        (в формате 'YYYY-MM-DD'), период для отчёта по оплате за заказ
+        формируется как:
+            orders_date_start = date_from + 'T00:00:00Z'
+            orders_date_end   = date_to   + 'T23:59:59Z'
     """
 
     if mode not in {'all', 'campaigns', 'orders'}:
@@ -649,8 +686,10 @@ def upload_data_performane(
         # формируем строки с временем.
         elif date_from and date_to:
             # здесь считаем, что date_from / date_to в формате 'YYYY-MM-DD'
-            orders_date_start = f"{date_from}T00:00:00Z"
-            orders_date_end = f"{date_to}T23:59:59Z"
+            # orders_date_start = f"{date_from}T00:00:00Z"
+            # orders_date_end = f"{date_to}T23:59:59Z"
+            orders_date_start = msk_boundary_to_utc(date_from)
+            orders_date_end = msk_boundary_to_utc(date_to, end_of_day=True)
         else:
             raise ValueError(
                 "Для выгрузки отчёта по оплате за заказ необходимо указать либо "
