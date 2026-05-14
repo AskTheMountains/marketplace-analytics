@@ -12,6 +12,7 @@ from colorama import Fore, Back, Style, init
 from pathlib import Path
 
 import pandas as pd
+from itertools import islice
 from io import BytesIO
 from urllib.parse import urlparse
 from xlsx2csv import Xlsx2csv
@@ -32,7 +33,8 @@ from ozon.scripts.constants import (
     headers,
     marketplace_dir_path,
     ozon_seller_api_url,
-    api_columns
+    api_columns,
+    include_previous_supplies
 )
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
@@ -1296,8 +1298,58 @@ def getFinalOrders_fbs(headers):
     #os.remove(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_fbs.csv")
 
 
+def chunked(iterable, size):
+    """Разбивает iterable на чанки указанного размера."""
+    it = iter(iterable)
+    while True:
+        chunk = list(islice(it, size))
+        if not chunk:
+            break
+        yield chunk
 
 
+def clean_payload(data, keep_keys=None):
+    """
+    Рекурсивно удаляет из словаря/списка None, пустые списки и пустые словари.
+    Ключи из keep_keys не удаляются, даже если они пустые.
+    """
+    if keep_keys is None:
+        keep_keys = set()
+
+    if isinstance(data, dict):
+        cleaned = {}
+        for k, v in data.items():
+            if k in keep_keys:
+                # оставляем как есть
+                cleaned[k] = v
+                continue
+
+            if v is None:
+                continue
+
+            if isinstance(v, (dict, list)):
+                v_clean = clean_payload(v, keep_keys)
+                # пропускаем пустые контейнеры
+                if v_clean in ({}, []):
+                    continue
+                cleaned[k] = v_clean
+            else:
+                cleaned[k] = v
+        return cleaned
+
+    if isinstance(data, list):
+        cleaned_list = []
+        for item in data:
+            if isinstance(item, (dict, list)):
+                item_clean = clean_payload(item, keep_keys)
+                if item_clean in ({}, []):
+                    continue
+                cleaned_list.append(item_clean)
+            elif item is not None:
+                cleaned_list.append(item)
+        return cleaned_list
+
+    return data
 
 
 # Функция выгрузки списка отправлений FBO
@@ -1305,106 +1357,201 @@ def get_ozon_fbo_list(
     headers: dict[str, str],   # словарь заголовков HTTP
     date_start: str,           # ISO‑8601 начало периода
     date_end: str,             # ISO‑8601 конец периода
-    limit: int = 1000,         # объём одной страницы
+    limit: int = 100,          # объём одной страницы
     retry_count: int = 5,      # сколько раз повторить запрос при ошибке
-    offset_limit: int = 21000,  # число отправлений
+    offset_limit: int = 21000,  # число отправлений (жёсткий лимит по количеству записей)
+    order_numbers=None,        # новые опциональные параметры
+    posting_numbers=None,      # новые опциональные параметры
 ) -> pd.DataFrame:
     """
-    Загрузка всех заказов FBO из Ozon Seller API.
+    Загрузка заказов FBO из Ozon Seller API (v3, cursor-based).
 
-    Возвращает DataFrame: строка = товар + поля заказа.
-    Поля заказа: order_id, order_number, posting_number,
-                 status, substatus, cluster_from, cluster_to.
-
-    При ошибке запроса выполняется до ``retry_count`` повторных попыток.
-    Если запрос остаётся неудачным – переходим к следующему смещению/странице.
+    Режимы работы:
+    - Если order_numbers и posting_numbers не переданы -> выгрузка по периоду дат.
+    - Если переданы order_numbers и/или posting_numbers -> даты игнорируются,
+      выгружаются только эти отправления (batched по 1000 штук).
+    Приоритет фильтра: если переданы оба списка, используется только posting_numbers.
     """
-    endpoint = f"{ozon_seller_api_url}/v2/posting/fbo/list"
-    offset = 0
-    all_orders_fbo = []
+    endpoint = f"{ozon_seller_api_url}/v3/posting/fbo/list"
 
-    logger.info(
-        f"Начало выгрузки отправлений FBO с {date_start} по {date_end}"
-    )
+    # Нормализуем параметры
+    order_numbers = order_numbers or []
+    posting_numbers = posting_numbers or []
 
-    # ------- Пагинация ----------
-    while offset < offset_limit:
-        payload = {
-            "dir": "ASC",
-            "filter": {
-                "since": date_start,
-                "status": "",
-                "to": date_end,
-            },
-            "limit": limit,
-            "offset": offset,
-            # "translit": True,
-            "with": {
-                "analytics_data": True,
-                "financial_data": True,
-                "legal_info": False,
-            },
-        }
-
-        logger.info(f"Запрос к Ozon: offset={offset}, limit={limit}")
-
-        # -------- 5‑разовые попытки -----------
-        for attempt in range(1, retry_count + 1):
-            try:
-                response = requests.post(
-                    endpoint, headers=headers, json=payload, timeout=30
-                )
-                response.raise_for_status()
-                break   # успешный запрос – выходим из цикла попыток
-            except Exception as exc:
-                logger.warning(
-                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
-                    f"Скоро будет выполнен повторный запрос."
-                )
-                time.sleep(2)  # небольшая пауза перед повтором
-                if attempt == retry_count:
-                    logger.error(
-                        f"Ошибка запроса: {exc}. "
-                        f"Пропускаем текущую страницу и переходим к следующей."
-                    )
-                    response = None
-
-        # Если после всех попыток ответ не получен – переходим к следующему offset
-        if response is None:
-            offset += limit
-            continue
-
-        data = response.json()
-        orders = data.get("result", [])
-        if not orders:
-            logger.info("Больше заказов не найдено.")
-            break
-
-        all_orders_fbo.extend(orders)
+    # Приоритет: если есть posting_numbers, используем только их
+    if posting_numbers:
+        filter_mode = "posting"
+        chunks_to_process = list(chunked(posting_numbers, 1000))
         logger.info(
-            f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbo)}"
+            f"Начало выгрузки отправлений FBO по posting_numbers "
+            f"(кол-во={len(posting_numbers)}), игнорируя order_numbers."
+        )
+    elif order_numbers:
+        filter_mode = "order"
+        chunks_to_process = list(chunked(order_numbers, 1000))
+        logger.info(
+            f"Начало выгрузки отправлений FBO по order_numbers "
+            f"(кол-во={len(order_numbers)})."
+        )
+    else:
+        filter_mode = "dates"
+        chunks_to_process = [None]
+        logger.info(
+            f"Начало выгрузки отправлений FBO по датам с {date_start} по {date_end}"
         )
 
-        offset += limit
-        if len(orders) < limit:   # конец списка
+    all_orders_fbo = []
+    total_received = 0
+
+    for chunk_index, chunk_values in enumerate(chunks_to_process, start=1):
+        if total_received >= offset_limit:
+            logger.info(
+                f"Достигнут предел по числу отправлений ({offset_limit}). "
+                "Останавливаемся."
+            )
             break
 
-    logger.info(f"Собрано {len(all_orders_fbo)} заказов.")
+        cursor = ""
+
+        if filter_mode == "posting":
+            logger.info(
+                f"Обработка чанка {chunk_index}/{len(chunks_to_process)} "
+                f"по posting_numbers: {len(chunk_values)} шт."
+            )
+        elif filter_mode == "order":
+            logger.info(
+                f"Обработка чанка {chunk_index}/{len(chunks_to_process)} "
+                f"по order_numbers: {len(chunk_values)} шт."
+            )
+        else:
+            logger.info("Обработка выгрузки по датам (без фильтра по номерам).")
+
+        while True:
+            # Формируем фильтр
+            if filter_mode == "posting":
+                filter_block = {
+                    "posting_number": chunk_values,
+                    "order_number": [],
+                    "since": None,
+                    "to": None,
+                    "statuses": [],
+                }
+            elif filter_mode == "order":
+                filter_block = {
+                    "posting_number": [],
+                    "order_number": chunk_values,
+                    "since": None,
+                    "to": None,
+                    "statuses": [],
+                }
+            else:  # filter_mode == "dates"
+                filter_block = {
+                    "posting_number": [],
+                    "order_number": [],
+                    "since": date_start,
+                    "to": date_end,
+                    "statuses": [],
+                }
+
+            payload = {
+                "cursor": cursor or "",
+                "filter": filter_block,
+                "limit": limit,
+                "sort_dir": "asc",
+                "translit": False,
+                "with": {
+                    "analytics_data": True,
+                    "financial_data": True,
+                    "legal_info": False,
+                },
+            }
+
+            # Чистим payload: удаляем None/пустые списки/пустые словари,
+            # но cursor оставляем всегда.
+            payload_clean = clean_payload(payload, keep_keys={"cursor"})
+
+            logger.info(
+                f"Запрос к Ozon (mode={filter_mode}, chunk={chunk_index}, "
+                f"cursor={cursor!r}, limit={limit})"
+            )
+
+            response = None
+            for attempt in range(1, retry_count + 1):
+                try:
+                    response = requests.post(
+                        endpoint, headers=headers, json=payload_clean, timeout=30
+                    )
+                    response.raise_for_status()
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                        "Скоро будет выполнен повторный запрос."
+                    )
+                    time.sleep(2)
+                    if attempt == retry_count:
+                        logger.error(
+                            f"Ошибка запроса: {exc}. "
+                            "Пропускаем текущий курсор и переходим к следующему (если есть)."
+                        )
+                        response = None
+
+            if response is None:
+                logger.info(
+                    "Ответ от Ozon не получен после всех попыток. "
+                    "Завершаем выгрузку по текущему чанку."
+                )
+                break
+
+            data = response.json()
+            postings = data.get("postings", [])
+
+            if not postings:
+                logger.info("Больше отправлений не найдено по текущему чанку.")
+                break
+
+            all_orders_fbo.extend(postings)
+            total_received += len(postings)
+            logger.info(
+                f"Получено {len(postings)} отправлений; общее число: {total_received}"
+            )
+
+            if total_received >= offset_limit:
+                logger.info(
+                    f"Достигнут предел по числу отправлений ({offset_limit}). "
+                    "Останавливаемся."
+                )
+                break
+
+            has_next = data.get("has_next", False)
+            next_cursor = data.get("cursor")
+
+            if not has_next or not next_cursor:
+                logger.info(
+                    "has_next = False или пустой cursor по текущему чанку. "
+                    "Переходим к следующему чанку (если есть)."
+                )
+                break
+
+            cursor = next_cursor
+
+        if total_received >= offset_limit:
+            break
+
+    logger.info(f"Собрано {len(all_orders_fbo)} отправлений FBO.")
 
     # Перевод в DataFrame
     try:
         df_all_orders_fbo = pd.DataFrame(all_orders_fbo)
     except Exception as exc:
-        logger.error(f"Ошибка преобразования заказов в DataFrame: {exc}")
+        logger.error(f"Ошибка преобразования отправлений в DataFrame: {exc}")
         df_all_orders_fbo = pd.DataFrame()
 
     if not df_all_orders_fbo.empty:
-        # Получаем кластеры отправлений
         df_all_orders_fbo = custom_pd_explode(
             df_all_orders_fbo,
             column="financial_data",
         )
-        # Добавляем схему доставки
         df_all_orders_fbo["delivery_schema"] = "FBO"
     else:
         df_all_orders_fbo = pd.DataFrame()
@@ -1555,7 +1702,8 @@ def process_fbo_list(
         'products.offer_id': 'Артикул',
         'products.name': 'Наименование товара',
         'products.quantity': 'Количество',
-        'products.price': 'Цена товара',
+        'products.price.amount': 'Цена товара',
+        'products.price.currency': 'Валюта цены товара',
     })
     # Переводим некоторые колонки в нужный тип
     column_types = {
@@ -1573,95 +1721,193 @@ def process_fbo_list(
 
     return df_products_fbo
 
+
 # Функция выгрузки списка отправлений FBS
 def get_ozon_fbs_list(
-        headers : dict[str, str],   # словарь заголовков HTTP
-        date_start : str,           # ISO‑8601 начало периода
-        date_end : str,             # ISO‑8601 конец периода
-        limit=1000 ,                # объём одной страницы
-        retry_count=5,              # сколько раз повторить запрос при ошибке
-        offset_limit=21000,         # максимальное число отправлений
+        headers: dict[str, str],   # словарь заголовков HTTP
+        date_start: str,           # ISO‑8601 начало периода
+        date_end: str,             # ISO‑8601 конец периода
+        limit=100,                 # объём одной страницы (по API — не более 100)
+        retry_count=5,             # сколько раз повторить запрос при ошибке
+        offset_limit=21000,        # максимальное число отправлений
+        order_numbers=None,        # опциональный список номеров заказов
+        posting_numbers=None,      # оставлено для совместимости, в фильтре не используется
     ) -> pd.DataFrame:
     """
-    Загрузка всех заказов FBS (Fulfillment by Seller) из Ozon Seller API.
+    Загрузка всех заказов FBS (Fulfillment by Seller) из Ozon Seller API (v4, cursor-based).
 
-    Возвращает DataFrame: строка = товар + поля заказа.
-    Поля заказа: posting_number, order_id, order_number,
-                 status, substatus, cluster_from, cluster_to.
+    Режимы работы:
+    - Если order_numbers не переданы -> выгрузка по периоду дат.
+    - Если переданы order_numbers -> выгружаются только эти заказы (batched по 100 штук),
+      но даты всё равно обязательно передаются в фильтр (требование API).
 
-    При ошибке запроса выполняется до ``retry_count`` повторных попыток.
-    Если запрос остаётся неудачным – переходим к следующему смещению/странице.
+    API этого метода поддерживает фильтр только по order_numbers.
+    Параметр posting_numbers присутствует в сигнатуре только ради обратной совместимости
+    и в запрос не подставляется.
     """
-    endpoint = f"{ozon_seller_api_url}/v3/posting/fbs/list"
-    offset = 0
+    endpoint = f"{ozon_seller_api_url}/v4/posting/fbs/list"
+
+    # Нормализуем параметры
+    order_numbers = order_numbers or []
+    posting_numbers = posting_numbers or []   # не используем, но не ломаем старые вызовы
+
+    # Жёстко ограничиваем limit 100, даже если передали больше
+    if limit > 100:
+        logger.warning(
+            f"Параметр limit={limit} превышает максимум для API (100). "
+            f"Будет использовано значение 100."
+        )
+        limit = 100
+
+    use_filters_by_numbers = bool(order_numbers)
+
     all_orders_fbs = []
+    total_received = 0
 
-    logger.info(f"Начало выгрузки отправлений FBS с {date_start} по {date_end}")
+    logger.info(
+        "Начало выгрузки отправлений FBS: "
+        + (
+            f"по номерам заказов (orders={len(order_numbers)}), "
+            f"диапазон дат {date_start} — {date_end}"
+            if use_filters_by_numbers
+            else f"по датам с {date_start} по {date_end}"
+        )
+    )
 
-    # ------- Пагинация ----------
-    while offset < offset_limit:
-        payload = {
-            "dir": "ASC",
-            "filter": {
-                "since": date_start,
-                "status": "",
-                "to": date_end,
-            },
-            "limit": limit,
-            "offset": offset,
-            # "translit": True,
-            "with": {
-                "analytics_data": True,
-                "financial_data": True,
-                "legal_info": False,
-            },
-        }
+    # Подготовим чанки по 100 order_numbers
+    if use_filters_by_numbers:
+        order_chunks = list(chunked(order_numbers, 100))
+        chunks_to_process = order_chunks
+    else:
+        # Один виртуальный чанк для режима «только по датам»
+        chunks_to_process = [None]
 
-        logger.info(f"Запрос списка отправлений FBS: offset={offset}, limit={limit}")
-
-        # -------- 5‑разовые попытки ----------
-        for attempt in range(1, retry_count + 1):
-            try:
-                response = requests.post(
-                    endpoint,
-                    headers=headers,
-                    json=payload,
-                    timeout=30
-                )
-                response.raise_for_status()
-                break   # успешный запрос – выходим из цикла попыток
-            except Exception as exc:
-                logger.warning(
-                    f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
-                    f"Скоро будет выполнен повторный запрос."
-                )
-                if attempt == retry_count:
-                    logger.error(
-                        f"Ошибка запроса: {exc}. "
-                        f"Пропускаем текущую страницу и переходим к следующей."
-                    )
-                    response = None
-
-        # Если после всех попыток ответ не получен – переходим к следующему offset
-        if response is None:
-            offset += limit
-            continue
-
-        data = response.json()
-        orders = data.get("result", {}).get("postings", [])
-        has_next = data.get("result", {}).get("has_next", False)
-
-        if not orders:
-            logger.info("Больше заказов не найдено.")
+    for chunk_index, order_chunk in enumerate(chunks_to_process, start=1):
+        if total_received >= offset_limit:
+            logger.info(
+                f"Достигнут предел по числу отправлений ({offset_limit}). "
+                "Останавливаемся."
+            )
             break
 
-        all_orders_fbs.extend(orders)
-        logger.info(
-            f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbs)}"
-        )
+        cursor = ""
 
-        offset += limit
-        if not has_next or len(orders) < limit:   # конец списка
+        if use_filters_by_numbers:
+            logger.info(
+                f"Обработка чанка {chunk_index}/{len(chunks_to_process)}: "
+                f"orders={len(order_chunk)}"
+            )
+        else:
+            logger.info("Обработка выгрузки по датам (без фильтра по order_numbers).")
+
+        while True:
+            # Формируем фильтр.
+            # Даты обязательны всегда, даже при фильтрации по номерам.
+            filter_block = {
+                "order_numbers": order_chunk if use_filters_by_numbers else [],
+                "delivery_method_id": [],
+                # "is_blr_traceable": False,
+                "last_changed_status_date": {
+                    "from": None,
+                    "to": None,
+                },
+                "order_id": None,
+                "since": date_start,
+                "to": date_end,
+                "statuses": [],   # без фильтра по статусам
+                "provider_ids": [],
+                "warehouse_ids": [],
+            }
+
+            payload = {
+                "sort_dir": "asc",
+                "filter": filter_block,
+                "limit": limit,
+                "cursor": cursor or "",
+                "with": {
+                    "analytics_data": True,
+                    "barcodes": True,
+                    "financial_data": True,
+                    "legal_info": False,
+                    "translit": False,
+                },
+            }
+
+            # Чистим payload: удаляем None/пустые списки/пустые словари,
+            # НО cursor оставляем всегда (даже пустую строку).
+            payload_clean = clean_payload(payload, keep_keys={"cursor"})
+
+            logger.info(
+                f"Запрос списка отправлений FBS: "
+                f"chunk={chunk_index if use_filters_by_numbers else 'dates'}, "
+                f"cursor={cursor!r}, limit={limit}"
+            )
+
+            response = None
+            # -------- попытки запроса ----------
+            for attempt in range(1, retry_count + 1):
+                try:
+                    response = requests.post(
+                        endpoint,
+                        headers=headers,
+                        json=payload_clean,
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        f"Запрос к Ozon не удался (попытка {attempt} из {retry_count}). "
+                        "Скоро будет выполнен повторный запрос."
+                    )
+                    time.sleep(2)
+                    if attempt == retry_count:
+                        logger.error(
+                            f"Ошибка запроса: {exc}. "
+                            "Пропускаем текущий курсор и переходим к следующему (если есть)."
+                        )
+                        response = None
+
+            if response is None:
+                logger.info(
+                    "Ответ от Ozon не получен после всех попыток. "
+                    "Завершаем выгрузку по текущему чанку."
+                )
+                break
+
+            data = response.json()
+            # В v4 ответ плоский: postings / cursor / has_next
+            orders = data.get("postings", [])
+            has_next = data.get("has_next", False)
+            next_cursor = data.get("cursor")
+
+            if not orders:
+                logger.info("Больше заказов не найдено по текущему чанку.")
+                break
+
+            all_orders_fbs.extend(orders)
+            total_received += len(orders)
+            logger.info(
+                f"Получено {len(orders)} заказов; общее число: {len(all_orders_fbs)}"
+            )
+
+            if total_received >= offset_limit:
+                logger.info(
+                    f"Достигнут предел по числу отправлений ({offset_limit}). "
+                    "Останавливаемся."
+                )
+                break
+
+            if not has_next or not next_cursor:
+                logger.info(
+                    "has_next = False или пустой cursor по текущему чанку. "
+                    "Переходим к следующему чанку (если есть)."
+                )
+                break
+
+            cursor = next_cursor
+
+        if total_received >= offset_limit:
             break
 
     logger.info(f"Собрано {len(all_orders_fbs)} заказов.")
@@ -1853,7 +2099,8 @@ def process_fbs_list(
         'products.offer_id': 'Артикул',
         'products.name': 'Наименование товара',
         'products.quantity': 'Количество',
-        'products.price': 'Цена товара',
+        'products.price.amount': 'Цена товара',
+        'products.price.currency': 'Валюта цены товара',
     })
     # Переводим некоторые колонки в нужный тип
     column_types = {
@@ -3868,7 +4115,8 @@ def get_supply_orders_details(
                     "bundle_id": bundle_id,
                     "storage_warehouse_id": storage_id,
                     "storage_warehouse_name": storage_name,
-                    "supply_id": supply_id
+                    "supply_id": supply_id,
+                    'state': state
                 })
         else:
             # На случай если supplies пустой, просто добавим по заявке (bundle, storage — None)
@@ -3880,7 +4128,8 @@ def get_supply_orders_details(
                 "bundle_id": None,
                 "storage_warehouse_id": None,
                 "storage_warehouse_name": None,
-                "supply_id": None
+                "supply_id": None,
+                'state': None,
             })
 
     df_supply_details = pd.DataFrame(extracted_rows)
@@ -4152,6 +4401,99 @@ def get_supply_orders_full(
 
     return df_supply_order_items_with_clusters
 
+# Высокоуровневая функция для выгрузки поставок с поддержкой прошлых поставок
+def export_all_supplies_for_client(
+    headers: dict,
+    dropoff_warehouse_ids: list = None,
+    order_number_search: list = None,
+    uploaddir_today: Path = Path('.'),
+    marketplace_dir_path: Path = Path('.'),
+):
+    """
+    Высокоуровневая функция:
+    1. Выгружает 'текущие' поставки по статусам (как раньше).
+    2. При необходимости выгружает 'прошлые' поставки (COMPLETED с date_from по сегодня)
+       и сохраняет их в отдельный файл.
+    Возвращает:
+        df_current, df_previous (df_previous может быть пустым, если флаг выключен).
+    """
+
+    # ---------- 1. Обычные (текущие) поставки ----------
+    df_current = get_supply_orders_full(
+        headers=headers,
+        dropoff_warehouse_ids=dropoff_warehouse_ids,
+        order_number_search=order_number_search,
+        # Статусы оставляем по умолчанию, как у вас
+        uploaddir_today=uploaddir_today,
+        marketplace_dir_path=marketplace_dir_path,
+        to_save=True,   # сохраняем как и раньше: <YYYY-MM-DD>_Поставки.csv
+    )
+
+    # ---------- 2. Предыдущие поставки (COMPLETED) ----------
+    prev_cfg = include_previous_supplies
+    flag = prev_cfg.get('flag', False)
+
+    if not flag:
+        logger.info(f"Для клиента {client_name} выгрузка прошлых поставок выключена.")
+        df_previous = pd.DataFrame()  # пустой
+        return df_current, df_previous
+
+    date_from_str = prev_cfg.get('date_from')
+    if not date_from_str:
+        logger.warning(
+            f"Для клиента {client_name} флаг предыдущих поставок включен, "
+            f"но не задан date_from. Предыдущие поставки не будут выгружены."
+        )
+        df_previous = pd.DataFrame()
+        return df_current, df_previous
+
+    # Ozon в timeslot_from_range принимает ISO8601. Предположим локальное время с T00:00:00Z.
+    timeslot_from = f"{date_from_str}T00:00:00Z"
+    # до сегодня включительно
+    today_str = date.today().strftime("%Y-%m-%d")
+    timeslot_to = f"{today_str}T23:59:59Z"
+
+    logger.info(
+        f"Выгрузка прошлых поставок для клиента {client_name}: "
+        f"с {timeslot_from} по {timeslot_to}, статус COMPLETED."
+    )
+
+    # Отдельный каталог/имя файла для прошлых поставок — чтоб не смешивать
+    # Можно складывать сюда же, но с другим именем
+    df_previous = get_supply_orders_full(
+        headers=headers,
+        dropoff_warehouse_ids=dropoff_warehouse_ids,
+        order_number_search=None,  # прошлые по статусам, а не по номеру
+        states=["COMPLETED"],      # только завершенные
+        timeslot_from=timeslot_from,
+        timeslot_to=timeslot_to,
+        timeslot_filter_type="BY_UTC_TIME",  # или по вашей логике
+        uploaddir_today=uploaddir_today,
+        marketplace_dir_path=marketplace_dir_path,
+        to_save=False,  # сейчас не сохраняем, сами зададим имя
+    )
+
+    # Сохраняем предыдущие поставки в отдельный файл
+    if not df_previous.empty:
+        file_name_previous = (
+            uploaddir_today /
+            f"{str(date.today())}_Поставки_прошлые.csv"
+        )
+        df_previous.to_csv(
+            file_name_previous,
+            sep=';',
+            index=False,
+            encoding='utf-8-sig'
+        )
+        logger.success(
+            f"Прошлые поставки для клиента {client_name} "
+            f"сохранены в файл: {file_name_previous}"
+        )
+    else:
+        logger.info(f"Для клиента {client_name} прошлых поставок в заданном периоде не найдено.")
+
+    return df_current, df_previous
+
 
 # %% Вызов всех функций
 if __name__ == '__main__':
@@ -4219,7 +4561,9 @@ if __name__ == '__main__':
     df_stock_rem_fbo = getStockReminders_fbo_v2(headers)
 
     # Поставки FBO
-    df_supply_orders = get_supply_orders_full(headers, uploaddir_today=uploaddir_today)
+    # df_supply_orders = get_supply_orders_full(headers, uploaddir_today=uploaddir_today)
+
+    df_supply_orders_current, df_supply_orders_previous = export_all_supplies_for_client(headers, uploaddir_today=uploaddir_today)
 
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
     logger.info(f"Uploaded files saved in: {uploaddir_today}")
