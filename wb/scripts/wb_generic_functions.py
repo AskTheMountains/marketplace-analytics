@@ -761,6 +761,8 @@ def add_new_columns(df_realization_report_renamed):
             'Размер',
             'Предмет',
             'Бренд',
+            'Баркод',
+            'Штрих-код',
             'Тип документа',
             'Обоснование для оплаты',
             'Обоснование штрафов и доплат',
@@ -1083,133 +1085,264 @@ def get_sales_funnel(
     return df
 
 
-class WbRateLimiter:
+class WbRateLimiterMoreLimit:
     """
-    Универсальный лимитер для методов WB API.
+    Универсальный лимитер для методов WB API с учётом:
+      - периода и лимита (для расчёта интервала),
+      - всплеска (burst),
+      - заголовков X-Ratelimit-Remaining / X-Ratelimit-Retry / X-Ratelimit-Reset.
 
     Параметры:
       period_seconds  – длительность окна (например, 60 секунд),
       period_limit    – макс. количество запросов за окно,
-      min_interval    – минимальный интервал между запросами, сек,
-      max_burst       – необязательный параметр "всплеска" (сколько запросов подряд
-                        можно сделать без доп. паузы; если 0 или None – не используется).
+      max_burst       – теоретический burst по тарифу (из таблицы WB).
+                        Нужен лишь как «верхняя планка», реальный burst
+                        контролируется X-Ratelimit-Remaining.
     """
 
-    def __init__(self, period_seconds, period_limit, min_interval, max_burst=None):
+    def __init__(self, period_seconds, period_limit, max_burst):
         self.period_seconds = period_seconds
         self.period_limit = period_limit
-        self.min_interval = float(min_interval)
-        self.max_burst = max_burst if max_burst is not None else 0
+        self.max_burst = max_burst
 
-        self._last_request_ts = None
+        # Интервал, который WB рекомендует для ровного распределения
+        self.interval = float(period_seconds) / float(period_limit)
+
+        # Простое окно по времени (для подстраховки)
         self._window_start_ts = None
         self._requests_in_window = 0
-        self._burst_counter = 0
 
-    def _wait_if_needed(self):
+    def _wait_for_window_if_needed(self):
+        """Грубый контроль по количеству запросов за период (подстраховка)."""
         now = time.time()
 
-        # Инициализация окна
         if self._window_start_ts is None:
             self._window_start_ts = now
             self._requests_in_window = 0
-            self._burst_counter = 0
             return
 
-        # 1) Проверка минутного окна
         if now - self._window_start_ts >= self.period_seconds:
             # Новое окно
-            logger.info("Начинается новое минутное окно лимита. Сбрасываю счётчики.")
+            logger.debug("Новое окно лимита WB. Сбрасываю счётчик запросов.")
             self._window_start_ts = now
             self._requests_in_window = 0
-            self._burst_counter = 0
             return
 
-        # Если превысили лимит запросов за окно — ждём до его конца
         if self._requests_in_window >= self.period_limit:
             sleep_time = self.period_seconds - (now - self._window_start_ts)
             if sleep_time > 0:
                 logger.warning(
-                    "Достигнут лимит {0} запросов за {1} секунд. Пауза {2:.1f} сек."
-                    .format(self.period_limit, self.period_seconds, sleep_time)
+                    f"Достигнут лимит {self.period_limit} запросов за {self.period_seconds} секунд. "
+                    f"Пауза {sleep_time:.2f} сек (по окну)."
                 )
                 time.sleep(sleep_time)
-            # После паузы открываем новое окно
+            # новое окно
             self._window_start_ts = time.time()
             self._requests_in_window = 0
-            self._burst_counter = 0
-            return
 
-        # 2) Минимальный интервал между запросами
-        if self._last_request_ts is not None:
-            dt = now - self._last_request_ts
-            if dt < self.min_interval:
-                sleep_time = self.min_interval - dt
-                logger.info(
-                    "Выдерживаем минимальный интервал {0} сек. Пауза {1:.2f} сек."
-                    .format(self.min_interval, sleep_time)
-                )
-                time.sleep(sleep_time)
-
-        # 3) Контроль "всплеска" (если указан)
-        if self.max_burst and self._burst_counter >= self.max_burst:
-            logger.info(
-                "Достигнут всплеск {0} запросов подряд, делаем небольшую паузу 2 сек."
-                .format(self.max_burst)
-            )
-            time.sleep(2.0)
-            self._burst_counter = 0
-
-    def request(self, method, url, headers=None, params=None, json=None, max_retries=3):
+    def call(self, func, max_retries=3, *args, **kwargs):
         """
-        Выполняет HTTP-запрос с учётом лимита.
-        method: "GET" или "POST".
+        Вызов произвольной функции func(*args, **kwargs) с учётом лимита WB.
+        Ожидается, что func возвращает объект requests.Response.
+
         Возвращает (response, success_flag).
         """
         for attempt in range(1, max_retries + 1):
-            # Ждём, если нужно (лимиты окна/интервала/всплеска)
-            self._wait_if_needed()
+            # Подстраховка по количеству запросов за период
+            self._wait_for_window_if_needed()
 
-            # Делаем запрос
             try:
-                if method == "GET":
-                    resp = requests.get(url, headers=headers, params=params)
-                else:
-                    resp = requests.post(url, headers=headers, json=json)
+                resp = func(*args, **kwargs)
             except Exception as e:
+                func_name = getattr(func, "__name__", "request")
                 logger.error(
-                    "Ошибка соединения при запросе {0} {1} (попытка {2}/{3}): {4}"
-                    .format(method, url, attempt, max_retries, e)
+                    f"Ошибка соединения при вызове {func_name} "
+                    f"(попытка {attempt}/{max_retries}): {e}"
                 )
                 if attempt == max_retries:
                     return None, False
-                time.sleep(3)
+                time.sleep(1)
                 continue
 
-            # Обновляем счётчики после успешной отправки запроса
+            # Обновляем счётчик окна
             now = time.time()
-            self._last_request_ts = now
-            # инициализируем окно при первом запросе
             if self._window_start_ts is None:
                 self._window_start_ts = now
+                self._requests_in_window = 0
             self._requests_in_window += 1
-            self._burst_counter += 1
 
-            # Обработка 429
-            if resp.status_code == 429:
+            status = resp.status_code
+            headers = resp.headers or {}
+
+            # Читаем заголовки WB
+            rl_remaining = headers.get("X-Ratelimit-Remaining")
+            rl_retry = headers.get("X-Ratelimit-Retry")
+            rl_reset = headers.get("X-Ratelimit-Reset")
+            rl_limit_burst = headers.get("X-Ratelimit-Limit")
+
+            # 429 — слишком часто, WB сам говорит, когда можно повторить
+            if status == 429:
+                retry_after = None
+                if rl_retry is not None:
+                    try:
+                        retry_after = float(rl_retry)
+                    except Exception:
+                        retry_after = None
+
+                if retry_after is None:
+                    # Нет явного X-Ratelimit-Retry — ждём консервативно 2 сек
+                    retry_after = 2.0
+
                 logger.warning(
-                    "Получен статус 429 Too Many Requests на {0} {1} (попытка {2}/{3}). "
-                    "Пауза 65 сек."
-                    .format(method, url, attempt, max_retries)
+                    f"Получен 429 Too Many Requests. "
+                    f"X-Ratelimit-Retry={rl_retry}, X-Ratelimit-Reset={rl_reset}, "
+                    f"X-Ratelimit-Limit={rl_limit_burst}. "
+                    f"Ждём {retry_after:.2f} сек перед повтором."
                 )
-                time.sleep(65)
+                time.sleep(retry_after)
+
                 if attempt == max_retries:
                     return resp, False
                 continue
 
-            # Остальные статусы отдаём наружу
+            # Не 429 — значит, запрос принят. Дальше решаем, делать ли паузу
+            # по интервалу (если rl_remaining уже 0).
+            # rl_remaining показывает, сколько запросов ещё можно сделать БЕЗ пауз.
+            need_interval_sleep = False
+
+            if rl_remaining is not None:
+                try:
+                    rl_remaining_val = int(rl_remaining)
+                except Exception:
+                    rl_remaining_val = None
+            else:
+                rl_remaining_val = None
+
+            if rl_remaining_val is not None:
+                # Если всплеск разрешён (remaining > 0) — можно следующий запрос без паузы.
+                # Если 0 — дальше запрос без паузы приведёт к 429,
+                # поэтому подождём примерно интервал.
+                if rl_remaining_val <= 0:
+                    need_interval_sleep = True
+            else:
+                # WB не прислал remaining — ориентируемся только на интервал
+                need_interval_sleep = True
+
+            if need_interval_sleep:
+                # Интервал — рекомендация для ровного распределения.
+                # Чтобы не спамить, выдерживаем не меньше interval.
+                logger.debug(
+                    f"X-Ratelimit-Remaining={rl_remaining}; выдерживаем интервал {self.interval:.3f} сек."
+                )
+                time.sleep(self.interval)
+
             return resp, True
 
         return None, False
 
-# %%
+class WbRateLimiter:
+    """
+    Лимитер WB, опирающийся на заголовки:
+      - X-Ratelimit-Remaining
+      - X-Ratelimit-Retry
+      - X-Ratelimit-Reset
+
+    Параметры:
+      period_seconds  – длительность окна (например, 60 секунд),
+      period_limit    – макс. количество запросов за окно (для расчёта интервала),
+      max_burst       – теоретический burst по тарифу (верхняя планка),
+                        реальный burst контролируется через X-Ratelimit-Remaining.
+    """
+
+    def __init__(self, period_seconds, period_limit, max_burst):
+        self.period_seconds = period_seconds
+        self.period_limit = period_limit
+        self.max_burst = max_burst
+
+        # Интервал для равномерного распределения запросов
+        self.interval = float(period_seconds) / float(period_limit)
+
+    def call(self, func, max_retries=3, skip_sleep=False, *args, **kwargs):
+        """
+        Вызов произвольной функции func(*args, **kwargs) с учётом лимита WB.
+        Ожидается, что func возвращает объект requests.Response.
+
+        Параметры:
+          skip_sleep – если True, не делать финальную паузу по интервалу
+                       (например, когда это последний запрос в серии).
+
+        Возвращает (response, success_flag).
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = func(*args, **kwargs)
+            except Exception as e:
+                func_name = getattr(func, "__name__", "request")
+                logger.error(
+                    f"Ошибка соединения при вызове {func_name} "
+                    f"(попытка {attempt}/{max_retries}): {e}"
+                )
+                if attempt == max_retries:
+                    return None, False
+                time.sleep(1)
+                continue
+
+            status = resp.status_code
+            headers = resp.headers or {}
+
+            rl_remaining = headers.get("X-Ratelimit-Remaining")
+            rl_retry = headers.get("X-Ratelimit-Retry")
+            rl_reset = headers.get("X-Ratelimit-Reset")
+            rl_limit_burst = headers.get("X-Ratelimit-Limit")
+
+            if status == 429:
+                # WB сам говорит, когда можно повторить
+                retry_after = None
+                if rl_retry is not None:
+                    try:
+                        retry_after = float(rl_retry)
+                    except Exception:
+                        retry_after = None
+
+                if retry_after is None:
+                    retry_after = self.interval  # консервативно ждём хотя бы интервал
+
+                logger.warning(
+                    "Получен 429 Too Many Requests. "
+                    f"X-Ratelimit-Retry={rl_retry}, X-Ratelimit-Reset={rl_reset}, "
+                    f"X-Ratelimit-Limit={rl_limit_burst}. "
+                    f"Ждём {retry_after:.2f} сек перед повтором."
+                )
+                time.sleep(retry_after)
+
+                if attempt == max_retries:
+                    return resp, False
+                continue
+
+            # Не 429 — запрос принят. Смотрим на remaining
+            need_interval_sleep = False
+            rl_remaining_val = None
+
+            if rl_remaining is not None:
+                try:
+                    rl_remaining_val = int(rl_remaining)
+                except Exception:
+                    rl_remaining_val = None
+
+            if rl_remaining_val is not None:
+                # Если remaining == 0, дальше без паузы будет 429.
+                if rl_remaining_val <= 0:
+                    need_interval_sleep = True
+            else:
+                # WB не прислал remaining — ориентируемся на интервал как на рекомендацию
+                need_interval_sleep = True
+
+            if need_interval_sleep and not skip_sleep:
+                logger.debug(
+                    f"X-Ratelimit-Remaining={rl_remaining}; выдерживаем интервал {self.interval:.3f} сек."
+                )
+                time.sleep(self.interval)
+
+            return resp, True
+
+        return None, False
