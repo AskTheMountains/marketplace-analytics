@@ -1161,16 +1161,16 @@ def create_svod_for_excel(
     if actions_file_name is not None:
         svod_cols = add_element_to_list(
             svod_cols,
-            'Цена после скидки',
             ['Цена для участия в акциях Бустинг'],
+            'Цена после скидки',
             after=True
         )
     # Добавляем цену WB
     if client_name in ['SENS', 'SENS_IP']:
         svod_cols = add_element_to_list(
             svod_cols,
-            'Цена после скидки',
             ['Цена со скидкой WB'],
+            'Цена после скидки',
             after=True
         )
 
