@@ -3,6 +3,9 @@ from pathlib import Path
 # Файл с настройками и номером клиента
 from options import settings, client_number
 
+# Некоторые доп. функции
+from generic_functions import add_element_to_list
+
 # ID клиента и АПИ-ключ для заголовков запросов к Seller API
 client_id = settings['client_id_ozon'][client_number]
 api_key = settings['api_key_ozon'][client_number]
@@ -224,6 +227,26 @@ DEMAND_PERIOD_1, DEMAND_PERIOD_2 = ozon_client_demand_periods_map.get(
     client_name,
     ozon_default_demand_periods,
 )
+# Флаг того, за какой период выводить потребность на лист Всего (первый или второй)
+demand_period_for_total_map = {
+    'Water_Power': DEMAND_PERIOD_1,  # Для Силы Воды потребность на листе "Всего" считаем за первый период (40 дней), а не за второй (60 дней)
+}
+demand_period_for_total = demand_period_for_total_map.get(client_name, DEMAND_PERIOD_2)  # По умолчанию берем второй период (60 дней)
+
+# Флаг выгрузки предыдущих поставок
+include_previous_supplies_map = {
+    'Water_Power': {
+        'flag': True,
+        'date_from': '2026-01-01',  # Для Силы Воды включаем поставки, начиная с 1 января 2026 года
+    },  # Для Силы Воды включаем предыдущие поставки
+}
+include_previous_supplies = include_previous_supplies_map.get(
+    client_name,
+    {
+        'flag': False,  # По умолчанию не включаем
+    }
+)
+include_previous_supplies_flag = include_previous_supplies.get('flag', False)
 
 # ======================================================================
 # Столбцы для расчет поставок на листе "Всего"
@@ -318,6 +341,13 @@ default_supply_svod_total_columns = [
 supply_svod_total_columns = supply_svod_total_columns_map.get(
     client_name,
     default_supply_svod_total_columns,
+)
+if include_previous_supplies_flag:
+    supply_svod_total_columns = add_element_to_list(
+        supply_svod_total_columns,
+        "ПРОШЛЫЕ_ПОСТАВКИ",
+        "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ",
+        after=False
 )
 
 # ======================================================================
@@ -420,6 +450,13 @@ default_supply_svod_clusters_columns = [
 supply_svod_clusters_columns = supply_svod_clusters_columns_map.get(
     client_name,
     default_supply_svod_clusters_columns,
+)
+if include_previous_supplies_flag:
+    supply_svod_clusters_columns = add_element_to_list(
+        supply_svod_clusters_columns,
+        "ПРОШЛЫЕ_ПОСТАВКИ",
+        "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ",
+        after=False
 )
 
 
@@ -579,12 +616,42 @@ PROMOTION_COMPANIES = {
         17207301,
     ],
     'Neva_Metall': [
-        24702757,
-        24702720,
-        24702699,
-        24702639,
-        24702627,
-        24702612
+        22198782,
+        23565955,
+        25215100,
+        25410214,
+        25418780,
+        25437522,
+        25437551,
+        25449356,
+        25537999,
+        25749692,
+        25804523,
+        25897983,
+        25897997,
+        25921429,
+        25946459,
+        25946506,
+        25946569,
+        25946623,
+        25946658,
+        25946676,
+        18902951,
+        19141077,
+        19308078,
+        19373352,
+        20024863,
+        20432253,
+        20595570,
+        21674773,
+        22525973,
+        23164743,
+        23565208,
+        24238597,
+        25418721,
+        25418739,
+        25437599,
+        25437648,
     ],
     'Orsk_Combinat': [
         19364356,
