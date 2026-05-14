@@ -505,16 +505,141 @@ def get_companies_ids(df_finance_report, companies_costs_ids):
 
     return df_companies_costs_total
 
+# Функция определения недостающих отчетов по РК для загрузки
+def determine_missing_performance_data(
+        companies_stats_dir: Path,
+        df_companies_ids: pd.DataFrame,
+        date_from: str,
+        date_to: str,
+        accrual_col: str = "Тип начисления",
+        orders_type: str = "Продвижение с оплатой за заказ",
+        campaign_id_col: str = "Номер кампании",
+):
+    """
+    Определяет, какие кампании и отчёты по оплате за заказ нужно догрузить.
+
+    date_from, date_to — даты в формате 'YYYY-MM-DD' (из параметров calc_companies_costs).
+    Файлы ожидаются в формате:
+      - по кампаниям: <campaign_id>_dd.mm.yyyy-dd.mm.yyyy.csv
+      - по оплате за заказ:
+           search_promo_all_skus_orders_report_dd.mm.yyyy-dd.mm.yyyy.csv
+           search_promo_organisation_orders_report_dd.mm.yyyy-dd.mm.yyyy.csv
+    Проверяем совпадение ID и периода.
+    """
+    # Конвертируем в формат dd.mm.yyyy для сравнения с именами файлов
+    try:
+        period_start_str = datetime.strptime(date_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+        period_end_str = datetime.strptime(date_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        # Если даты уже в dd.mm.yyyy — просто используем как есть
+        period_start_str = date_from
+        period_end_str = date_to
+
+    # --- Разделяем на обычные кампании и "оплату за заказ" ---
+    df_regular = df_companies_ids.copy()
+    df_orders = pd.DataFrame()
+    if accrual_col in df_companies_ids.columns:
+        mask_orders = df_companies_ids[accrual_col] == orders_type
+        df_orders = df_companies_ids[mask_orders].copy()
+        df_regular = df_companies_ids[~mask_orders].copy()
+
+    # ==========================
+    # 1. КАМПАНИИ: какие нужно докачать
+    # ==========================
+    df_missing_regular = pd.DataFrame()
+    if not df_regular.empty:
+        required_campaign_ids = set(df_regular[campaign_id_col].astype(str))
+
+        csv_files = list(companies_stats_dir.glob("*.csv"))
+        existing_pairs = set()  # (campaign_id, date_start, date_end)
+
+        for path in csv_files:
+            stem = path.stem  # например: "23010536_01.02.2026-28.02.2026"
+            parts = stem.split("_", 1)
+            if len(parts) < 2:
+                continue
+            campaign_id, date_part = parts[0], parts[1]
+            if not campaign_id.isdigit():
+                continue
+            # ожидаем "dd.mm.yyyy-dd.mm.yyyy"
+            if "-" not in date_part:
+                continue
+            file_date_start, file_date_end = date_part.split("-", 1)
+            existing_pairs.add((campaign_id, file_date_start, file_date_end))
+
+        # нам нужны именно файлы для требуемых кампаний и точного нашего периода
+        missing_campaign_ids = set()
+        for cid in required_campaign_ids:
+            if (cid, period_start_str, period_end_str) not in existing_pairs:
+                missing_campaign_ids.add(cid)
+
+        if missing_campaign_ids:
+            df_missing_regular = df_regular[
+                df_regular[campaign_id_col].astype(str).isin(missing_campaign_ids)
+            ]
+
+    need_regular_upload = not df_missing_regular.empty
+
+    # ==========================
+    # 2. ОПЛАТА ЗА ЗАКАЗ: нужно ли догружать
+    # ==========================
+    has_orders_expenses = not df_orders.empty
+
+    # ищем файлы строго с нужным периодом в имени
+    pattern_all = f"search_promo_all_skus_orders_report_{period_start_str}-{period_end_str}.csv"
+    pattern_org = f"search_promo_organisation_orders_report_{period_start_str}-{period_end_str}.csv"
+
+    orders_report_all_skus = list(companies_stats_dir.glob(pattern_all))
+    orders_report_org = list(companies_stats_dir.glob(pattern_org))
+
+    # считаем, что отчёт по оплате за заказ полностью есть, только если оба файла найдены
+    orders_report_exists = bool(orders_report_all_skus and orders_report_org)
+    need_orders_upload = has_orders_expenses and not orders_report_exists
+
+    return df_missing_regular, need_regular_upload, df_orders, need_orders_upload
+
+
 # Функция парсинга файлов со статистикой по кампаниям
-def parse_companies_files(current_report_dir, date_report):
+def parse_companies_files(current_report_dir, date_report, period_start=None, period_end=None):
+    """
+    Парсит файлы статистики по кампаниям и отчёты по оплате за заказ
+    только за указанный период (если он задан).
+
+    Параметры
+    ---------
+    current_report_dir : pathlib.Path
+        Корневая директория текущего отчёта.
+    date_report : str
+        Строка, используемая для формирования имён директорий с данными,
+        например '2025-12-31' → '<date_report>_Кампании'.
+    period_start : str | None
+        Дата начала периода в формате 'YYYY-MM-DD'.
+        Если не задана (None), фильтрация файлов по периоду не выполняется.
+    period_end : str | None
+        Дата окончания периода в формате 'YYYY-MM-DD'.
+    """
     # Директория, где лежат данные по рекламным кампаниям
     companies_stats_dir = current_report_dir / f"{date_report}_Кампании"
     # Директория, куда будем складывать обработанные файлы
     companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Префиксы файлов отчётов по продвижению с оплатой за заказ
     orders_report_all_skus_prefix = "search_promo_all_skus_orders_report_"
     orders_report_org_prefix = "search_promo_organisation_orders_report_"
+
+    # -----------------------------
+    # Определяем строку периода для фильтрации файлов
+    # -----------------------------
+    period_str = None
+    if period_start and period_end:
+        try:
+            start_str = datetime.strptime(period_start, "%Y-%m-%d").strftime("%d.%m.%Y")
+            end_str = datetime.strptime(period_end, "%Y-%m-%d").strftime("%d.%m.%Y")
+            period_str = f"{start_str}-{end_str}"  # вида 01.12.2025-31.12.2025
+        except ValueError:
+            # если некорректный формат — не фильтруем по дате
+            period_str = None
 
     # ==============================
     # 1. ПАРСИМ ОБЫЧНЫЕ КАМПАНИИ (ПО ID)
@@ -524,12 +649,17 @@ def parse_companies_files(current_report_dir, date_report):
     # Осуществляем поиск файлов с заданным расширением
     for ext in companies_stats_extensions:
         for file in companies_stats_dir.glob(f'*{ext}'):
+            name = file.name
             # Пропускаем файлы отчётов по продвижению с оплатой за заказ —
             # у них нет ID кампании
             if (
-                file.name.startswith(orders_report_all_skus_prefix)
-                or file.name.startswith(orders_report_org_prefix)
+                name.startswith(orders_report_all_skus_prefix)
+                or name.startswith(orders_report_org_prefix)
             ):
+                continue
+            # Если указан нужный период — оставляем только файлы за этот период
+            # Ожидаемый формат: <id>_dd.mm.yyyy-dd.mm.yyyy.csv
+            if period_str is not None and period_str not in name:
                 continue
             filenames_companies['path'].append(file)
 
@@ -538,6 +668,7 @@ def parse_companies_files(current_report_dir, date_report):
         logger.warning(
             f"В директории {companies_stats_dir} не найдено файлов статистики кампаний "
             f"(исключая отчёты по оплате за заказ)"
+            f"{' за период ' + period_str if period_str else ''}"
         )
     else:
         # Считывание только имени файла
@@ -660,14 +791,23 @@ def parse_companies_files(current_report_dir, date_report):
         return df
 
     # Ищем оба файла
-    orders_files_all_skus = list(companies_stats_dir.glob(f"{orders_report_all_skus_prefix}*.csv"))
-    orders_files_org = list(companies_stats_dir.glob(f"{orders_report_org_prefix}*.csv"))
+    if period_str is not None:
+        # Ищем ровно за нужный период
+        pattern_all = f"{orders_report_all_skus_prefix}{period_str}.csv"
+        pattern_org = f"{orders_report_org_prefix}{period_str}.csv"
+        orders_files_all_skus = list(companies_stats_dir.glob(pattern_all))
+        orders_files_org = list(companies_stats_dir.glob(pattern_org))
+    else:
+        # Ищем все подходящие, без фильтра по периоду
+        orders_files_all_skus = list(companies_stats_dir.glob(f"{orders_report_all_skus_prefix}*.csv"))
+        orders_files_org = list(companies_stats_dir.glob(f"{orders_report_org_prefix}*.csv"))
 
     if not orders_files_all_skus and not orders_files_org:
         logger.warning(
             f"Отчёты по продвижению с оплатой за заказ "
             f"({orders_report_all_skus_prefix}*.csv и {orders_report_org_prefix}*.csv) "
             f"в директории {companies_stats_dir} не найдены"
+            f"{' за период ' + period_str if period_str else ''}"
         )
         return
 
@@ -931,10 +1071,10 @@ def calc_companies_costs(
         task_id=None
     ):
     # Директория, где будут лежать данные по рекламным кампаниям
-    companies_stats_dir: Path = current_report_dir / f"{date_report}_Кампании"
+    companies_stats_dir = current_report_dir / f"{date_report}_Кампании"
     companies_stats_dir.mkdir(parents=True, exist_ok=True)
     # Директория, куда будем складывать обработанные файлы
-    companies_parsed_dir: Path = current_report_dir / f"{date_report}_Кампании_parsed"
+    companies_parsed_dir = current_report_dir / f"{date_report}_Кампании_parsed"
     companies_parsed_dir.mkdir(parents=True, exist_ok=True)
 
     # Проверяем, что в отчете были расходы по рекламе
@@ -946,71 +1086,38 @@ def calc_companies_costs(
 
     # Все кампании, по которым есть расходы
     df_companies_ids = get_companies_ids(df_finance_report, companies_costs_ids)
+
     ACCRUAL_COL = "Тип начисления"
     ORDERS_TYPE = "Продвижение с оплатой за заказ"
     CAMPAIGN_ID_COL = "Номер кампании"
 
-    # --- Разделяем на обычные кампании и "оплату за заказ" ---
-    df_regular = df_companies_ids.copy()
-    df_orders = pd.DataFrame()
-    if ACCRUAL_COL in df_companies_ids.columns:
-        mask_orders = df_companies_ids[ACCRUAL_COL] == ORDERS_TYPE
-        df_orders = df_companies_ids[mask_orders].copy()
-        df_regular = df_companies_ids[~mask_orders].copy()
-
     # Общие даты для Performance API
+    # (можно оставить пустыми, а date_from/date_to использовать в getCompanyStatistics)
     date_start_performance = ''   # при необходимости: f"{date_start}T00:00:00Z"
     date_end_performance = ''     # при необходимости: f"{date_end}T23:59:59Z"
-    date_from_performance = date_start
-    date_to_performance = date_end
+    date_from_performance = date_start   # ожидаем 'YYYY-MM-DD'
+    date_to_performance = date_end       # ожидаем 'YYYY-MM-DD'
 
     # ==========================
-    # 1. ОПРЕДЕЛЯЕМ, КАКИЕ КАМПАНИИ ДОКАЧАТЬ
+    # 1. ОПРЕДЕЛЯЕМ, ЧТО ДОКАЧАТЬ (кампании + оплата за заказ)
     # ==========================
-    df_missing_regular = pd.DataFrame()
-    if not df_regular.empty:
-        # Все требуемые ID кампаний
-        required_campaign_ids = set(df_regular[CAMPAIGN_ID_COL].astype(str))
-        # Уже имеющиеся .csv по кампаниям: <id>_dd.mm.yyyy-dd.mm.yyyy.csv
-        csv_files = list(companies_stats_dir.glob("*.csv"))
-        existing_campaign_ids = set()
-        for path in csv_files:
-            stem = path.stem  # например: "23010536_01.02.2026-28.02.2026"
-            parts = stem.split("_", 1)
-            if not parts:
-                continue
-            campaign_id = parts[0]
-            if campaign_id.isdigit():
-                existing_campaign_ids.add(campaign_id)
-
-        # Кампании, по которым ещё нет файлов
-        missing_campaign_ids = required_campaign_ids - existing_campaign_ids
-        if missing_campaign_ids:
-            df_missing_regular = df_regular[
-                df_regular[CAMPAIGN_ID_COL].astype(str).isin(missing_campaign_ids)
-            ]
-    need_regular_upload = not df_missing_regular.empty
-
-    # ==========================
-    # 2. НУЖНО ЛИ ДОКАЧИВАТЬ "ОПЛАТУ ЗА ЗАКАЗ"
-    # ==========================
-    has_orders_expenses = not df_orders.empty
-
-    # Есть ли уже файл(ы) отчёта по оплате за заказ:
-    # - search_promo_all_skus_orders_report_24.02.2026-01.03.2026.csv
-    # - search_promo_organisation_orders_report_01.02.2026-01.03.2026.csv
-    orders_report_all_skus = list(
-        companies_stats_dir.glob("search_promo_all_skus_orders_report_*.csv")
+    (
+        df_missing_regular,
+        need_regular_upload,
+        df_orders,
+        need_orders_upload,
+    ) = determine_missing_performance_data(
+        companies_stats_dir=companies_stats_dir,
+        df_companies_ids=df_companies_ids,
+        date_from=date_from_performance,
+        date_to=date_to_performance,
+        accrual_col=ACCRUAL_COL,
+        orders_type=ORDERS_TYPE,
+        campaign_id_col=CAMPAIGN_ID_COL,
     )
-    orders_report_org = list(
-        companies_stats_dir.glob("search_promo_organisation_orders_report_*.csv")
-    )
-    orders_report_exists = bool(orders_report_all_skus and orders_report_org)
-
-    need_orders_upload = has_orders_expenses and not orders_report_exists
 
     # ==========================
-    # 3. ОДИН ВЫЗОВ upload_data_performane С НУЖНЫМ mode
+    # 2. ОДИН ВЫЗОВ upload_data_performane С НУЖНЫМ mode
     # ==========================
     if need_regular_upload or need_orders_upload:
         if need_regular_upload and need_orders_upload:
@@ -1018,21 +1125,24 @@ def calc_companies_costs(
             df_for_upload = df_missing_regular
             logger.info(
                 f"Выгружаем статистику по {len(df_missing_regular)} недостающим кампаниям "
-                f"и отчёт по продвижению с оплатой за заказ (mode='all')"
+                f"и отчёты по продвижению с оплатой за заказ за период "
+                f"{date_from_performance} — {date_to_performance} (mode='all')"
             )
         elif need_regular_upload:
             mode = "campaigns"    # только кампании
             df_for_upload = df_missing_regular
             logger.info(
                 f"Выгружаем статистику по {len(df_missing_regular)} недостающим кампаниям "
-                f"(mode='campaigns')"
+                f"за период {date_from_performance} — {date_to_performance} (mode='campaigns')"
             )
         else:  # need_orders_upload only
             mode = "orders"       # только оплата за заказ
             df_for_upload = None  # df не нужен для отчёта по заказам
             logger.info(
-                "Выгружаем только отчёт по продвижению с оплатой за заказ (mode='orders')"
+                "Выгружаем только отчёты по продвижению с оплатой за заказ "
+                f"за период {date_from_performance} — {date_to_performance} (mode='orders')"
             )
+
         upload_data_performane(
             date_start_performance,
             date_end_performance,
@@ -1048,12 +1158,19 @@ def calc_companies_costs(
     else:
         logger.info(
             "Нет недостающих файлов статистики по кампаниям "
-            "и отчёта по продвижению с оплатой за заказ — догрузка не требуется"
+            "и отчётов по продвижению с оплатой за заказ для заданного периода — догрузка не требуется"
         )
+
     # ==========================
-    # 4. Парсим всё, что есть
+    # 3. Парсим всё, что есть
     # ==========================
-    parse_companies_files(current_report_dir, date_report)
+    parse_companies_files(
+        current_report_dir,
+        date_report,
+        period_start=date_start,
+        period_end=date_end
+    )
+
     # Считаем расходы по рекламным кампаниям
     result_companies_costs_no_article = calc_companies_cost_by_sku(
         date_report,
@@ -1066,6 +1183,7 @@ def calc_companies_costs(
         df_products_processed
     )
     return result_companies_costs
+
 
 # Функция товаров в заявках на поставку
 def upload_supplies_items(df_supplies_from_report):
@@ -1330,6 +1448,7 @@ def get_ozon_product(headers, to_save=False):
         })
         .loc[:, ['SKU', 'Артикул продавца', 'Наименование товара']]
     )
+
     # Переводим артикул в строку
     df_products_processed['Артикул продавца'] = df_products_processed['Артикул продавца'].astype(str)
     # Переводим SKU в int64
@@ -2070,7 +2189,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет по начислениям_01.03.2026-31.03.2026 (2).xlsx"
+    report_file_name = "Отчет по начислениям_01.04.2026-30.04.2026_Сила воды.xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)
@@ -2084,10 +2203,10 @@ if __name__ == "__main__":
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        # date_start,
-        # date_end,
-        date_start = '2026-03-01',
-        date_end='2026-03-31'
+        date_start,
+        date_end,
+        # date_start = '2026-01-01',
+        # date_end='2026-01-31'
     )
 
     # Создаем директорию для текущего отчета
