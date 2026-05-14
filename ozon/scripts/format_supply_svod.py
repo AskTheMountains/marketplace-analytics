@@ -17,7 +17,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
-
+from ozon.scripts.constants import (
+    include_previous_supplies_flag,
+    demand_period_for_total,
+)
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -274,11 +277,12 @@ def format_sheet_total(
 ) -> None:
     """
     Форматирование листа 'Всего' или 'Всего по ювелирным кластерам' для Ozon.
-
     Логика:
     - пересчёт в Excel оборачиваемости, потребности, дефицитов, округлённой потребности;
     - расчёт 'Потребность <Кластер>' и 'Остаток <Кластер>' через SUMIFS
       по листу 'По кластерам' и словарю clusters_mapping_dict;
+    - опционально (если include_previous_supplies_flag == True):
+        расчёт 'ПРОШЛЫЕ_ПОСТАВКИ <Кластер>' через SUMIFS по листу 'По кластерам';
     - условное форматирование, числовые форматы и выравнивание.
     """
     logger.info(f'Форматирование листа "{sheet_name}"')
@@ -301,25 +305,17 @@ def format_sheet_total(
     min_col = mapping["excel_column"].iloc[0]
     max_col = mapping["excel_column"].iloc[-1]
 
-    # Основные колонки
+    # Основные колонки на листе "Всего"
     cols = {
         "article": _get_excel_column(mapping, "Артикул"),
         "barcode": _get_excel_column(mapping, "Штрихкод"),
         "turnover": _get_excel_column(mapping, "Оборачиваемость"),
         "orders": _get_excel_column(mapping, "ЗАКАЗЫ", contains=True),
         "sales": _get_excel_column(mapping, "ПРОДАЖИ", contains=True),
-        "stock": _get_excel_column(
-            mapping, "ОСТАТОК", contains=True
-        ),
-        "stock_fbs": _get_excel_column(
-            mapping, "ОСТАТОК FBS", contains=True
-        ),
-        "supplies": _get_excel_column(
-            mapping, "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"
-        ),
-        "box_multiplicity": _get_excel_column(
-            mapping, "Кратность коробов"
-        ),
+        "stock": _get_excel_column(mapping, "ОСТАТОК", contains=True),
+        "stock_fbs": _get_excel_column(mapping, "ОСТАТОК FBS", contains=True),
+        "supplies": _get_excel_column(mapping, "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"),
+        "box_multiplicity": _get_excel_column(mapping, "Кратность коробов"),
     }
 
     # Колонки по периодам
@@ -373,11 +369,17 @@ def format_sheet_total(
         ),
     }
 
+    # Если надо учитывать ПРОШЛЫЕ_ПОСТАВКИ — добавляем колонку с листа "По кластерам"
+    if include_previous_supplies_flag:
+        cols_clusters["prev_supplies"] = _get_excel_column(
+            mapping_clusters,
+            "ПРОШЛЫЕ_ПОСТАВКИ",
+        )
+
     # Базовое форматирование
     thin = Side(border_style="thin", color="000000")
     header_cells = ws[f"{min_col}{row_start - 1}:{max_col}{row_start - 1}"]
     all_cells = ws[f"{min_col}{row_start}:{max_col}{row_end}"]
-
     _apply_header_formatting(header_cells, thin)
     ws.auto_filter.ref = ws.dimensions
     _apply_cell_borders(all_cells, thin)
@@ -390,18 +392,15 @@ def format_sheet_total(
             ws[f"{cols['turnover']}{i}"] = (
                 f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
             )
-
         # Потребности
         if cols[f"demand_{demand_period_1}"]:
             ws[f"{cols[f'demand_{demand_period_1}']}{i}"] = (
                 f"= {cols['turnover']}{i} * {demand_period_1}"
             )
-
         if cols[f"demand_{demand_period_2}"]:
             ws[f"{cols[f'demand_{demand_period_2}']}{i}"] = (
                 f"= {cols['turnover']}{i} * {demand_period_2}"
             )
-
         # Дефицит / избыток
         if (
             cols[f"deficit_{demand_period_1}"]
@@ -411,7 +410,6 @@ def format_sheet_total(
             ws[f"{cols[f'deficit_{demand_period_1}']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
             )
-
         if (
             cols[f"deficit_{demand_period_1}_fbs"]
             and cols["stock"]
@@ -421,7 +419,6 @@ def format_sheet_total(
             ws[f"{cols[f'deficit_{demand_period_1}_fbs']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['stock_fbs']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
             )
-
         if (
             cols[f"deficit_{demand_period_2}"]
             and cols["stock"]
@@ -430,8 +427,7 @@ def format_sheet_total(
             ws[f"{cols[f'deficit_{demand_period_2}']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_2}']}{i}"
             )
-
-        # Округлённые потребности (через helper)
+        # Округлённые потребности
         if (
             cols[f"demand_{demand_period_1}_rounded"]
             and cols[f"deficit_{demand_period_1}"]
@@ -445,7 +441,6 @@ def format_sheet_total(
                     apply_rounding=apply_box_rounding,
                 )
             )
-
         if (
             cols[f"demand_{demand_period_1}_rounded_fbs"]
             and cols[f"deficit_{demand_period_1}_fbs"]
@@ -459,7 +454,6 @@ def format_sheet_total(
                     apply_rounding=apply_box_rounding,
                 )
             )
-
         if (
             cols[f"demand_{demand_period_2}_rounded"]
             and cols[f"deficit_{demand_period_2}"]
@@ -474,12 +468,11 @@ def format_sheet_total(
                 )
             )
 
-    # Формулы по кластерам (Потребность <Кластер>, Остаток <Кластер>) через SUMIFS
+    # Формулы по кластерам (Потребность/Остаток/[Прошлые поставки] <Кластер>) через SUMIFS
     svod_len_clusters = svod_excel_clusters.shape[0]
     row_start_clusters = 2
 
     for cluster, subcluster_list in clusters_mapping_dict.items():
-        # Убедимся, что сам кластер тоже в списке субкластеров
         subclusters_full = list(dict.fromkeys([cluster] + list(subcluster_list)))
 
         demand_cluster_col = _get_excel_column(
@@ -490,26 +483,58 @@ def format_sheet_total(
             mapping,
             f"Остаток {cluster}",
         )
-        if not demand_cluster_col or not stock_cluster_col:
+
+        # Колонка для ПРОШЛЫЕ_ПОСТАВКИ <Кластер> (на листе "Всего")
+        if include_previous_supplies_flag:
+            prev_supplies_cluster_col = _get_excel_column(
+                mapping,
+                f"Прошлые поставки {cluster}",
+            )
+        else:
+            prev_supplies_cluster_col = None
+
+        # Если нет ни одной целевой колонки — пропускаем
+        if not demand_cluster_col and not stock_cluster_col and not prev_supplies_cluster_col:
             continue
 
         for i in range(row_start, row_end + 1):
             demand_parts = []
             stock_parts = []
-            for sub in subclusters_full:
-                demand_parts.append(
-                    f"SUMIFS('По кластерам'!${cols_clusters['correction']}${row_start_clusters}:${cols_clusters['correction']}${svod_len_clusters + 1}, "
-                    f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
-                    f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
-                )
-                stock_parts.append(
-                    f"SUMIFS('По кластерам'!${cols_clusters['stock']}${row_start_clusters}:${cols_clusters['stock']}${svod_len_clusters + 1}, "
-                    f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
-                    f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
-                )
+            prev_supplies_parts = []
 
-            ws[f"{demand_cluster_col}{i}"] = "= " + " + ".join(demand_parts)
-            ws[f"{stock_cluster_col}{i}"] = "= " + " + ".join(stock_parts)
+            for sub in subclusters_full:
+                # Потребность
+                if demand_cluster_col:
+                    demand_parts.append(
+                        f"SUMIFS('По кластерам'!${cols_clusters['correction']}${row_start_clusters}:${cols_clusters['correction']}${svod_len_clusters + 1}, "
+                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
+                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                    )
+                # Остаток
+                if stock_cluster_col and cols_clusters["stock"]:
+                    stock_parts.append(
+                        f"SUMIFS('По кластерам'!${cols_clusters['stock']}${row_start_clusters}:${cols_clusters['stock']}${svod_len_clusters + 1}, "
+                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
+                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                    )
+                # ПРОШЛЫЕ_ПОСТАВКИ
+                if include_previous_supplies_flag and prev_supplies_cluster_col and cols_clusters.get("prev_supplies"):
+                    prev_supplies_parts.append(
+                        f"SUMIFS('По кластерам'!${cols_clusters['prev_supplies']}${row_start_clusters}:${cols_clusters['prev_supplies']}${svod_len_clusters + 1}, "
+                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
+                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                    )
+
+            if demand_cluster_col and demand_parts:
+                ws[f"{demand_cluster_col}{i}"] = "= " + " + ".join(demand_parts)
+            if stock_cluster_col and stock_parts:
+                ws[f"{stock_cluster_col}{i}"] = "= " + " + ".join(stock_parts)
+            if (
+                include_previous_supplies_flag
+                and prev_supplies_cluster_col
+                and prev_supplies_parts
+            ):
+                ws[f"{prev_supplies_cluster_col}{i}"] = "= " + " + ".join(prev_supplies_parts)
 
     # Условное форматирование
     deficit_columns = [
@@ -535,7 +560,6 @@ def format_sheet_total(
     if one_decimal_cols:
         _apply_number_format(ws, one_decimal_cols, row_start, row_end, 1)
 
-    # 0 знаков: штрихкод и округлённые потребности
     zero_decimal_cols = [
         cols.get("barcode"),
         cols.get(f"demand_{demand_period_1}_rounded"),
@@ -547,7 +571,6 @@ def format_sheet_total(
         _apply_number_format(ws, zero_decimal_cols, row_start, row_end, 0)
 
     # Выравнивание
-    # Текстовые: по шаблону старого скрипта (Сезон|Статус|Основной артикул|Артикул|Штрихкод|Наименование|Категория|Цвет)
     text_mask = mapping["column"].str.contains(
         "Сезон|Статус|Основной артикул|Артикул|Штрихкод|Наименование|Категория|Цвет",
         na=False,
@@ -562,7 +585,6 @@ def format_sheet_total(
 
     wb.save(file_path)
     logger.info(f'Завершено форматирование листа "{sheet_name}"')
-
 
 def format_sheet_clusters(
     path_supply_svod,
@@ -710,10 +732,10 @@ def format_sheet_clusters(
 
         if (
             cols["correction"]
-            and cols[f"demand_{demand_period_2}_rounded"]
+            and cols[f"demand_{demand_period_for_total}_rounded"]
         ):
             ws[f"{cols['correction']}{i}"] = (
-                f"= {cols[f'demand_{demand_period_2}_rounded']}{i}"
+                f"= {cols[f'demand_{demand_period_for_total}_rounded']}{i}"
             )
 
     # Условное форматирование

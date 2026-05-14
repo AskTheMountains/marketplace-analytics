@@ -3,25 +3,29 @@ import argparse
 from datetime import datetime
 from itertools import product
 from pathlib import Path
+from re import I
 from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
+from generic_functions import add_element_to_list
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
 import ozon.scripts.format_supply_svod as format_supply_svod
 from ozon.scripts.command_args_parser import cli_reference_date
 from ozon.scripts.constants import (
-    catalog_supply_columns,
-    cargo_multiplicity,
-    DEMAND_PERIOD_1,
-    DEMAND_PERIOD_2,
     client_name,
     clusters_mapping,
     clusters_mapping_jewelry,
     marketplace_dir_path,
     shop_type,
+    catalog_supply_columns,
+    cargo_multiplicity,
+    DEMAND_PERIOD_1,
+    DEMAND_PERIOD_2,
+    demand_period_for_total,
+    include_previous_supplies_flag,
     supply_svod_clusters_columns,
     supply_svod_total_columns,
 )
@@ -37,6 +41,11 @@ DAYS_IN_PERIOD = 30
 APPLY_BOX_ROUNDING = cargo_multiplicity['flag_multiplicity']
 # Дефолтная кратность коробов для клиента (если не найдена в справочнике)
 DEFAULT_BOX_MULTIPLICITY = cargo_multiplicity['multiplicity']
+# Включать ли предыдущие поставки в расчёт потребности
+INCLUDE_PREVIOUS_SUPPLIES = False
+if include_previous_supplies_flag:
+    INCLUDE_PREVIOUS_SUPPLIES = include_previous_supplies_flag
+    logger.info(f"Для клиента {client_name} включено добавление предыдущих поставок")
 
 # Директории
 MARKETPLACE_PATH = Path(marketplace_dir_path)
@@ -265,6 +274,8 @@ def add_clusters(date_metrics: str) -> pd.DataFrame:
         "Остатки",
         "Остатки_fbs",
     ]
+    if INCLUDE_PREVIOUS_SUPPLIES:
+        sales_columns = add_element_to_list(sales_columns, "ПРОШЛЫЕ_ПОСТАВКИ", "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ")
 
     metrics_df_all_clusters = sku_clusters_df.merge(
         metrics_clusters[["SKU", "Кластер"] + sales_columns],
@@ -356,7 +367,7 @@ def calc_svod_for_clusters(metrics_df_all_clusters: pd.DataFrame) -> pd.DataFram
     df = add_demand_columns(df, stock, DEMAND_PERIOD_2)
 
     df["Корректировка с учетом нулевых остатков"] = df[
-        f"Потребность на {DEMAND_PERIOD_2} дней (округл.)"
+        f"Потребность на {demand_period_for_total} дней (округл.)"
     ]
 
     df["№"] = np.arange(1, len(df) + 1)
@@ -388,11 +399,18 @@ def create_pivot_clusters(svod_for_clusters: pd.DataFrame) -> pd.DataFrame:
     - 'Потребность <Кластер>' по Корректировке
     - 'Остаток <Кластер>' по Остаткам
     """
+    pivot_values = [
+        "Корректировка с учетом нулевых остатков",
+        "Остатки",
+    ]
+    if INCLUDE_PREVIOUS_SUPPLIES:
+        pivot_values.append("ПРОШЛЫЕ_ПОСТАВКИ")
+
     df_pivot = pd.pivot_table(
         svod_for_clusters,
         columns="Кластер",
         index="Артикул",
-        values=["Корректировка с учетом нулевых остатков", "Остатки"],
+        values=pivot_values,
         aggfunc="sum",
         fill_value=0,
     )
@@ -403,7 +421,9 @@ def create_pivot_clusters(svod_for_clusters: pd.DataFrame) -> pd.DataFrame:
             if col[0] == "Корректировка с учетом нулевых остатков"
             else f"Остаток {col[1]}"
             if col[0] == "Остатки"
-            else col[0]
+            else f"Прошлые поставки {col[1]}"
+            if col[0] == "ПРОШЛЫЕ_ПОСТАВКИ"
+            else f"{col[0]} {col[1]}"
         )
         for col in df_pivot.columns.values
     ]
@@ -534,11 +554,15 @@ def add_columns_for_excel(
 
     if svod_type == "Всего":
         svod_columns = list(supply_svod_total_columns)
-        cluster_columns = [
-            val
-            for cluster in cluster_list
-            for val in (f"Потребность {cluster}", f"Остаток {cluster}")
-        ]
+
+        cluster_columns = []
+        for cluster in cluster_list:
+            # Порядок внутри кластера
+            cluster_columns.append(f"Потребность {cluster}")
+            cluster_columns.append(f"Остаток {cluster}")
+            if include_previous_supplies_flag:
+                cluster_columns.append(f"Прошлые поставки {cluster}")
+
         svod_columns.extend(cluster_columns)
     else:
         svod_columns = list(supply_svod_clusters_columns)
