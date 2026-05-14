@@ -141,17 +141,24 @@ def get_columns_from_catalog(df_products_processed):
     catalog = pd.read_excel(marketplace_dir_path / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
     # Для размера отдельно прописываем, что колонку нужно сделать 0
     if 'Размер' not in catalog.columns:
-        catalog['Размер'] = 0
-    # Если каких-то колонок не хватает, искуственно создаем их, чтобы не было ошибок
-    for col in catalog_action_columns:
-        if col not in catalog.columns:
-            catalog[col] = np.nan
+        catalog['Размер'] = '0'
+    # Заполняем пропуски в размере
+    catalog['Размер'] = catalog['Размер'].fillna('0')
+    # Переименовываем некоторые колонки
+    # catalog = catalog.rename(columns={
+    #     'Минимальная цена расчетная, руб.': 'Минимальная цена маржинальная, руб.',
+    # })
     # Удаляем товары, где не указан размер
     catalog_reference = catalog.dropna(subset=['Размер'], ignore_index=True)
     # Делаем размер строкой
     catalog_reference['Размер'] = catalog_reference['Размер'].astype(str)
     # Создаем столбец Артикул_Размер для мерджа
     catalog_reference['Артикул_Размер'] = catalog_reference[['Артикул продавца', 'Размер']].apply(lambda row: '_size_'.join(row.values.astype(str)), axis=1)
+    # Если каких-то колонок не хватает, искуственно создаем их, чтобы не было ошибок
+    missing_cols = [col for col in catalog_action_columns if col not in catalog_reference.columns]
+    if missing_cols:
+        logger.warning(f"В справочной таблице не хватает колонок: {missing_cols}. Они будут пустыми")
+        catalog_reference[missing_cols] = np.nan
     # У некоторых клиентов делаем размер строковым типом
     if client_name in ['KU_And_KU', 'Soyuz']:
         catalog_reference['Размер'] = catalog_reference['Размер'].astype(str).str.replace('.0', '')
@@ -339,41 +346,42 @@ def save_excel(catalog_excel, action_list_df, date_report_created):
 
 
 # %% Вызов всех функций
-# Дата, в которую были посчитаны метрики
-# date_report_created = '2025-08-18'
-date_report_created = cli_reference_date(parser)
-logger.info(f"Creating actions svod for client {client_name} for date {date_report_created}")
-# Получаем даты выгрузки файлов за указанную дату
-report_dates = read_dates_file(date_report_created)
-# Считываем имена файлов с данными по акции и достаем названия акций
-filelist_actions = read_actions_files(date_report_created)
-# Получаем список текущих товаров по АПИ
-# df_products_list = read_products_file(date_report_created)
-df_products_list = getWBProduct(headers, type_products='not_from_recycle', to_save=False)
-# Получаем цены на товары по ПИ
-df_products = get_prices_WB(headers, df_products_list, to_save=False)
-# Обработка списка товаров
-df_products_processed = process_product_list(df_products)
-# Добавляем столбцы из справочной таблицы
-df_products_with_catalog = get_columns_from_catalog(df_products_processed)
-# Считаем доп. столбцы, которые рассчитываются на основании данных справочной таблицы
-df_products_with_catalog_stats = calc_additional_columns(df_products_with_catalog)
-# Добавляем данные из файла с метриками
-df_products_with_catalog_metrics = get_columns_from_metrics(date_report_created, df_products_with_catalog)
-# catalog_with_reminders_prev_day = add_reminders_prev_day(catalog_metrics, date_report_created)
-# Добавляем столбцы с данными по конкретной акции
-svod_actions, action_cols = get_actions_data(filelist_actions, df_products_with_catalog_metrics)
-# Создаем итоговый отчет по шаблону
-svod_excel_actions = create_svod_for_excel(
-    svod_actions,
-    action_cols,
-    date_report_created,
-    report_dates['date_start'][0],
-    report_dates['date_end'][0],
-)
-# Сохраняем отчет в excel
-save_excel(svod_excel_actions, filelist_actions, date_report_created)
-# Форматируем отчет excel
-format_excel_actions(client_name, svod_excel_actions, date_report_created)
+if __name__ == "__main__":
+    # Дата, в которую были посчитаны метрики
+    # date_report_created = '2025-08-18'
+    date_report_created = cli_reference_date(parser)
+    logger.info(f"Creating actions svod for client {client_name} for date {date_report_created}")
+    # Получаем даты выгрузки файлов за указанную дату
+    report_dates = read_dates_file(date_report_created)
+    # Считываем имена файлов с данными по акции и достаем названия акций
+    filelist_actions = read_actions_files(date_report_created)
+    # Получаем список текущих товаров по АПИ
+    # df_products_list = read_products_file(date_report_created)
+    df_products_list = getWBProduct(headers, type_products='not_from_recycle', to_save=False)
+    # Получаем цены на товары по ПИ
+    df_products = get_prices_WB(headers, df_products_list, to_save=False)
+    # Обработка списка товаров
+    df_products_processed = process_product_list(df_products)
+    # Добавляем столбцы из справочной таблицы
+    df_products_with_catalog = get_columns_from_catalog(df_products_processed)
+    # Считаем доп. столбцы, которые рассчитываются на основании данных справочной таблицы
+    df_products_with_catalog_stats = calc_additional_columns(df_products_with_catalog)
+    # Добавляем данные из файла с метриками
+    df_products_with_catalog_metrics = get_columns_from_metrics(date_report_created, df_products_with_catalog)
+    # catalog_with_reminders_prev_day = add_reminders_prev_day(catalog_metrics, date_report_created)
+    # Добавляем столбцы с данными по конкретной акции
+    svod_actions, action_cols = get_actions_data(filelist_actions, df_products_with_catalog_metrics)
+    # Создаем итоговый отчет по шаблону
+    svod_excel_actions = create_svod_for_excel(
+        svod_actions,
+        action_cols,
+        date_report_created,
+        report_dates['date_start'][0],
+        report_dates['date_end'][0],
+    )
+    # Сохраняем отчет в excel
+    save_excel(svod_excel_actions, filelist_actions, date_report_created)
+    # Форматируем отчет excel
+    format_excel_actions(client_name, svod_excel_actions, date_report_created)
 
 # %%
