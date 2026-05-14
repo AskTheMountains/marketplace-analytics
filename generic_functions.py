@@ -79,7 +79,7 @@ def move_columns(df, columns_to_move, position, insert_type='after'):
 
 
 
-def add_element_to_list(lst, search, new_value, after=True, by_index=False):
+def add_element_to_list(lst, new_value, search, after=True, by_index=False):
     """
     Вставляет новый элемент (или элементы) до или после указанного значения или индекса.
 
