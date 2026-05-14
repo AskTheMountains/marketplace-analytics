@@ -376,9 +376,9 @@ def format_excel_actions(
 
 
     # Сохранение
-    wb.save(f"{filepath_actions_svod}_Formatted.xlsx")
+    wb.save(f"{filepath_actions_svod}")
     logger.info("Finished formatting actions file")
-    logger.info(f"Formatted actions file saved in {filepath_actions_svod}_Formatted.xlsx")
+    logger.info(f"Formatted actions file saved in {filepath_actions_svod}")
 
 
 
