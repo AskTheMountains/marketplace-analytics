@@ -25,10 +25,11 @@ from generic_functions import move_columns
 from ozon.scripts.command_args_parser import cli_date_range
 # Некоторые константы
 from wb.scripts.constants import client_name, headers, marketplace_dir_path
-from wb.scripts.wb_generic_functions import upload_realization_report
-from wb.scripts.calc_svod_finance_report_WB_v3 import (
-    # filter_report_dates
-    add_new_columns, rename_report_columns
+from wb.scripts.wb_generic_functions import (
+    upload_realization_report,
+    add_new_columns,
+    rename_report_columns,
+    filter_report_dates,
 )
 
 # Добавляем описание скрипта в парсер аргументов
@@ -66,37 +67,13 @@ def generate_date_range(date_start, date_end):
         return date_start, date_end
 
 
-# Функция фильтра отчета о реализации по датам
-def filter_report_dates(date_start, date_end, df_realization_report_new_columns, filter_dates=False):
-    # Создаем копию для избежания изменений в оригинальном df
-    df_realization_report_date_filtered = df_realization_report_new_columns.copy()
-    if filter_dates:
-        # # Переводим даты выгрузки в Timestamp
-        dt_start = pd.to_datetime(date_start, format='mixed')
-        dt_end = pd.to_datetime(date_end, format='mixed')
-        # Ищем id строк переходных недель
-        tmp_df_transitional_weeks = df_realization_report_date_filtered.loc[
-            (df_realization_report_date_filtered['Дата начала отчётного периода'] < dt_start) | (df_realization_report_date_filtered['Дата конца отчётного периода'] > dt_end),
-            :]
-        # Внутри переходных недель ищем id строк, у которых дата продажи не соответствует датам начала и окончания выгрузки
-        transitional_weeks_ids = tmp_df_transitional_weeks.loc[(tmp_df_transitional_weeks['Дата продажи'] < dt_start) | (tmp_df_transitional_weeks['Дата продажи'] > dt_end), 'id'].to_list()
-        # Убираем найденные строки из отчета
-        df_realization_report_date_filtered = df_realization_report_date_filtered.loc[~df_realization_report_date_filtered['id'].isin(transitional_weeks_ids), :]
-        # Делаем фильтр по дате продажи в пределах указанного диапазона
-        # df_realization_report_date_filtered = df_realization_report_date_filtered.loc[(df_realization_report_date_filtered['Дата продажи'] >= dt_start) & (df_realization_report_date_filtered['Дата продажи'] <= dt_end), :]
-        # Делаем reset_index после concat
-        df_realization_report_date_filtered = df_realization_report_date_filtered.reset_index(drop=True)
-
-    return df_realization_report_date_filtered
-
-
 # Функция выгрузки отчета о реализации
-def get_realization_report(headers, date_start, date_end):
+def get_realization_report(headers, date_start, date_end, period='daily', verbose=False):
     # Переводим даты в нужный формат
     # date_start_ = datetime.fromisoformat(date_start).strftime('%Y-%m-%d')
     # date_end_ = datetime.fromisoformat(date_end).strftime('%Y-%m-%d')
     # Получение отчета о реализации по АПИ
-    df_realization_report = upload_realization_report(headers, date_start, date_end, verbose=True)
+    df_realization_report = upload_realization_report(headers, date_start, date_end, period=period, verbose=verbose)
     if not df_realization_report.empty:
         # Переименование колонок отчета о реализации в русские названия
         df_realization_report_renamed = rename_report_columns(df_realization_report)
@@ -106,7 +83,8 @@ def get_realization_report(headers, date_start, date_end):
         df_realization_report_date_filtered = filter_report_dates(
             date_start, date_end,
             df_realization_report_new_columns,
-            filter_dates=True
+            filter_dates=True,
+            period=period
         )
     else:
         df_realization_report_date_filtered = pd.DataFrame()
@@ -305,8 +283,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2025-08-01',
-        date_end='2026-03-31'
+        date_start='2026-04-01',
+        date_end='2026-04-29'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
