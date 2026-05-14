@@ -792,7 +792,7 @@ class WBFinanceReport(ReportBase):
         from application.paths import PYTHON_EXE
         cmd = [
             PYTHON_EXE,
-            "-m", "wb.scripts.calc_svod_finance_report_v2",
+            "-m", "wb.scripts.calc_svod_finance_report_WB_v3",
             "-c", str(client_number)
         ]
         if self.params.get("start_date"):
