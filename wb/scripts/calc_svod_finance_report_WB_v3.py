@@ -46,6 +46,8 @@ from wb.scripts.wb_generic_functions import(
     get_company_stats,
     convert_currency
 )
+# Функция получения справочной таблицы
+from wb.scripts.get_reference_table import get_reference_table
 
 # Колонки для расчета отдельных расходов по артикулам
 CUSTOM_SUM_COLS = {
@@ -2360,13 +2362,14 @@ def calc_other_costs_v3(result_sku_costs, df_sku_sizes_costs_final):
 # Функция добавления данных из справочной таблицы
 def add_data_from_catalog(result_other_costs):
     # Чтение справочной таблицы
-    catalog = pd.read_excel(
-        marketplace_dir_path
-        / "Clients"
-        / client_name
-        / "catalog"
-        / f"Справочная_таблица_{client_name}_WB.xlsx"
-    )
+    # catalog = pd.read_excel(
+    #     marketplace_dir_path
+    #     / "Clients"
+    #     / client_name
+    #     / "catalog"
+    #     / f"Справочная_таблица_{client_name}_WB.xlsx"
+    # )
+    catalog = get_reference_table()
     # Создаем колонку размера, если её нет в справочной таблице
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = '0'
@@ -3089,8 +3092,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         date_start,
         date_end,
-        # date_start = '2026-03-01',
-        # date_end='2026-03-31'
+        # date_start = '2026-05-01',
+        # date_end='2026-05-25'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)

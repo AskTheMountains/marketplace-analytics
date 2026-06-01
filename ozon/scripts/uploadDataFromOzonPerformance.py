@@ -377,7 +377,6 @@ def get_search_promo_orders(
 ):
     """
     Выгружает отчёт(ы) по продвижению с оплатой за заказ.
-
     Варианты отчёта:
       - "all_sku"      — отчёт по всем товарам (создание задачи через GET)
       - "selected_sku" — отчёт по выбранным товарам (создание задачи через POST)
@@ -450,8 +449,97 @@ def get_search_promo_orders(
                         .json()
                     )
 
+                # --- обработка ошибок при создании задания ---
                 if 'error' in resp_data_products_pay_for_orders:
                     error_message = resp_data_products_pay_for_orders['error']
+
+                    # Специальный случай: "Кампания не найдена" — сохраняем пустой отчёт и выходим
+                    if error_message == 'Кампания не найдена':
+                        logger.warning(
+                            "Ozon Performance вернул ошибку 'Кампания не найдена' "
+                            f"для отчёта по оплате за заказ (тип: {single_type}). "
+                            "Сохраняем пустой отчёт и пропускаем выгрузку."
+                        )
+
+                        # Определяем период в формате dd.mm.yyyy-dd.mm.yyyy
+                        if single_type == "selected_sku":
+                            # выбранные товары — берём поля from/to
+                            from_date = params_products_pay_for_orders['from'][:10]
+                            to_date = params_products_pay_for_orders['to'][:10]
+                        else:
+                            # все товары — берём timeBounds.from/to
+                            from_date = params_products_pay_for_orders['timeBounds.from'][:10]
+                            to_date = params_products_pay_for_orders['timeBounds.to'][:10]
+
+                        from_str = datetime.strptime(from_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                        to_str = datetime.strptime(to_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                        period_str = f"{from_str}-{to_str}"
+
+                        # Формируем имя файла точно в нужном формате
+                        if single_type == "selected_sku":
+                            file_name = f"search_promo_organisation_orders_report_{period_str}.csv"
+                            # Строка заголовка (первая строка файла)
+                            header_title = f"Отчёт по заказам, период {period_str}"
+                            # Строка с названиями колонок (вторая строка)
+                            columns = [
+                                'Дата',
+                                'ID заказа',
+                                'Номер заказа',
+                                'SKU',
+                                'SKU продвигаемого товара',
+                                'Артикул',
+                                'Источник заказов',
+                                'Название товара',
+                                'Количество',
+                                'Стоимость продажи, ₽',
+                                'Стоимость, ₽',
+                                'Ставка, %',
+                                'Ставка, ₽',
+                                'Расход, ₽',
+                            ]
+                        else:
+                            file_name = f"search_promo_all_skus_orders_report_{period_str}.csv"
+                            header_title = f"Оплата за заказ (все товары). Отчёт по заказам, Период {period_str}"
+                            columns = [
+                                'Дата',
+                                'ID заказа',
+                                'Номер заказа',
+                                'SKU',
+                                'SKU продвигаемого товара',
+                                'Артикул',
+                                'Название товара',
+                                'Количество',
+                                'Стоимость продажи, ₽',
+                                'Стоимость, ₽',
+                                'Ставка, %',
+                                'Ставка, ₽',
+                                'Расход, ₽',
+                            ]
+
+                        # Формируем содержимое CSV:
+                        # 1-я строка — заголовок отчёта (в первой ячейке, остальные пустые)
+                        # 2-я строка — названия колонок
+                        file_path = companies_stats_dir / file_name
+                        with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+                            # первая строка
+                            f.write(header_title)
+                            if columns:
+                                # добиваем до числа колонок разделителями ';'
+                                f.write(';' * (len(columns) - 1))
+                            f.write('\n')
+                            # вторая строка — заголовки колонок
+                            f.write(';'.join(columns))
+                            f.write('\n')
+
+                        logger.info(
+                            f"Пустой отчёт по оплате за заказ сохранён (тип: {single_type}) "
+                            f"из-за ошибки 'Кампания не найдена': {file_path}"
+                        )
+
+                        # Возвращаем токен и выходим из _run_single_report
+                        return auth_token_local
+
+                    # Любая другая ошибка — ведём себя как раньше: лог и повтор
                     logger.warning(
                         "Ошибка при создании задания на отчёт по оплате за заказ "
                         f"({single_type}): {error_message}. Повтор через 5 секунд."
@@ -516,7 +604,6 @@ def get_search_promo_orders(
             )
             report_type_header = resp_data_report.headers['Content-Type'].split(';')[0]
             file_name = resp_data_report.headers['Content-Disposition'].split(';')[1]
-
             replace_dict = {
                 '"': '',
                 ' ': '',
@@ -524,7 +611,6 @@ def get_search_promo_orders(
             }
             for old, new in replace_dict.items():
                 file_name = file_name.replace(old, new)
-
             if 'csv' in report_type_header:
                 file_path = companies_stats_dir / file_name
                 with open(file_path, 'wb') as w:
@@ -545,7 +631,6 @@ def get_search_promo_orders(
                 f"Тип: {single_type}\n"
                 f"ID задания: {single_task_id}"
             )
-
         return auth_token_local
 
     # ----------------------------
@@ -560,9 +645,7 @@ def get_search_promo_orders(
         auth_token = _run_single_report("all_sku", None, auth_token)
         auth_token = _run_single_report("selected_sku", None, auth_token)
 
-    # при желании можно возвращать обновлённый токен
     return auth_token
-
 
 # Вызов всех функций
 def upload_data_performane(

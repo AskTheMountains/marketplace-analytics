@@ -311,3 +311,18 @@ def get_columns_info(path_to_file: str, sheet_name: str = None) -> dict:
         }
 
     return result
+
+
+def normalize_marketplace_name(marketplace_name: str) -> str:
+    """
+    Привести имя маркетплейса к нужному виду:
+    - 'ozon' (в любом регистре) -> 'Ozon'
+    - 'wb' (в любом регистре)   -> 'WB'
+    - иначе -> нижний регистр исходного имени
+    """
+    mp_lower = marketplace_name.lower()
+    if mp_lower == "ozon":
+        return "Ozon"
+    if mp_lower == "wb":
+        return "WB"
+    return mp_lower

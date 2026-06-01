@@ -12,10 +12,12 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 from generic_functions import add_element_to_list
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
-import ozon.scripts.format_supply_svod as format_supply_svod
 from ozon.scripts.command_args_parser import cli_reference_date
 from ozon.scripts.constants import (
     client_name,
+    project_root,
+    marketplace_name,
+    special_clients_supply_report,
     clusters_mapping,
     clusters_mapping_jewelry,
     marketplace_dir_path,
@@ -30,6 +32,16 @@ from ozon.scripts.constants import (
     supply_svod_total_columns,
 )
 
+# Функция получения справочной таблицы (Яндекс.Диск или локально)
+from ozon.scripts.get_reference_table import get_reference_table
+
+# Функция форматирования Excel-файла с отчётом (формулы, стили и т.п.)
+import ozon.scripts.format_supply_svod as format_supply_svod
+# Модуль расчета поставок для отдельных клиентов
+from ozon.scripts.create_supply_svod_RiverBoats import create_supply_svod_report as create_supply_svod_RiverBoats
+special_clients_modules = {
+    "RiverBoats": create_supply_svod_RiverBoats,
+}
 # ============================================================================
 # ГЛОБАЛЬНЫЕ ПАРАМЕТРЫ
 # ============================================================================
@@ -199,32 +211,40 @@ def read_metrics_file(date_metrics: str, sheet_name: str = "summary") -> pd.Data
     return metrics
 
 
-def read_catalog() -> pd.DataFrame:
+def process_catalog(catalog_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Чтение и подготовка справочной таблицы Ozon.
+    Обработка справочной таблицы Ozon.
     """
-    catalog_path = (
-        CATALOG_DIR
-        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
-    )
-    catalog = pd.read_excel(catalog_path)
+    # Создаем копию для обработки, чтобы не изменять оригинал
+    catalog_processed = catalog_df.copy()
+    # Делаем первую букву в названиях столбцов заглавной, остальные - строчными
+    catalog_processed.columns = [col.capitalize() for col in catalog_processed.columns]
 
-    # Приводим название колонки с артикулом к единому виду
-    if "Артикул продавца" in catalog.columns and "Артикул" not in catalog.columns:
-        catalog = catalog.rename(columns={"Артикул продавца": "Артикул"})
+    # Переименовываем ещё некоторые колонки
+    catalog_processed = catalog_processed.rename(columns={
+        "Артикул продавца": "Артикул",
+        'Sku': 'SKU',
+        "Артикул озон": "Артикул",
+        "Сортируемость товара": "Сортируемость",
+        "Статус товара - переносим в отчет": "Статус",
+        'Ррц': 'РРЦ',
+    })
+    # Удаляем дубликаты колонок, если есть. Оставляем первую встречающуюся.
+    catalog_processed = catalog_processed.loc[:, ~catalog_processed.columns.duplicated()]
 
-    catalog["Артикул"] = catalog["Артикул"].astype(str)
+    # Переводим артикул в строку
+    catalog_processed["Артикул"] = catalog_processed["Артикул"].astype(str)
 
     # Добавляем колонку с кратностью коробов
-    if 'Кратность коробов' not in catalog.columns:
+    if 'Кратность коробов' or 'Кратность короба' not in catalog_processed.columns:
         logger.info(f"Колонка 'Кратность коробов' не найдена в справочной таблице. Добавляем с дефолтным значением: {DEFAULT_BOX_MULTIPLICITY}.")
-        catalog['Кратность коробов'] = DEFAULT_BOX_MULTIPLICITY
+        catalog_processed['Кратность коробов'] = DEFAULT_BOX_MULTIPLICITY
 
 
     missing_columns = []
     for col in catalog_supply_columns:
-        if col not in catalog.columns:
-            catalog[col] = np.nan
+        if col not in catalog_processed.columns:
+            catalog_processed[col] = np.nan
             missing_columns.append(col)
 
     if missing_columns:
@@ -232,7 +252,7 @@ def read_catalog() -> pd.DataFrame:
             f"Отсутствуют колонки в справочной таблице: {missing_columns}"
         )
 
-    return catalog
+    return catalog_processed
 
 
 # ============================================================================
@@ -374,25 +394,6 @@ def calc_svod_for_clusters(metrics_df_all_clusters: pd.DataFrame) -> pd.DataFram
     return df
 
 
-def calc_svod_by_clusters(metrics_df_with_stats: pd.DataFrame) -> pd.DataFrame:
-    """
-    Расчет сумм по кластерам после объединения кластеров.
-    (Функция оставлена для возможного использования, но в текущей логике
-    используется create_pivot_clusters.)
-    """
-    metrics_df_by_sku_cluster = (
-        metrics_df_with_stats.groupby(["SKU", "Кластер"])
-        .agg(
-            Корректировка_с_учетом_нулевых_остатков=(
-                "Корректировка с учетом нулевых остатков",
-                "sum",
-            )
-        )
-        .reset_index()
-    )
-    return metrics_df_by_sku_cluster
-
-
 def create_pivot_clusters(svod_for_clusters: pd.DataFrame) -> pd.DataFrame:
     """
     Создание сводной таблицы по кластерам:
@@ -515,7 +516,7 @@ def add_columns_from_products(
 
 def add_columns_from_catalog(
     df_with_stats: pd.DataFrame,
-    catalog: pd.DataFrame,
+    catalog_processed: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Добавляет в свод колонки из справочной таблицы (по 'Артикул').
@@ -523,7 +524,7 @@ def add_columns_from_catalog(
     df = df_with_stats.copy()
     df["Артикул"] = df["Артикул"].astype(str)
 
-    catalog_use = catalog.copy()
+    catalog_use = catalog_processed.copy()
     catalog_use["Артикул"] = catalog_use["Артикул"].astype(str)
 
     df = df.merge(
@@ -598,7 +599,7 @@ def create_jewelry_clusters_svod(
     metrics_df_all_clusters: pd.DataFrame,
     date_metrics: str,
     df_products_processed: pd.DataFrame,
-    catalog: pd.DataFrame,
+    catalog_processed: pd.DataFrame,
 ) -> Optional[pd.DataFrame]:
     """
     Создает свод "Всего по ювелирным кластерам", если тип магазина — ювелирка.
@@ -634,7 +635,7 @@ def create_jewelry_clusters_svod(
     )
     svod_with_catalog = add_columns_from_catalog(
         svod_with_products,
-        catalog,
+        catalog_processed,
     )
 
     report_dates = read_dates_file(date_metrics)
@@ -789,8 +790,10 @@ def create_supply_svod_report(date_metrics: str) -> None:
     df_products = read_products_file(date_metrics)
     df_products_processed = process_product_list(df_products)
 
+    # Загрузка справочника с яндекс диска
+    catalog_df = get_reference_table()
     # Справочник
-    catalog = read_catalog()
+    catalog_processed = process_catalog(catalog_df)
 
     # Метрики по всем кластерам (с добавлением недостающих)
     metrics_df_all_clusters = add_clusters(date_metrics)
@@ -832,11 +835,11 @@ def create_supply_svod_report(date_metrics: str) -> None:
     # Добавляем данные из справочника
     svod_sku_with_catalog = add_columns_from_catalog(
         svod_sku_with_products,
-        catalog,
+        catalog_processed,
     )
     svod_clusters_with_catalog = add_columns_from_catalog(
         svod_clusters_with_products,
-        catalog,
+        catalog_processed,
     )
 
     # Даты отчета
@@ -858,7 +861,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
         metrics_df_all_clusters,
         date_metrics,
         df_products_processed,
-        catalog,
+        catalog_processed,
     )
 
     # Лист "По кластерам"
@@ -891,7 +894,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
         clusters_mapping_jewelry,
     )
 
-    logger.info(
+    logger.success(
         f"Отчет поставок Ozon успешно создан для {client_name} на дату {date_metrics}"
     )
 
@@ -901,7 +904,48 @@ def create_supply_svod_report(date_metrics: str) -> None:
 # ============================================================================
 # %%
 if __name__ == "__main__":
+
     date_metrics = cli_reference_date(parser)
-    create_supply_svod_report(date_metrics)
+
+    if client_name in special_clients_supply_report:
+        # Формируем имя спец-модуля по соглашению
+        # Например: ozon.scripts.create_supply_svod_RiverBoats
+        special_module_suffix = client_name
+        special_module_name = f"ozon.scripts.create_supply_svod_{special_module_suffix}"
+
+        try:
+            special_module = __import__(
+                special_module_name,
+                fromlist=["create_supply_svod_report"],
+            )
+            special_create = getattr(special_module, "create_supply_svod_report", None)
+
+            if callable(special_create):
+                logger.info(
+                    f"Найден специальный модуль расчета: {special_module_name}. "
+                    f"Запускаем СПЕЦ-расчет для клиента {client_name} на дату {date_metrics}"
+                )
+                special_create(date_metrics)
+            else:
+                logger.warning(
+                    f"Модуль {special_module_name} найден, но в нем нет функции "
+                    "`create_supply_svod_report`. Используем ОБЩИЙ расчет."
+                )
+                create_supply_svod_report(date_metrics)
+
+        except ModuleNotFoundError:
+            logger.warning(
+                f"Для клиента {client_name} указан специальный режим, "
+                f"но модуль {special_module_name} не найден. "
+                f"Используем ОБЩИЙ расчет."
+            )
+            create_supply_svod_report(date_metrics)
+
+    else:
+        logger.info(
+            f"Клиент {client_name} не в списке специальных. "
+            f"Используем ОБЩИЙ расчет на дату {date_metrics}"
+        )
+        create_supply_svod_report(date_metrics)
 
 # %%

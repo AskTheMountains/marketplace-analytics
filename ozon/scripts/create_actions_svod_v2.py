@@ -21,7 +21,7 @@ from generic_functions import add_element_to_list, move_columns
 from ozon.scripts.command_args_parser import cli_actions
 # Файл с некоторыми константами
 from ozon.scripts.constants import (
-    catalog_action_columns, client_name,
+    catalog_action_columns, client_name, marketplace_name, project_root,
     headers, headers_wb, marketplace_dir_path,
     net_cost_koef, svod_actions_cols, default_path_download_actions
 )
@@ -31,6 +31,10 @@ from ozon.scripts.format_svod_actions import format_excel_actions
 from ozon.scripts.uploadDataFromOzon import get_ozon_product
 # Функция выгрузки каталога WB
 from wb.scripts.uploadDataFromWB import get_wb_product
+
+# Функция получения справочной таблицы
+from ozon.scripts.get_reference_table import get_reference_table
+
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -857,16 +861,17 @@ def add_data_from_wb(headers_wb, catalog_processed):
 
 # Получение колонок и обработка справочной таблицы
 def get_catalog_reference_columns(catalog_ozon_wb):
-    # Путь к справочной таблице
-    reference_table_path = (
-        marketplace_dir_path
-        / f"Clients"
-        / f"{client_name}"
-        / f"catalog"
-        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
-    )
-    # Загрузка справочной таблицы
-    catalog_reference = pd.read_excel(reference_table_path)
+    # # Путь к справочной таблице
+    # reference_table_path = (
+    #     marketplace_dir_path
+    #     / f"Clients"
+    #     / f"{client_name}"
+    #     / f"catalog"
+    #     / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+    # )
+    # # Загрузка справочной таблицы
+    # catalog_reference = pd.read_excel(reference_table_path)
+    catalog_reference = get_reference_table()
     catalog_reference.rename(columns={"Основной артикул": "Основной Артикул"}, inplace=True)
     # Переименовываем колонки для удобства
     catalog_reference = catalog_reference.rename(columns={
@@ -878,7 +883,8 @@ def get_catalog_reference_columns(catalog_ozon_wb):
         if col not in catalog_reference.columns:
             catalog_reference[col] = np.nan
     # Принудительно переводим некоторые колонки в числовой тип, чтобы не было ошибок
-    for col in ['Себестоимость', 'Минимальная цена расчетная, руб.', 'РРЦ', 'Желаемая маржинальность, %', 'Нижняя граница цены после скидки, руб', 'Верхняя граница цены после скидки, руб']:
+    col_to_numeric = ['Себестоимость', 'Минимальная цена расчетная, руб.', 'РРЦ', 'Желаемая маржинальность, %', 'Нижняя граница цены после скидки, руб', 'Верхняя граница цены после скидки, руб']
+    for col in col_to_numeric:
         if col in catalog_reference.columns:
             catalog_reference[col] = catalog_reference[col].apply(lambda x: pd.to_numeric(x, errors='coerce'))
     # Переводим артикул продавца в строку

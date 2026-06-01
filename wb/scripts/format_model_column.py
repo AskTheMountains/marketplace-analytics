@@ -29,7 +29,7 @@ df_products_ = (
 # %%
 path_to_file = Path(
     'd:\\artem\\Downloads\\'
-    'Neva_Metall_WB_Модели.xlsx'
+    'Нева_Металл_Модели_WB.xlsx'
 )
 wb = load_workbook(path_to_file)
 sheet_name='Список товаров' if 'Список товаров' in wb.sheetnames else wb.sheetnames[0]

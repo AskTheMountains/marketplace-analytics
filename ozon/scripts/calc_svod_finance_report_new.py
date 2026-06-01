@@ -1,6 +1,8 @@
 
 # %% Определение всех функций
 import argparse
+from http import client
+from math import e
 import os
 import re
 import requests
@@ -49,6 +51,8 @@ from ozon.scripts.uploadDataFromOzonPerformance import (
 )
 # Функция выгрузки отчета о релизации товаров
 from ozon.scripts.get_realization import get_products_realization_report
+# Функция получения справочной таблицы
+from ozon.scripts.get_reference_table import get_reference_table
 
 parser = argparse.ArgumentParser(
     description="Create finance report (Ozon)",
@@ -764,6 +768,9 @@ def parse_companies_files(current_report_dir, date_report, period_start=None, pe
         elif 'Наименование товара' in df.columns:
             name_col = 'Наименование товара'
 
+        # Колонка с артикулом
+        article_col = 'Артикул' if 'Артикул' in df.columns else None
+
         if sku_col is None or cost_col is None:
             logger.warning(
                 f"В отчёте {path.name} не найдены необходимые колонки "
@@ -776,16 +783,20 @@ def parse_companies_files(current_report_dir, date_report, period_start=None, pe
         if name_col is not None:
             use_cols.append(name_col)
 
+
         df = df[use_cols].copy()
 
-        rename_map = {sku_col: 'sku', cost_col: 'Расходы'}
+        rename_map = {sku_col: 'sku', cost_col: 'Расходы', article_col: 'Артикул продавца'}
         if name_col is not None:
             rename_map[name_col] = 'Наименование товара'
         df = df.rename(columns=rename_map)
 
-        # Гарантируем наличие колонки "Наименование товара"
-        if 'Наименование товара' not in df.columns:
-            df['Наименование товара'] = None
+        # Гарантируем наличие некоторых колонок
+        ensure_cols = ['Наименование товара', 'Артикул продавца']
+        for col in ensure_cols:
+            if col not in df.columns:
+                df[col] = None
+
 
         df['Источник'] = source_label
         return df
@@ -1019,45 +1030,66 @@ def calc_companies_cost_by_sku(date_report, df_finance_report, companies_costs_i
     }
     return result_companies_costs_no_article
 
-# Функция добавления артикулов и наименований товаров к расходам по рекламным кампаниям
+# Функция добавления артикулов к расходам по рекламным кампаниям
 def add_articles_to_companies_costs(result_companies_costs_no_article, df_products_processed):
     # Создаем копию словаря, куда будем помещать итоговый результат
     result_companies_costs = result_companies_costs_no_article.copy()
     # Получаем df с результатами расходов SKU по рекламным кампаниям
     df_result_companies_stats = result_companies_costs_no_article['df_companies_api_stats'].copy()
+
     # Если были расходы по РК, то добавляем к SKU названия артикулов
     if df_result_companies_stats.shape[0] > 0:
-        # Мерджим со списком артикулов
-        df_companies_stats_with_articles = (
-            df_result_companies_stats
-            .merge(
-                df_products_processed[['SKU', 'Артикул продавца']],
-                on='SKU',
-                how='left'
+        df = df_result_companies_stats.copy()
+
+        # Если колонки "Артикул продавца" ещё нет — создаём её (вся пустая)
+        if 'Артикул продавца' not in df.columns:
+            df['Артикул продавца'] = pd.NA
+
+        # Оставляем только те строки, где артикул пустой / отсутствует
+        mask_need_article = df['Артикул продавца'].isna() | (df['Артикул продавца'] == '')
+        df_to_update = df.loc[mask_need_article].copy()
+
+        if not df_to_update.empty:
+            # Мерджим только те строки, где нужно добавить артикул
+            df_merged = (
+                df_to_update
+                .merge(
+                    df_products_processed[['SKU', 'Артикул продавца']],
+                    on='SKU',
+                    how='left',
+                    suffixes=('', '_new')
+                )
             )
-        )
-        # Перемещаем колонку с артикулом в начало df
-        df_companies_stats_with_articles = move_columns(
-            df=df_companies_stats_with_articles,
+            # Заполняем только те ячейки, где артикул был пустой, значением из '_new'
+            # (если найдён в df_products_processed)
+            df_merged['Артикул продавца'] = df_merged['Артикул продавца'].fillna(
+                df_merged['Артикул продавца_new']
+            )
+            df_merged = df_merged.drop(columns=['Артикул продавца_new'])
+
+            # Объединяем обратно в общий датафрейм
+            df.loc[mask_need_article, :] = df_merged
+
+        # Перемещаем колонку с артикулом в начало df (после SKU)
+        df = move_columns(
+            df=df,
             columns_to_move=['Артикул продавца'],
             position='SKU',
             insert_type='after'
         )
-        # Заполняем пропуски
-        df_companies_stats_with_articles = df_companies_stats_with_articles.fillna({
-            'Артикул продавца': 'Неизвестный артикул'
-        })
+
+        # Заполняем пропуски только там, где артикул всё ещё пустой
+        df['Артикул продавца'] = df['Артикул продавца'].fillna('Неизвестный артикул')
+
         # Удаляем колонку с SKU, т.к. она была нужна только для мерджа
-        df_companies_stats_with_articles = df_companies_stats_with_articles.drop(columns=['SKU'])
-    # Если расходов по РК не было, возвращаем исходный пустой df из словаря
+        df_companies_stats_with_articles = df.drop(columns=['SKU'])
     else:
+        # Если расходов по РК не было, возвращаем исходный пустой df из словаря
         df_companies_stats_with_articles = df_result_companies_stats.copy()
 
     # Изменяем df в словаре рекламных расходов на тот, что с артикулами
     result_companies_costs['df_companies_api_stats'] = df_companies_stats_with_articles.copy()
-
     return result_companies_costs
-
 
 # Функция расчета данных по рекламным кампаниям
 def calc_companies_costs(
@@ -1407,30 +1439,30 @@ def calc_supplies_costs(df_finance_report):
 
 
 # Функция чтения справочной таблицы
-def read_catalog(client_name):
-    # Задаем путь к справочной таблице
-    path_catalog = (
-        marketplace_dir_path
-        / "Clients"
-        / client_name
-        / "catalog"
-        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
-    )
-    # Считывание справочной таблицы
-    catalog = pd.read_excel(path_catalog)
+# def read_catalog(client_name):
+#     # Задаем путь к справочной таблице
+#     path_catalog = (
+#         marketplace_dir_path
+#         / "Clients"
+#         / client_name
+#         / "catalog"
+#         / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+#     )
+#     # Считывание справочной таблицы
+#     catalog = pd.read_excel(path_catalog)
 
-    # Из справочной таблицы убираем товары, у которых нет SKU или Артикула
-    # catalog_ = catalog.dropna(subset=['SKU', 'Артикул продавца'])
-    # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
-    catalog['Себестоимость'] = catalog['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-    # Переводим артикул в строку
-    catalog['Артикул продавца'] = catalog['Артикул продавца'].astype(str)
-    # Переименовываем колонку с наименованием товара
-    catalog = catalog.rename(columns={
-        'Название': 'Наименование товара'
-    })
+#     # Из справочной таблицы убираем товары, у которых нет SKU или Артикула
+#     # catalog_ = catalog.dropna(subset=['SKU', 'Артикул продавца'])
+#     # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
+#     catalog['Себестоимость'] = catalog['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+#     # Переводим артикул в строку
+#     catalog['Артикул продавца'] = catalog['Артикул продавца'].astype(str)
+#     # Переименовываем колонку с наименованием товара
+#     catalog = catalog.rename(columns={
+#         'Название': 'Наименование товара'
+#     })
 
-    return catalog
+#     return catalog
 
 
 # Функция выгрузки списка товаров Ozon
@@ -1600,18 +1632,19 @@ def calc_other_costs(df_finance_report, df_sku_costs_all_stats, result_sku_costs
 
 # Функция добавления данных из справочной таблицы
 def add_data_from_catalog(result_all_costs):
-    # Задаем путь к справочной таблице
-    path_catalog = (
-        marketplace_dir_path
-        / "Clients"
-        / client_name
-        / "catalog"
-        / f"Справочная_таблица_{client_name}_Ozon.xlsx"
-    )
-    # Считывание справочной таблицы
-    catalog_reference = pd.read_excel(path_catalog)
+    # # Задаем путь к справочной таблице
+    # path_catalog = (
+    #     marketplace_dir_path
+    #     / "Clients"
+    #     / client_name
+    #     / "catalog"
+    #     / f"Справочная_таблица_{client_name}_Ozon.xlsx"
+    # )
+    # # Считывание справочной таблицы
+    # catalog_reference = pd.read_excel(path_catalog)
+    catalog_reference = get_reference_table()
     # Из справочной таблицы убираем товары, у которых нет SKU
-    catalog_reference_ = catalog_reference.loc[~catalog_reference['SKU'].isna(), :]
+    catalog_reference_ = catalog_reference.loc[~catalog_reference['SKU'].isna(), :].copy()
     # В справочной таблице переводим себестоимость в число, т.к. там иногда бывают строки
     catalog_reference_['Себестоимость'] = catalog_reference_['Себестоимость'].apply(lambda x: pd.to_numeric(x, errors='coerce'))
     # Переводим артикул в строку
@@ -1652,11 +1685,30 @@ def calc_final_costs(df_all_costs_with_catalog):
     # Достаем df с результатами расчетов
     df_final_costs = df_all_costs_with_catalog.copy()
 
+    # Считаем сумму, от которой будем считать процент
+    sum_columns = [
+        'Продажи - Возвраты (руб)',
+        'Баллы за скидки',
+        'Программы партнеров',
+        'Программы партнёров'
+    ]
+    # Считается сумма по тем колонкам, которые есть в df_final_costs
+    df_final_costs['Продажа (Выручка) руб'] = (
+        df_final_costs
+        .loc[:, df_final_costs.columns.isin(sum_columns)]
+        .sum(axis=1)
+    )
+    # Перемещаем колонку с выручкой в начало df
+    df_final_costs = move_columns(
+        df_final_costs,
+        columns_to_move=['Продажа (Выручка) руб'],
+        position='Продажи - Возвраты (руб)',
+        insert_type='after'
+    )
     # Колонка, от которой считаем долю маржинальности
-    marg_sales = 'Продажи - Возвраты (руб)'
     marg_amount = 'Продажи - Возвраты (шт)'
-    marg_sales_column = df_final_costs[marg_sales]
-
+    marg_amount_rub = 'Продажа (Выручка) руб'
+    marg_sales_sum = df_final_costs[marg_amount_rub].sum()
 
     # Считаем себестоимость
     df_final_costs['Себестоимость * Факт продаж'] = (-1) * abs(df_final_costs['Себестоимость'] * df_final_costs[marg_amount])
@@ -1688,7 +1740,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     df_final_costs['% Затрат на рекламу'] = (
         abs(
             df_final_costs['Затраты на рекламу (руб)'] /
-            marg_sales_column
+            marg_sales_sum
             * 100
         )
     )
@@ -1712,15 +1764,17 @@ def calc_final_costs(df_all_costs_with_catalog):
         'Приход денег на РС',
         'Все затраты (руб)',
         ]
-        + catalog_finace_svod_columns + promotion_columns
+        + sum_columns + [marg_amount_rub] + catalog_finace_svod_columns + promotion_columns
     )
+    # Убираем дубликаты в списке колонок для исключения
+    columns_to_exclude_from_final_costs = list(set(columns_to_exclude_from_final_costs))
     # Выбираем итоговые колонки для расчета маржинальности
     final_costs_columns = df_final_costs.columns[~df_final_costs.columns.isin(columns_to_exclude_from_final_costs)]
 
     # Считаем сумму по всем затратам
     df_final_costs['Все затраты (руб)'] = df_final_costs[final_costs_columns].sum(axis=1)
     # Вычитаем из продаж в рублях все затраты
-    df_final_costs['Маржинальность руб'] = df_final_costs['Продажи - Возвраты (руб)'] + df_final_costs['Все затраты (руб)']
+    df_final_costs['Маржинальность руб'] = df_final_costs[marg_amount_rub] - df_final_costs['Все затраты (руб)']
     df_final_costs = df_final_costs.drop(columns=['Все затраты (руб)'])
 
     # Приход денег на РС (как маржинальность, но не учитываем Себестоимость * Факт продаж)
@@ -1732,7 +1786,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     df_final_costs.loc[df_final_costs['Себестоимость'].isna(), 'Маржинальность руб'] = np.nan
 
     # Считаем маржинальность в %
-    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / marg_sales_column
+    df_final_costs['Маржинальность %'] = df_final_costs['Маржинальность руб'] / marg_sales_sum
 
     # Считаем маржинальность на ед. товара
     df_final_costs['Маржинальность на ед. товара руб'] = (
@@ -1751,7 +1805,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     sales_rub_mean_by_article = (
         df_final_costs
         .groupby(['Артикул размерного ряда'])
-        [marg_sales].transform('mean')
+        [marg_amount_rub].transform('mean')
     )
     marg_rub_mean_by_article = (
         df_final_costs
@@ -1985,6 +2039,14 @@ def format_excel(
     existing_promotion_columns = [col for col in df_final_costs.columns if col in promotion_columns]
     # Колонки для расчёта затрат (все, кроме явно исключённых)
     cost_columns = [col for col in df_final_costs.columns if col not in columns_to_exclude_from_final_costs]
+    # Колонки, от которых считаем сумму продаж для расчета процентов и маржинальности
+    sum_columns = [
+        'Продажи - Возвраты (руб)',
+        'Баллы за скидки',
+        'Программы партнеров',
+        'Программы партнёров'
+    ]
+    existing_sum_columns = [col for col in df_final_costs.columns if col in sum_columns]
 
     # Маппинг название столбца -> буква столбца Excel
     col_map = {col: get_column_letter(idx + 1) for idx, col in enumerate(df_final_costs.columns)}
@@ -1992,10 +2054,15 @@ def format_excel(
     end_row = final_ws.max_row
 
     # Колонка, от которой считаем маржинальность
-    marg_sales = 'Продажи - Возвраты (руб)'
+    marg_sales = 'Продажа (Выручка) руб'
     marg_amount = 'Продажи - Возвраты (шт)'
 
     for row in range(start_row, end_row + 1):
+        # --- Формула для продажи (выручки) руб: сумма по вычисленным колонкам
+        if existing_sum_columns:
+            sum_cells = ','.join(f"{col_map[col]}{row}" for col in existing_sum_columns)
+            sum_formula = f"=SUM({sum_cells})"
+            final_ws[f"{col_map[marg_sales]}{row}"].value = sum_formula
         # --- "Затраты на рекламу (руб)": сумма по вычисленным колонкам
         if existing_promotion_columns:
             promo_cells = ','.join(f"{col_map[col]}{row}" for col in existing_promotion_columns)
@@ -2142,10 +2209,15 @@ def format_excel(
     for worksheet_name in wb.sheetnames:
         ws = wb[worksheet_name]
 
-        # Подбор ширины столбцов
+        # Подбор ширины столбцов (только по заголовку)
         for column in ws.columns:
-            column_letter = column[0].column_letter
-            max_length = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column)
+            first_cell = column[0]            # предполагаем, что заголовок в первой строке
+            column_letter = first_cell.column_letter
+
+            header_value = first_cell.value if first_cell.value is not None else ""
+            max_length = len(str(header_value))
+
+            # небольшой запас по ширине
             ws.column_dimensions[column_letter].width = (max_length + 2) * 1.2
 
         # Включаем фильтр Excel
@@ -2189,7 +2261,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет по начислениям_01.04.2026-30.04.2026_Сила воды.xlsx"
+    report_file_name = "Отчет по начислениям_01.05.2026-31.05.2026(1).xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)

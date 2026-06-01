@@ -16,6 +16,7 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 from wb.scripts.wb_logger import wb_client_logger as logger
 import wb.scripts.format_supply_svod as format_supply_svod
+from wb.scripts.get_reference_table import get_reference_table
 from wb.scripts.command_args_parser import cli_reference_date
 from wb.scripts.constants import (
     cargo_type,
@@ -95,12 +96,12 @@ def read_metrics_file(
     return metrics.copy()
 
 
-def read_catalog() -> pd.DataFrame:
+def process_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
     """
-    Читает и обрабатывает справочную таблицу WB.
+    Обрабатывает справочную таблицу WB.
     """
-    catalog_path = CATALOG_DIR / f"Справочная_таблица_{client_name}_WB.xlsx"
-    catalog = pd.read_excel(catalog_path)
+    # catalog_path = CATALOG_DIR / f"Справочная_таблица_{client_name}_WB.xlsx"
+    # catalog = pd.read_excel(catalog_path)
     catalog_processed = catalog.copy()
 
     if "Размер" not in catalog_processed.columns:
@@ -137,16 +138,39 @@ def read_catalog() -> pd.DataFrame:
 
 def read_clusters_mapping(cargo_type_param: str) -> pd.DataFrame:
     """
-    Читает файл соответствия кластеров (складов).
+    Читает файл соответствия кластеров WB.
+    Если в файле есть лист с именем client_name, используем его.
+    Иначе используем лист по cargo_type_param ('Монопалеты' или 'Короба').
     """
-    sheet_mapping = {
-        "monopallets": "Монопалеты",
-        "boxes": "Короба",
-    }
-    sheet_name = sheet_mapping.get(cargo_type_param, "Короба")
     mapping_path = marketplace_dir_path / "scripts" / "wb_warehouses_mapping.xlsx"
-    clusters_mapping = pd.read_excel(mapping_path, sheet_name=sheet_name)
+
+    # Открываем файл
+    xls = pd.ExcelFile(mapping_path)
+
+    # Определяем из какого листа считывать маппинг складов
+    if client_name in xls.sheet_names:
+        sheet_to_read = client_name
+        logger.info(
+            f"Найден лист '{client_name}' в wb_warehouses_mapping.xlsx. "
+            f"Используем его для группировки складов."
+        )
+    else:
+        sheet_mapping = {
+            "monopallets": "Монопалеты",
+            "boxes": "Короба",
+        }
+        sheet_to_read = sheet_mapping.get(cargo_type_param, "Короба")
+        logger.info(
+            f"Лист '{client_name}' не найден в wb_warehouses_mapping.xlsx. "
+            f"Используем лист '{sheet_to_read}'."
+        )
+
+    clusters_mapping = pd.read_excel(xls, sheet_name=sheet_to_read)
+    # На всякий случай удаляем дубликаты
     clusters_mapping = clusters_mapping.drop_duplicates(subset=["Склад"])
+    # Убираем колонку с номером
+    clusters_mapping = clusters_mapping.loc[:, ~clusters_mapping.columns.isin(['№'])]
+
     return clusters_mapping
 
 
@@ -447,7 +471,7 @@ def add_demand_for_cluster_columns(
 
 def add_columns_from_catalog(
     metrics_df_by_sku_with_stats: pd.DataFrame,
-    catalog: pd.DataFrame,
+    catalog_processed: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Добавляет колонки из справочной таблицы (по Артикул_Размер).
@@ -455,7 +479,7 @@ def add_columns_from_catalog(
     df_merged = metrics_df_by_sku_with_stats.copy()
 
     df_merged = df_merged.merge(
-        catalog[catalog_supply_columns],
+        catalog_processed[catalog_supply_columns],
         how="left",
         on=["Артикул_Размер"],
     )
@@ -521,7 +545,7 @@ def create_jewelry_clusters_svod(
     metrics_df_all_clusters: pd.DataFrame,
     cluster_column: str,
     date_metrics: str,
-    catalog: pd.DataFrame,
+    catalog_processed: pd.DataFrame,
 ) -> Optional[pd.DataFrame]:
     """
     Создает отчет 'Всего по ювелирным складам' (WB),
@@ -556,7 +580,7 @@ def create_jewelry_clusters_svod(
         metrics_df_by_sku_stats,
     )
 
-    svod_with_catalog = add_columns_from_catalog(svod, catalog)
+    svod_with_catalog = add_columns_from_catalog(svod, catalog_processed)
 
     report_dates = read_dates_file(date_metrics)
 
@@ -709,7 +733,9 @@ def create_supply_svod_report(date_metrics: str) -> None:
         f"{'включено' if APPLY_BOX_ROUNDING else 'отключено'}"
     )
 
-    catalog = read_catalog()
+    catalog = get_reference_table()
+    catalog_processed = process_catalog(catalog)
+
 
 
     # Данные по всем кластерам (сырые)
@@ -754,10 +780,10 @@ def create_supply_svod_report(date_metrics: str) -> None:
     )
 
     # Добавляем данные из каталога
-    svod_with_catalog_by_sku = add_columns_from_catalog(svod, catalog)
+    svod_with_catalog_by_sku = add_columns_from_catalog(svod, catalog_processed)
     svod_with_catalog_for_clusters = add_columns_from_catalog(
         svod_for_clusters,
-        catalog,
+        catalog_processed,
     )
 
     report_dates = read_dates_file(date_metrics)
@@ -776,7 +802,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
         metrics_df_all_clusters,
         cluster_column_jewelry,
         date_metrics,
-        catalog,
+        catalog_processed,
     )
 
     svod_excel_for_clusters = add_columns_for_excel(

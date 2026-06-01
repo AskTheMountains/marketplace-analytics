@@ -36,7 +36,42 @@ parser = argparse.ArgumentParser(
 )
 
 
-# date_upload_files = "2025-05-28"
+def read_clusters_mapping(cargo_type_param: str) -> pd.DataFrame:
+    """
+    Читает файл соответствия кластеров WB.
+    Если в файле есть лист с именем client_name, используем его.
+    Иначе используем лист по cargo_type_param ('Монопалеты' или 'Короба').
+    """
+    mapping_path = marketplace_dir_path / "scripts" / "wb_warehouses_mapping.xlsx"
+
+    # Открываем файл
+    xls = pd.ExcelFile(mapping_path)
+
+    # Определяем из какого листа считывать маппинг складов
+    if client_name in xls.sheet_names:
+        sheet_to_read = client_name
+        logger.info(
+            f"Найден лист '{client_name}' в wb_warehouses_mapping.xlsx. "
+            f"Используем его для группировки складов."
+        )
+    else:
+        sheet_mapping = {
+            "monopallets": "Монопалеты",
+            "boxes": "Короба",
+        }
+        sheet_to_read = sheet_mapping.get(cargo_type_param, "Короба")
+        logger.info(
+            f"Лист '{client_name}' не найден в wb_warehouses_mapping.xlsx. "
+            f"Используем лист '{sheet_to_read}'."
+        )
+
+    clusters_mapping = pd.read_excel(xls, sheet_name=sheet_to_read)
+    # На всякий случай удаляем дубликаты
+    clusters_mapping = clusters_mapping.drop_duplicates(subset=["Склад"])
+    # Убираем колонку с номером
+    clusters_mapping = clusters_mapping.loc[:, ~clusters_mapping.columns.isin(['№'])]
+
+    return clusters_mapping
 
 def calcMetrics(date_upload_files=str(date.today())):
     # Директории с загруженными файлами из апи
@@ -188,20 +223,9 @@ def calcMetrics(date_upload_files=str(date.today())):
         # 'Barcode': 'Штрихкод',
         'warehouseName': 'Склад',
     })
-    # Определяем тип груза клиента из настроек
-    if cargo_type == 'monopallets':
-        wb_warehouses_sheet_name = 'Монопалеты'
-    elif cargo_type == 'boxes':
-        wb_warehouses_sheet_name = 'Короба'
+
     # Считываем таблицу группировки складов WB
-    wb_warehouses_mapping = pd.read_excel(
-        f"{marketplace_dir_path}/scripts/wb_warehouses_mapping.xlsx",
-        sheet_name = wb_warehouses_sheet_name
-    )
-    # На всякий случай удаляем дубликаты
-    wb_warehouses_mapping = wb_warehouses_mapping.drop_duplicates(subset='Склад')
-    # Убираем колонку с номером
-    wb_warehouses_mapping = wb_warehouses_mapping.loc[:, ~wb_warehouses_mapping.columns.isin(['№'])]
+    wb_warehouses_mapping = read_clusters_mapping(cargo_type)
     # Создаем df со списком складов, пришедших из АПИ
     api_clusters = pd.DataFrame({"Склад": claster_report['Склад'].unique()})
     # Объединяем список складов АПИ с таблицей группировки складов
@@ -219,7 +243,7 @@ def calcMetrics(date_upload_files=str(date.today())):
     )
     # Если нашлись склады, которые не указаны в таблице, выводим предупреждение
     if missing_clusters.shape[0] > 0:
-        logger.warning(f"No warehouses found for \n {missing_clusters}")
+        logger.warning(f"Не найдена группировка для следующих складов, пришедших из АПИ:\n{missing_clusters.to_string(index=False)} ")
 
     # # Мерджим таблицу соответствия складов со статистикой по складам
     # claster_report = claster_report.merge(wb_warehouses_mapping,

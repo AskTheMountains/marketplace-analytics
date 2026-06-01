@@ -1251,7 +1251,9 @@ if __name__ == '__main__':
     df_reminders_fbs = getStockReminders_fbs(headers)
 
     # Поставки
+    # %%
     df_supply_items = get_supply_orders_WB_v2(headers)
+    # %%
     # Поставки fbs
     get_supply_orders_WB_fbs(headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")

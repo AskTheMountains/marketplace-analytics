@@ -23,6 +23,8 @@ from wb.scripts.constants import (catalog_action_columns, client_name, headers,
 from wb.scripts.format_actions_svod import format_excel_actions
 # Функция выгрузки списка товаров
 from wb.scripts.uploadDataFromWB import get_prices_WB, getWBProduct
+# Функция получения справочной таблицы
+from wb.scripts.get_reference_table import get_reference_table
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -138,7 +140,8 @@ def process_product_list(df_products):
 
 # Функция получения столбцов из справочной таблицы
 def get_columns_from_catalog(df_products_processed):
-    catalog = pd.read_excel(marketplace_dir_path / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    # catalog = pd.read_excel(marketplace_dir_path / "Clients" / client_name / f"catalog/Справочная_таблица_{client_name}_WB.xlsx")
+    catalog = get_reference_table()
     # Для размера отдельно прописываем, что колонку нужно сделать 0
     if 'Размер' not in catalog.columns:
         catalog['Размер'] = '0'

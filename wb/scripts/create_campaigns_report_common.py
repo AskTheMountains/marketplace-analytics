@@ -255,7 +255,16 @@ def get_company_list(
     # Объединяем с исходным df
     df_company_list = pd.concat([df_company_ids, df_company_list_unpacked], axis=1)
     # Переводим колонку с датой в tiemstamp
-    df_company_list['changeTime'] = pd.to_datetime(df_company_list['changeTime'], format='mixed').dt.tz_localize(None)
+    # 1. Переводим каждую строку в "наивный" datetime, отбрасывая зону
+    df_company_list["changeTime"] = df_company_list["changeTime"].apply(
+        lambda x: (
+            datetime.fromisoformat(x).replace(tzinfo=None)
+            if isinstance(x, str) and x
+            else pd.NaT
+        )
+    )
+    # 2. Приводим колонку к типу datetime64[ns] (без таймзоны)
+    df_company_list["changeTime"] = pd.to_datetime(df_company_list["changeTime"])
 
     return df_company_list
 
@@ -366,10 +375,19 @@ def process_companies_info_to_df(all_adverts_info):
     })
     # Приведение дат к datetime без таймзоны
     date_cols = ['Дата создания', 'Дата запуска', 'Дата последнего изменения', 'Дата удаления']
+
     for col in date_cols:
         if col in df_adverts_info.columns:
-            df_adverts_info[col] = pd.to_datetime(df_adverts_info[col], errors='coerce').dt.tz_localize(None)
-    # Добавляем сегодняшнюю дату как дату выгрузки
+            # 1. Построчно парсим ISO-строки и убираем tzinfo
+            df_adverts_info[col] = df_adverts_info[col].apply(
+                lambda x: (
+                    datetime.fromisoformat(x).replace(tzinfo=None)
+                    if isinstance(x, str) and x
+                    else pd.NaT
+                )
+            )
+            # 2. Приводим колонку к типу datetime64[ns] (без таймзоны)
+            df_adverts_info[col] = pd.to_datetime(df_adverts_info[col])    # Добавляем сегодняшнюю дату как дату выгрузки
     df_adverts_info['Дата'] = pd.Timestamp.now().normalize()
     # Перевод ставок из копеек в рубли
     df_adverts_info =  df_adverts_info.assign(**{
@@ -1946,8 +1964,35 @@ if __name__ == '__main__':
     cli_companies = params_companies["promotion_companies"]
 
     # Парсим список кампаний командной строки
-    cli_companies_parsed = parse_cli_companies(cli_companies)
-
+    # cli_companies_parsed = parse_cli_companies(cli_companies)
+    cli_companies_parsed = [
+    32891309,
+    35028505,
+    35028313,
+    33650617,
+    35028221,
+    32513460,
+    33650668,
+    36739605,
+    36739568,
+    35027986,
+    33650932,
+    33562909,
+    33650798,
+    33650731,
+    36739659,
+    36181784,
+    36739748,
+    35028127,
+    36181594,
+    32199481,
+    32199948,
+    36181832,
+    36739784,
+    32199869,
+    31283257,
+    33650558,
+    36181906]
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(

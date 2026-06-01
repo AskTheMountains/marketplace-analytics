@@ -141,7 +141,7 @@ def get_products_realization_report(headers, year, month, to_save=False):
 
 
 # Функция выгрузки нескольких отчетов реализации в один
-def get_all_realization_report(df_date_range):
+def get_all_realization_reports(df_date_range):
 
     # df, куда будем помещать результат
     df_all_reports = pd.DataFrame()
@@ -184,12 +184,12 @@ if __name__ == '__main__':
     df_date_range = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2025-01-01',
-        date_end='2025-11-30'
+        date_start='2024-04-01',
+        date_end='2026-04-01'
     )
 
     # Выгружаем отчеты реализации
-    df_all_reports = get_all_realization_report(df_date_range)
+    df_all_reports = get_all_realization_reports(df_date_range)
 
     # Выводим в консоль
     print_realization_reports(df_all_reports)

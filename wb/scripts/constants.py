@@ -12,6 +12,8 @@ headers = {
 "Content-Type": "application/json",
 }
 
+# Корень проекта
+project_root = Path(__file__).parents[2]
 # Путь к текущему скрипту
 script_path = Path(__file__).resolve()
 # Путь к директории с маркетплейсом
