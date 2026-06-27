@@ -7,3 +7,4 @@ loguru==0.7.2
 rich-argparse==1.7.1
 xlsxwriter
 ipykernel==6.30.1
+dotenv
