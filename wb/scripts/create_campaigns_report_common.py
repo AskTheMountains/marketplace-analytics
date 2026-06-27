@@ -1964,35 +1964,7 @@ if __name__ == '__main__':
     cli_companies = params_companies["promotion_companies"]
 
     # Парсим список кампаний командной строки
-    # cli_companies_parsed = parse_cli_companies(cli_companies)
-    cli_companies_parsed = [
-    32891309,
-    35028505,
-    35028313,
-    33650617,
-    35028221,
-    32513460,
-    33650668,
-    36739605,
-    36739568,
-    35027986,
-    33650932,
-    33562909,
-    33650798,
-    33650731,
-    36739659,
-    36181784,
-    36739748,
-    35028127,
-    36181594,
-    32199481,
-    32199948,
-    36181832,
-    36739784,
-    32199869,
-    31283257,
-    33650558,
-    36181906]
+    cli_companies_parsed = parse_cli_companies(cli_companies)
 
     # Генерируем диапазон дат
     df_date_range = generate_dates(

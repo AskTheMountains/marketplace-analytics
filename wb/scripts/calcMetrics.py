@@ -224,26 +224,26 @@ def calcMetrics(date_upload_files=str(date.today())):
         'warehouseName': 'Склад',
     })
 
-    # Считываем таблицу группировки складов WB
-    wb_warehouses_mapping = read_clusters_mapping(cargo_type)
-    # Создаем df со списком складов, пришедших из АПИ
-    api_clusters = pd.DataFrame({"Склад": claster_report['Склад'].unique()})
-    # Объединяем список складов АПИ с таблицей группировки складов
-    api_clusters = api_clusters.merge(
-        wb_warehouses_mapping,
-        how='left',
-        on='Склад',
-        indicator=True
-    )
-    # Ищем, есть ли незаполненные склады
-    missing_clusters = (
-        api_clusters
-        .loc[api_clusters['Группировка'].isna(), 'Склад']
-        .drop_duplicates()
-    )
-    # Если нашлись склады, которые не указаны в таблице, выводим предупреждение
-    if missing_clusters.shape[0] > 0:
-        logger.warning(f"Не найдена группировка для следующих складов, пришедших из АПИ:\n{missing_clusters.to_string(index=False)} ")
+    # # Считываем таблицу группировки складов WB
+    # wb_warehouses_mapping = read_clusters_mapping(cargo_type)
+    # # Создаем df со списком складов, пришедших из АПИ
+    # api_clusters = pd.DataFrame({"Склад": claster_report['Склад'].unique()})
+    # # Объединяем список складов АПИ с таблицей группировки складов
+    # api_clusters = api_clusters.merge(
+    #     wb_warehouses_mapping,
+    #     how='left',
+    #     on='Склад',
+    #     indicator=True
+    # )
+    # # Ищем, есть ли незаполненные склады
+    # missing_clusters = (
+    #     api_clusters
+    #     .loc[api_clusters['Группировка'].isna(), 'Склад']
+    #     .drop_duplicates()
+    # )
+    # # Если нашлись склады, которые не указаны в таблице, выводим предупреждение
+    # if missing_clusters.shape[0] > 0:
+    #     logger.warning(f"Не найдена группировка для следующих складов, пришедших из АПИ:\n{missing_clusters.to_string(index=False)} ")
 
     # # Мерджим таблицу соответствия складов со статистикой по складам
     # claster_report = claster_report.merge(wb_warehouses_mapping,

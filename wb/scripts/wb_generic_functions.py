@@ -1242,36 +1242,214 @@ class WbRateLimiterMoreLimit:
 
 class WbRateLimiter:
     """
-    Лимитер WB, опирающийся на заголовки:
-      - X-Ratelimit-Remaining
-      - X-Ratelimit-Retry
-      - X-Ratelimit-Reset
+    Универсальный лимитер для запросов к API Wildberries.
 
-    Параметры:
-      period_seconds  – длительность окна (например, 60 секунд),
-      period_limit    – макс. количество запросов за окно (для расчёта интервала),
-      max_burst       – теоретический burst по тарифу (верхняя планка),
-                        реальный burst контролируется через X-Ratelimit-Remaining.
+    Логика работы основана на официальной модели лимитов WB:
+    https://openapi.wildberries.ru/
+
+    Основные понятия:
+    ------------------
+    - Период (period_seconds):
+        Временное окно, в течение которого можно выполнить не более period_limit запросов.
+        Для WB обычно 60 секунд.
+
+    - Лимит (period_limit):
+        Максимальное количество запросов за период. Например:
+          * персональный / сервисный токен: 300 запросов / 60 сек
+          * базовый / тестовый токен:      150 запросов / 60 сек
+
+        Исходя из этого считается рекомендуемый интервал:
+            interval = period_seconds / period_limit
+
+    - Интервал (interval):
+        Рекомендуемая пауза между запросами при равномерной нагрузке.
+        Например:
+          60 сек / 300 запросов = 0.2 сек.
+
+        Лимитер использует этот интервал как fallback:
+          * когда WB говорит, что разрешённый всплеск исчерпан (X-Ratelimit-Remaining=0);
+          * или когда WB не прислал заголовок X-Ratelimit-Remaining.
+
+    - Всплеск (burst, max_burst и X-Ratelimit-Remaining):
+        Позволяет отправить несколько запросов подряд БЕЗ интервальной паузы.
+        В документации WB теоретический burst указан в тарифе (20 или 10),
+        а фактический остаток всплеска отдаётся в заголовке:
+
+          X-Ratelimit-Remaining — сколько запросов ещё можно сделать без пауз.
+
+        Лимитер не считает burst сам, а доверяет заголовку:
+          * если X-Ratelimit-Remaining > 0 — следующий запрос можно слать без ожидания;
+          * если X-Ratelimit-Remaining == 0 — дальнейший запрос без паузы с большой
+            вероятностью приведёт к 429, поэтому мы выдерживаем интервал.
+
+    - Ошибка 429 Too Many Requests:
+        Если вы превысили мгновенную скорость запросов, WB вернёт 429 и укажет,
+        когда можно повторить запрос:
+
+          * X-Ratelimit-Retry — через сколько секунд можно повторить запрос;
+          * X-Ratelimit-Reset — через сколько секунд burst восстановится;
+          * X-Ratelimit-Limit — максимальный burst.
+
+        Лимитер при 429:
+          * читает X-Ratelimit-Retry (если есть);
+          * ждёт указанное количество секунд (или interval, если заголовка нет);
+          * повторяет запрос до max_retries раз.
+
+    Параметры конструктора:
+    -----------------------
+    :param period_seconds: int
+        Длительность окна лимита в секундах (обычно 60).
+
+    :param period_limit: int
+        Максимальное количество запросов за period_seconds.
+        Примеры:
+          * персональный токен: 300
+          * базовый токен: 150
+          * метод с жёстким ограничением: 3 и т.п.
+
+        Используется только для расчёта interval = period_seconds / period_limit.
+
+    :param max_burst: int
+        Теоретический burst по тарифу (20 или 10).
+        Нужен как верхняя планка "разумного" всплеска, но реальный остаток всплеска
+        контролируется через X-Ratelimit-Remaining.
+
+    Методы:
+    -------
+    call(func, max_retries=3, skip_sleep=False, *args, **kwargs)
+
+        Обёртка над вызовом HTTP‑клиента (например, requests.Session.get / post)
+        с учётом лимитов WB.
+
+        Ожидается, что func(*args, **kwargs) возвращает объект requests.Response.
+
+        Параметры:
+          :param func: callable
+              Функция/метод, выполняющий запрос, например session.get или session.post.
+
+          :param max_retries: int
+              Сколько раз повторять запрос при временных ошибках (в том числе 429).
+
+          :param skip_sleep: bool
+              Если True, лимитер НЕ будет делать финальную паузу по интервалу после
+              успешного запроса, даже если X-Ratelimit-Remaining == 0.
+              Полезно для последнего запроса серии, чтобы не ждать зря.
+
+          :param *args, **kwargs:
+              Аргументы, которые будут переданы в func. Например:
+                  limiter.call(session.get, url=..., params=...)
+                  limiter.call(session.post, url=..., json=...)
+
+        Возвращает:
+          (response, success_flag), где:
+            * response — объект requests.Response или None при фатальной ошибке;
+            * success_flag — bool, True если запрос успешно выполнен (200, 201 и т.п.,
+              но не 429 после исчерпания max_retries).
+
+    Примеры использования:
+    ----------------------
+
+    1) Лимитер для персонального токена (300 запросов в минуту, burst=20):
+
+        import requests
+
+        headers = {"Authorization": "Bearer <TOKEN>"}
+        session = requests.Session()
+        session.headers.update(headers)
+
+        limiter = WbRateLimiter(
+            period_seconds=60,
+            period_limit=300,  # 300 запросов в минуту
+            max_burst=20       # теоретический burst
+        )
+
+        # GET запрос с учётом лимита:
+        resp, ok = limiter.call(
+            session.get,
+            url="https://advert-api.wildberries.ru/adv/v3/campaigns"
+        )
+        if ok and resp.status_code == 200:
+            data = resp.json()
+
+    2) Лимитер для метода с жёстким лимитом 3 запроса/минуту без bursts:
+
+        limiter = WbRateLimiter(
+            period_seconds=60,
+            period_limit=3,  # не больше 3 запросов за минуту
+            max_burst=1      # всплеск фактически отсутствует
+        )
+
+        # В цикле:
+        for params in list_of_params:
+            resp, ok = limiter.call(
+                session.get,
+                url="https://advert-api.wildberries.ru/adv/v3/fullstats",
+                params=params
+            )
+            if not ok:
+                # Обработка ошибки / логирование
+                continue
+            # Обработка ответа resp
+
+    3) Пример использования skip_sleep для последнего запроса:
+
+        # Пусть мы знаем, что это последний запрос в серии:
+        is_last_request = True
+
+        resp, ok = limiter.call(
+            session.post,
+            url="https://advert-api.wildberries.ru/adv/v0/normquery/stats",
+            json=payload,
+            skip_sleep=is_last_request,  # не ждать интервал после последнего запроса
+        )
+
+    Детали поведения:
+    -----------------
+    - При успешном запросе (не 429):
+        * Лимитер читает X-Ratelimit-Remaining:
+            - если значение > 0 и skip_sleep=False — следующий запрос можно отправить сразу;
+            - если значение == 0 и skip_sleep=False — лимитер выдержит паузу interval
+              перед тем, как разрешить следующий запрос (иначе возможен 429);
+            - если skip_sleep=True — финальная пауза не делается, даже при remaining=0.
+
+        * Если заголовок X-Ratelimit-Remaining отсутствует, лимитер использует interval
+          как «мягкую» рекомендацию и выдерживает паузу, если skip_sleep=False.
+
+    - При 429 Too Many Requests:
+        * Лимитер считывает X-Ratelimit-Retry и ждёт указанное количество секунд.
+          Если заголовка нет — ждёт interval.
+        * Пытается повторить запрос до max_retries раз, после чего вернёт (resp, False).
+
+    - Остальные коды ответа (4xx/5xx, кроме 429) передаются наружу как есть.
     """
 
     def __init__(self, period_seconds, period_limit, max_burst):
         self.period_seconds = period_seconds
         self.period_limit = period_limit
         self.max_burst = max_burst
-
         # Интервал для равномерного распределения запросов
         self.interval = float(period_seconds) / float(period_limit)
 
     def call(self, func, max_retries=3, skip_sleep=False, *args, **kwargs):
         """
         Вызов произвольной функции func(*args, **kwargs) с учётом лимита WB.
+
         Ожидается, что func возвращает объект requests.Response.
 
-        Параметры:
-          skip_sleep – если True, не делать финальную паузу по интервалу
-                       (например, когда это последний запрос в серии).
+        :param func: callable
+            HTTP‑функция (например, session.get или session.post).
 
-        Возвращает (response, success_flag).
+        :param max_retries: int
+            Максимальное количество попыток при временных ошибках (включая 429).
+
+        :param skip_sleep: bool
+            Если True, не делать финальную паузу по интервалу после успешного
+            запроса (удобно для последнего запроса в серии).
+
+        :param *args, **kwargs:
+            Аргументы, которые будут переданы в func.
+
+        :return: (response, success_flag)
         """
         for attempt in range(1, max_retries + 1):
             try:

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from colorama import Fore, Back, Style, init
 
 import pandas as pd
+import numpy as np
 import requests
 from requests import RequestException
 # from loguru import logger
@@ -17,7 +18,8 @@ from rich_argparse.contrib import ParagraphRichHelpFormatter
 pd.set_option('chained_assignment',None)
 
 # Файл с некоторыми константами
-from wb.scripts.constants import client_name, headers, marketplace_dir_path
+from wb.scripts.constants import client_name, headers, session, marketplace_dir_path
+from wb.scripts.wb_generic_functions import WbRateLimiter
 
 # Имя директории для текущей выгрузки
 uploaddir = marketplace_dir_path / "Clients" / client_name / "UploadFiles"
@@ -987,6 +989,231 @@ def getStockReminders_fbs(
 
     return df_reminders_fbs
 
+
+# 1. Чистая выгрузка данных из API
+def get_warehouses_load_raw(
+    headers=None,
+    warehouse_ids=None,
+    base_url: str = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients",
+    max_retries: int = 3,
+) -> pd.DataFrame:
+    """
+    Получает СЫРЫЕ данные загруженности складов WB из API.
+    Никакой обработки, только запрос и DataFrame по ответу.
+    """
+
+    if headers is not None:
+        session.headers.update(headers)
+
+    # Лимиты: 6 запросов / 60 сек, интервал ~10 сек, всплеск 6
+    limiter = WbRateLimiter(
+        period_seconds=60,
+        period_limit=6,
+        max_burst=6,
+    )
+
+    params = {}
+    if warehouse_ids:
+        ids_str = ",".join(str(wid) for wid in warehouse_ids)
+        params["warehouseIDs"] = ids_str
+        logger.info(f"Запрос загруженности по складам: {ids_str}")
+    else:
+        logger.info("Запрос загруженности по всем складам (без warehouseIDs).")
+
+    resp, ok = limiter.call(
+        session.get,
+        url=base_url,
+        params=params,
+        max_retries=max_retries,
+    )
+    if not ok or resp is None:
+        logger.error("Не удалось получить загруженность складов WB (ошибка соединения/лимита).")
+        return pd.DataFrame()
+
+    if resp.status_code != 200:
+        logger.error(
+            f"Ошибка ответа при получении загруженности складов: "
+            f"HTTP {resp.status_code} | {resp.text}"
+        )
+        return pd.DataFrame()
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"Ошибка парсинга JSON загруженности складов: {e}")
+        return pd.DataFrame()
+
+    if not isinstance(data, list) or not data:
+        logger.warning("Ответ по загруженности складов пуст или не является списком.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+    logger.info(f"Сырые данные по загруженности: {len(df)} записей.")
+    return df
+
+# 2. Обработка/расшифровка полей + столбец boxAcceptanceType
+def process_warehouses_load(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Обрабатывает сырой DataFrame загруженности складов:
+      - приводит типы;
+      - добавляет расшифровки coefficient, boxTypeID, allowUnload, isSortingCenter;
+      - добавляет столбец boxAcceptanceType (какие типы поставок принимает склад).
+    """
+
+    if df.empty:
+        return df
+
+    # --- Приведение типов ---
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # coefficient_explained (векторно)
+    if "coefficient" in df.columns:
+        coef = pd.to_numeric(df["coefficient"], errors="coerce")
+        coef_expl = pd.Series(index=df.index, dtype=object)
+
+        mask_minus1 = coef == -1
+        mask_zero = coef == 0
+        mask_ge1 = coef >= 1
+
+        coef_expl.loc[mask_minus1] = "Приёмка недоступна (игнорировать allowUnload)"
+        coef_expl.loc[mask_zero] = "Бесплатная приёмка"
+        coef_expl.loc[mask_ge1] = "Множитель стоимости приёмки x" + coef.loc[mask_ge1].astype(str)
+
+        df["coefficient_explained"] = coef_expl
+
+    # boxTypeName (векторно)
+    if "boxTypeID" in df.columns:
+        box = pd.to_numeric(df["boxTypeID"], errors="coerce")
+        box_name = pd.Series(index=df.index, dtype=object)
+
+        mask_nan = box.isna()
+        mask_2 = box == 2
+        mask_5 = box == 5
+        mask_6 = box == 6
+        mask_other = ~(mask_nan | mask_2 | mask_5 | mask_6)
+
+        box_name.loc[mask_nan] = "QR-поставка с коробами (boxTypeID не возвращается)"
+        box_name.loc[mask_2] = "Короба"
+        box_name.loc[mask_5] = "Монопаллеты"
+        box_name.loc[mask_6] = "Суперсейф"
+        box_name.loc[mask_other] = (
+            "Неизвестный тип поставки (" + box.loc[mask_other].astype("Int64").astype(str) + ")"
+        )
+
+        df["boxTypeName"] = box_name
+
+    # allowUnload_explained (векторно)
+    if "allowUnload" in df.columns:
+        allow = df["allowUnload"]
+        allow_exp = pd.Series(index=df.index, dtype=object)
+
+        mask_true = allow == True
+        mask_false = allow == False
+
+        allow_exp.loc[mask_true] = "Приёмка доступна для данного типа поставки"
+        allow_exp.loc[mask_false] = "Приёмка недоступна для данного типа поставки"
+
+        df["allowUnload_explained"] = allow_exp
+
+    # warehouseType (векторно)
+    if "isSortingCenter" in df.columns:
+        isc = df["isSortingCenter"]
+        wh_type = pd.Series(index=df.index, dtype=object)
+
+        mask_true = isc == True
+        mask_false = isc == False
+
+        wh_type.loc[mask_true] = "Сортировочный центр (СЦ)"
+        wh_type.loc[mask_false] = "Обычный склад"
+
+        df["warehouseType"] = wh_type
+
+    # --- boxAcceptanceType: какие типы поставок принимает склад ---
+    required_cols = {"warehouseID", "boxTypeID", "allowUnload", "coefficient"}
+    if required_cols.issubset(df.columns):
+
+        active_mask = (
+            (df["coefficient"] != -1) &
+            (df["allowUnload"] == True)
+        )
+
+        mask_boxes_active = active_mask & (df["boxTypeID"] == 2)
+        mask_pallets_active = active_mask & (df["boxTypeID"] == 5)
+
+        # считаем по складам, где есть хотя бы одна активная запись
+        accepts_boxes = (
+            df[mask_boxes_active]
+            .groupby("warehouseID")["boxTypeID"]
+            .size() > 0
+        )
+        accepts_pallets = (
+            df[mask_pallets_active]
+            .groupby("warehouseID")["boxTypeID"]
+            .size() > 0
+        )
+
+        # создаём availability и явно приводим к bool без fillna
+        availability = pd.DataFrame(index=df["warehouseID"].unique())
+        availability.index.name = "warehouseID"
+
+        availability["accepts_boxes"] = accepts_boxes.reindex(availability.index, fill_value=False).astype(bool)
+        availability["accepts_pallets"] = accepts_pallets.reindex(availability.index, fill_value=False).astype(bool)
+
+        conds = [
+            availability["accepts_boxes"] & availability["accepts_pallets"],
+            availability["accepts_boxes"] & ~availability["accepts_pallets"],
+            ~availability["accepts_boxes"] & availability["accepts_pallets"],
+        ]
+        choices = [
+            "Короба и монопаллеты",
+            "Короба",
+            "Монопаллеты",
+        ]
+        box_type = np.select(
+            conds,
+            choices,
+            default="Не принимает короба и монопаллеты"
+        )
+
+        availability["boxAcceptanceType"] = box_type
+
+        df = df.merge(
+            availability[["boxAcceptanceType"]],
+            left_on="warehouseID",
+            right_index=True,
+            how="left",
+        )
+
+    logger.info(f"После обработки: {len(df)} записей по загруженности складов.")
+    return df
+
+
+def get_warehouses_load_full(
+    headers=None,
+    warehouse_ids=None,
+    base_url: str = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients",
+    max_retries: int = 3,
+):
+    """
+    Генеральная функция: получает загруженность складов WB и сразу обрабатывает её.
+    Использует:
+      - get_warehouses_load_raw  — запрос к API
+      - process_warehouses_load  — добавление расшифровок и boxAcceptanceType
+    """
+
+    # 1. Сырые данные из API
+    df_raw = get_warehouses_load_raw(
+        headers=headers,
+        warehouse_ids=warehouse_ids,
+        base_url=base_url,
+        max_retries=max_retries,
+    )
+
+    # 2. Обработка / расшифровка
+    df_processed = process_warehouses_load(df_raw)
+
+    return df_processed
 
 # Воронка продаж
 def getSalesCrater(headers, date_start, date_end):

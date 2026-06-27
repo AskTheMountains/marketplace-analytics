@@ -2471,6 +2471,180 @@ def add_data_from_catalog(result_other_costs):
     return df_sku_and_other_costs_with_catalog
 
 
+def add_extra_metrics_wb(client_name: str, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Дополнительные метрики для клиентов на ВБ.
+
+    В рамках артикула = суммирование по колонке 'Артикул продавца'.
+
+    Ожидаемые колонки:
+      - 'Статус'                (для SENS_IP: 'кз' / 'рф', регистр не важен)
+      - 'Артикул продавца'
+      - 'Продажи минус возвраты руб к перечислению'
+      - 'Продажи минус возвраты шт'
+      - 'Приход денег на РС'
+      - 'Себестоимость'
+    """
+    if client_name not in ("SENS_IP", "SENS"):
+        return df
+
+    df_final = df.copy()
+
+    required_cols = [
+        'Статус',
+        'Артикул продавца',
+        'Продажи минус возвраты руб к перечислению',
+        'Продажи минус возвраты шт',
+        'Приход денег на РС',
+        'Себестоимость',
+    ]
+    missing = [c for c in required_cols if c not in df_final.columns]
+    if missing:
+        logger.warning(
+            f"Для расчёта дополнительных полей ВБ ({client_name}) не хватает колонок: "
+            f"{missing}. Дополнительные расчёты пропущены."
+        )
+        return df_final
+
+    # Общие агрегаты "в рамках артикула" — одни и те же для всех клиентов
+    groupby_cols = ['Артикул продавца']
+
+    grouped_common = (
+        df_final
+        .groupby(groupby_cols, as_index=False)
+        .agg({
+            'Продажи минус возвраты руб к перечислению': 'sum',
+            'Продажи минус возвраты шт': 'sum',
+            'Приход денег на РС': 'sum',
+        })
+        .rename(columns={
+            'Продажи минус возвраты руб к перечислению':
+                'Продажи минус возвраты руб к перечислению в рамках артикула',
+            'Продажи минус возвраты шт':
+                'Продажи минус возвраты шт в рамках артикула',
+            'Приход денег на РС':
+                'Приход денег на РС в рамках артикула',
+        })
+    )
+
+    df_final = df_final.merge(grouped_common, on=groupby_cols, how='left')
+
+    # Переставляем для удобства
+    df_final = move_columns(
+        df=df_final,
+        columns_to_move=[
+            'Продажи минус возвраты шт в рамках артикула',
+            'Продажи минус возвраты руб к перечислению в рамках артикула',
+        ],
+        position='Продажи минус возвраты шт',
+        insert_type='after'
+    )
+    df_final = move_columns(
+        df=df_final,
+        columns_to_move=['Приход денег на РС в рамках артикула'],
+        position='Приход денег на РС',
+        insert_type='after'
+    )
+
+    denom = df_final['Продажи минус возвраты шт в рамках артикула']
+    sum_sales_rub_art = df_final['Продажи минус возвраты руб к перечислению в рамках артикула']
+    sum_income_art = df_final['Приход денег на РС в рамках артикула']
+
+    # --- Вариант для клиента SENS ---
+    if client_name == "SENS":
+        # 1) Заплатил клиент за 1 ед. артикула
+        df_final['Заплатил клиент за 1 ед. артикула'] = np.where(
+            denom != 0,
+            sum_sales_rub_art / denom,
+            np.nan
+        )
+
+        # 2) СРЕДНИЙ приход за 1 ед. артикула
+        df_final['СРЕДНИЙ приход за 1 ед. артикула'] = np.where(
+            denom != 0,
+            sum_income_art / denom,
+            np.nan
+        )
+
+        # 3) Приход за артикул
+        df_final['Приход за артикул'] = sum_income_art
+
+        # 4) Средняя маржа в руб за 1 ед
+        df_final['Средняя маржа в руб за 1 ед'] = (
+            df_final['СРЕДНИЙ приход за 1 ед. артикула'] - df_final['Себестоимость']
+        )
+
+        return df_final
+
+    # --- Вариант для клиента SENS_IP (КЗ/РФ, как раньше) ---
+    # нормализуем статус
+    df_final['Статус_norm'] = df_final['Статус'].astype(str).str.lower()
+
+    mask_kz = df_final['Статус_norm'].str.contains('кз', na=False)
+    mask_rf = df_final['Статус_norm'].str.contains('рф', na=False)
+
+    # "Заплатил клиент..." — общий для всех, как договорились с тобой выше
+    df_final['Заплатил клиент за 1 ед. артикула'] = np.where(
+        denom != 0,
+        sum_sales_rub_art / denom,
+        np.nan
+    )
+
+    # ---------- Блок: Статус содержит "кз" ----------
+    if mask_kz.any():
+        df_final.loc[mask_kz, 'ДС в КЗ (ВБ)'] = (
+            df_final.loc[mask_kz, 'Приход денег на РС'] * 0.75
+        )
+        df_final.loc[mask_kz, 'ДС в РФ (ВБ)'] = (
+            df_final.loc[mask_kz, 'Приход денег на РС'] * 0.25
+        )
+
+        sum_ds_kz_art = 0.75 * sum_income_art
+        sum_ds_rf_art = 0.25 * sum_income_art
+
+        df_final['ДС в КЗ за 1 ед. артикула (ВБ)'] = np.where(
+            (mask_kz) & (denom != 0),
+            sum_ds_kz_art / denom,
+            np.nan
+        )
+        df_final['ДС в РФ за 1 ед. артикула (ВБ)'] = np.where(
+            (mask_kz) & (denom != 0),
+            sum_ds_rf_art / denom,
+            np.nan
+        )
+        df_final['ИТОГО ДС В РФ ЗА АРТИКУЛ (ВБ)'] = np.where(
+            mask_kz,
+            sum_ds_rf_art,
+            np.nan
+        )
+
+    # ---------- Блок: Статус содержит "рф" ----------
+    if mask_rf.any():
+        df_final['СРЕДНИЙ приход за 1 ед. артикула (ВБ)'] = np.where(
+            (mask_rf) & (denom != 0),
+            sum_income_art / denom,
+            np.nan
+        )
+        df_final['Приход за артикул (ВБ)'] = np.where(
+            mask_rf,
+            sum_income_art,
+            np.nan
+        )
+        df_final['Средняя маржа в руб за 1 ед (ВБ)'] = np.where(
+            mask_rf,
+            df_final['СРЕДНИЙ приход за 1 ед. артикула (ВБ)'] - df_final['Себестоимость'],
+            np.nan
+        )
+        df_final['Маржа в руб за артикул (ВБ)'] = np.where(
+            mask_rf,
+            df_final['Средняя маржа в руб за 1 ед (ВБ)'] * denom,
+            np.nan
+        )
+
+    df_final = df_final.drop(columns=['Статус_norm'], errors='ignore')
+
+    return df_final
+
 # Функция расчета финальных расходов
 def calc_final_costs(df_all_costs_stats_with_catalog):
     # Создание копии для избежания изменений в оригинальном df
@@ -2519,7 +2693,7 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
 
     # 1. Базовый список (как был)
     base_promotion_columns = [
-        # 'Расходы по рекламным кампаниям',
+        'Расходы по рекламным кампаниям',
         'Списания за отзывы',
         'Витрина Магазина',
         'Оказание услуг «ВБ.Медиа»',
@@ -2528,11 +2702,12 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     ]
 
     # 2. regex для колонок "Оказание услуг ... Продвижение, документ №..."
-    promo_regex_list = [
-        r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
-        r'^витрина\s+магазина(?:, документ №\d+)?$',
-        r'^предоставление\s+услуг\s+по\s+подписке\s+«джем»(?:, документ №\d+)?$',
-    ]
+    promo_regex_list = ['jopa']
+    # promo_regex_list = [
+    #     r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
+    #     r'^витрина\s+магазина(?:, документ №\d+)?$',
+    #     r'^предоставление\s+услуг\s+по\s+подписке\s+«джем»(?:, документ №\d+)?$',
+    # ]
 
     promo_regex = re.compile('|'.join(promo_regex_list), flags=re.IGNORECASE)
 
@@ -2616,6 +2791,8 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
         'Выявленные расхождения в карточке товара после приемки на складе WB',
         'Компенсация скидки по программе лояльности',
         'Занижение фактических габаритов упаковки товара',
+        'Сторно. Выявленные расхождения в карточке товара после приемки на складе WB',
+        'Подмена товара (с фото)',
         'Себестоимость * Факт продаж'
 
     ])
@@ -2690,6 +2867,8 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     for col in marg_columns:
         df_final_costs[col] = df_final_costs[col].replace([-np.inf, np.inf], np.nan)
 
+    # Рассчитываем дополнительные метрики для некоторых клиентов
+    df_final_costs = add_extra_metrics_wb(client_name, df_final_costs)
 
     return df_final_costs, existing_promotion_columns, columns_for_final_costs
 
@@ -2718,6 +2897,12 @@ def create_svod_by_operations(df_final_costs):
         'Маржа от себестоимости %',
         # 'Маржинальность на ед. товара',
         '% Затрат на рекламные кампании',
+        'Приход денег на РС в рамках артикула',
+        'Заплатил клиент за 1 ед. артикула (ВБ)', 'ДС в КЗ (ВБ)',
+        'ДС в РФ (ВБ)', 'ДС в КЗ за 1 ед. артикула (ВБ)',
+        'ДС в РФ за 1 ед. артикула (ВБ)', 'ИТОГО ДС В РФ ЗА АРТИКУЛ (ВБ)',
+        'СРЕДНИЙ приход за 1 ед. артикула (ВБ)', 'Приход за артикул (ВБ)',
+        'Средняя маржа в руб за 1 ед (ВБ)', 'Маржа в руб за артикул (ВБ)'
     ]
     # Создаем копию для избежения изменений в исходном df
     df_final_costs_by_operation = df_final_costs.copy()
@@ -2829,6 +3014,200 @@ def save_excel(
     return filepath_finance_report
 
 
+# Функция добавления дополнительных формул в итоговую таблицу для некоторых клиентов
+def apply_wb_extra_formulas(final_ws, col_map, row, start_row, end_row, client_name):
+    """
+    Дополнительные формулы для некоторых клиентов на ВБ.
+    В рамках артикула = суммирование по 'Артикул продавца'.
+    Используются колонки:
+      - Статус, Артикул продавца
+      - Продажи минус возвраты руб к перечислению
+      - Продажи минус возвраты шт
+      - Приход денег на РС
+      - Себестоимость
+      - Продажи минус возвраты руб к перечислению в рамках артикула
+      - Продажи минус возвраты шт в рамках артикула
+      - Приход денег на РС в рамках артикула
+      - и итоговые колонки с результатами.
+    """
+    # Работает только для клиентов SENS_IP и SENS
+    if client_name not in ('SENS_IP', 'SENS'):
+        return
+
+    # --- 1. Агрегаты "в рамках артикула" через СУММЕСЛИМН ---
+    base_needed = [
+        'Артикул продавца',
+        'Приход денег на РС',
+        'Продажи минус возвраты шт',
+        'Продажи минус возвраты руб к перечислению',
+        'Продажи минус возвраты шт в рамках артикула',
+        'Продажи минус возвраты руб к перечислению в рамках артикула',
+        'Приход денег на РС в рамках артикула',
+        'Заплатил клиент за 1 ед. артикула',
+    ]
+    if all(col in col_map for col in base_needed):
+        art_col_letter  = col_map['Артикул продавца']
+        inc_col_letter  = col_map['Приход денег на РС']
+        qty_col_letter  = col_map['Продажи минус возвраты шт']
+        rub_col_letter  = col_map['Продажи минус возвраты руб к перечислению']
+
+        # Абсолютные диапазоны
+        rng_art  = f"${art_col_letter}${start_row}:${art_col_letter}${end_row}"
+        rng_inc  = f"${inc_col_letter}${start_row}:${inc_col_letter}${end_row}"
+        rng_qty  = f"${qty_col_letter}${start_row}:${qty_col_letter}${end_row}"
+        rng_rub  = f"${rub_col_letter}${start_row}:${rub_col_letter}${end_row}"
+
+        cell_art = f"{art_col_letter}{row}"
+
+        # Продажи минус возвраты шт в рамках артикула
+        cell_sum_qty = f"{col_map['Продажи минус возвраты шт в рамках артикула']}{row}"
+        final_ws[cell_sum_qty].value = (
+            f'=IFERROR(SUMIFS({rng_qty},{rng_art},{cell_art}),"")'
+        )
+
+        # Продажи минус возвраты руб к перечислению в рамках артикула
+        cell_sum_rub = f"{col_map['Продажи минус возвраты руб к перечислению в рамках артикула']}{row}"
+        final_ws[cell_sum_rub].value = (
+            f'=IFERROR(SUMIFS({rng_rub},{rng_art},{cell_art}),"")'
+        )
+
+        # Приход денег на РС в рамках артикула
+        cell_sum_inc = f"{col_map['Приход денег на РС в рамках артикула']}{row}"
+        final_ws[cell_sum_inc].value = (
+            f'=IFERROR(SUMIFS({rng_inc},{rng_art},{cell_art}),"")'
+        )
+
+        # 1) Заплатил клиент за 1 ед. артикула — одинаково для всех (без учёта статуса)
+        cell_paid_common = f"{col_map['Заплатил клиент за 1 ед. артикула']}{row}"
+        final_ws[cell_paid_common].value = (
+            f'=IFERROR({cell_sum_rub}/{cell_sum_qty},"")'
+        )
+
+        # === Дополнительно для клиента SENS ===
+        if client_name == 'SENS':
+            needed_sens = [
+                'СРЕДНИЙ приход за 1 ед. артикула',
+                'Приход за артикул',
+                'Средняя маржа в руб за 1 ед',
+                'Себестоимость',
+            ]
+            if all(c in col_map for c in needed_sens):
+                cell_avg_inc   = f"{col_map['СРЕДНИЙ приход за 1 ед. артикула']}{row}"
+                cell_inc_art   = f"{col_map['Приход за артикул']}{row}"
+                cell_avg_marg  = f"{col_map['Средняя маржа в руб за 1 ед']}{row}"
+                cell_cost      = f"{col_map['Себестоимость']}{row}"
+
+                # 2) СРЕДНИЙ приход за 1 ед. артикула =
+                #    Сумма Приход денег на РС в рамках артикула / Сумма Продажи - Возвраты (шт) в рамках артикула
+                final_ws[cell_avg_inc].value = (
+                    f'=IFERROR({cell_sum_inc}/{cell_sum_qty},"")'
+                )
+
+                # 3) Приход за артикул = Сумма Приход денег на РС в рамках артикула
+                final_ws[cell_inc_art].value = (
+                    f'=IFERROR({cell_sum_inc},"")'
+                )
+
+                # 4) Средняя маржа в руб за 1 ед = СРЕДНИЙ приход за 1 ед – Себестоимость
+                final_ws[cell_avg_marg].value = (
+                    f'=IFERROR({cell_avg_inc}-{cell_cost},"")'
+                )
+
+            # Для SENS дальше формулы по статусу не нужны
+            return
+
+    # --- 2. Производные формулы по ТЗ (только для SENS_IP: КЗ / РФ) ---
+    if client_name != 'SENS_IP':
+        return
+
+    needed = [
+        'Статус',
+        'Себестоимость',
+        'Продажи минус возвраты шт в рамках артикула',
+        'Продажи минус возвраты руб к перечислению в рамках артикула',
+        'Приход денег на РС в рамках артикула',
+    ]
+    if not all(col in col_map for col in needed):
+        return
+
+    cell_status      = f"{col_map['Статус']}{row}"
+    cell_cost        = f"{col_map['Себестоимость']}{row}"
+    cell_sum_qty_art = f"{col_map['Продажи минус возвраты шт в рамках артикула']}{row}"
+    cell_sum_rub_art = f"{col_map['Продажи минус возвраты руб к перечислению в рамках артикула']}{row}"
+    cell_sum_inc_art = f"{col_map['Приход денег на РС в рамках артикула']}{row}"
+
+    # === Блок "кз" для SENS_IP ===
+    kz_cols = [
+        'ДС в КЗ (ВБ)',
+        'ДС в КЗ за 1 ед. артикула (ВБ)',
+        'ДС в РФ (ВБ)',
+        'ДС в РФ за 1 ед. артикула (ВБ)',
+        'ИТОГО ДС В РФ ЗА АРТИКУЛ (ВБ)',
+    ]
+    if all(c in col_map for c in kz_cols):
+        cell_ds_kz        = f"{col_map['ДС в КЗ (ВБ)']}{row}"
+        cell_ds_kz_unit   = f"{col_map['ДС в КЗ за 1 ед. артикула (ВБ)']}{row}"
+        cell_ds_rf        = f"{col_map['ДС в РФ (ВБ)']}{row}"
+        cell_ds_rf_unit   = f"{col_map['ДС в РФ за 1 ед. артикула (ВБ)']}{row}"
+        cell_ds_rf_total  = f"{col_map['ИТОГО ДС В РФ ЗА АРТИКУЛ (ВБ)']}{row}"
+
+        if 'Приход денег на РС' in col_map:
+            cell_income_rs = f"{col_map['Приход денег на РС']}{row}"
+            final_ws[cell_ds_kz].value = (
+                f'=IF(ISNUMBER(SEARCH("кз",{cell_status})),'
+                f'IFERROR({cell_income_rs}*0.75,""),"")'
+            )
+            final_ws[cell_ds_rf].value = (
+                f'=IF(ISNUMBER(SEARCH("кз",{cell_status})),'
+                f'IFERROR({cell_income_rs}*0.25,""),"")'
+            )
+        else:
+            final_ws[cell_ds_kz].value = ""
+            final_ws[cell_ds_rf].value = ""
+
+        final_ws[cell_ds_kz_unit].value = (
+            f'=IF(ISNUMBER(SEARCH("кз",{cell_status})),'
+            f'IFERROR(0.75*{cell_sum_inc_art}/{cell_sum_qty_art},""),"")'
+        )
+        final_ws[cell_ds_rf_unit].value = (
+            f'=IF(ISNUMBER(SEARCH("кз",{cell_status})),'
+            f'IFERROR(0.25*{cell_sum_inc_art}/{cell_sum_qty_art},""),"")'
+        )
+        final_ws[cell_ds_rf_total].value = (
+            f'=IF(ISNUMBER(SEARCH("кз",{cell_status})),'
+            f'IFERROR(0.25*{cell_sum_inc_art},""),"")'
+        )
+
+    # === Блок "рф" для SENS_IP ===
+    rf_cols = [
+        'СРЕДНИЙ приход за 1 ед. артикула (ВБ)',
+        'Приход за артикул (ВБ)',
+        'Средняя маржа в руб за 1 ед (ВБ)',
+        'Маржа в руб за артикул (ВБ)',
+    ]
+    if all(c in col_map for c in rf_cols):
+        cell_avg_inc    = f"{col_map['СРЕДНИЙ приход за 1 ед. артикула (ВБ)']}{row}"
+        cell_inc_art    = f"{col_map['Приход за артикул (ВБ)']}{row}"
+        cell_avg_margin = f"{col_map['Средняя маржа в руб за 1 ед (ВБ)']}{row}"
+        cell_margin_art = f"{col_map['Маржа в руб за артикул (ВБ)']}{row}"
+
+        final_ws[cell_avg_inc].value = (
+            f'=IF(ISNUMBER(SEARCH("рф",{cell_status})),'
+            f'IFERROR({cell_sum_inc_art}/{cell_sum_qty_art},""),"")'
+        )
+        final_ws[cell_inc_art].value = (
+            f'=IF(ISNUMBER(SEARCH("рф",{cell_status})),'
+            f'IFERROR({cell_sum_inc_art},""),"")'
+        )
+        final_ws[cell_avg_margin].value = (
+            f'=IF(ISNUMBER(SEARCH("рф",{cell_status})),'
+            f'IFERROR({cell_avg_inc}-{cell_cost},""),"")'
+        )
+        final_ws[cell_margin_art].value = (
+            f'=IF(ISNUMBER(SEARCH("рф",{cell_status})),'
+            f'IFERROR({cell_avg_margin}*{cell_sum_qty_art},""),"")'
+        )
+
 # Функция форматирования excel
 def format_excel(
     current_report_dir,
@@ -2935,7 +3314,7 @@ def format_excel(
         cell_marg_rub = f"{col_map['Маржинальность руб']}{row}"
         cell_sales_for_percent = f"{col_map[sales_for_percent_col]}{row}"
         formula_percent_margin = (
-            f'=IFERROR(ABS({cell_marg_rub}/{cell_sales_for_percent})*SIGN({cell_marg_rub}), "")'
+            f'=IFERROR(ABS({cell_marg_rub}/{cell_sales_for_percent}) * 100 *SIGN({cell_marg_rub}), "")'
         )
         final_ws[f"{col_map['Маржинальность %']}{row}"].value = formula_percent_margin
 
@@ -2968,6 +3347,64 @@ def format_excel(
             f'=IFERROR({prihod_base_formula}, "")'
         )
         final_ws[f"{col_map['Приход денег на РС']}{row}"].value = prihod_rs_formula
+        # pandas-аналог:
+        # sales_rub_mean_by_article = df.groupby('Артикул WB')[sales_for_percent].transform('mean')
+        # marg_rub_mean_by_article  = df.groupby('Артикул WB')['Маржинальность руб'].transform('mean')
+        # Маржа по артикулу % = marg_rub_mean_by_article / sales_rub_mean_by_article * 100
+        if 'Артикул WB' in col_map and 'Маржинальность руб' in col_map and sales_for_percent_col in col_map \
+           and 'Маржа по артикулу %' in col_map:
+            art_col_letter   = col_map['Артикул WB']
+            marg_col_letter  = col_map['Маржинальность руб']
+            sales_col_letter = col_map[sales_for_percent_col]
+
+            # Абсолютные диапазоны для AVERAGEIFS
+            rng_art   = f"${art_col_letter}${start_row}:${art_col_letter}${end_row}"
+            rng_marg  = f"${marg_col_letter}${start_row}:${marg_col_letter}${end_row}"
+            rng_sales = f"${sales_col_letter}${start_row}:${sales_col_letter}${end_row}"
+
+            cell_art = f"{art_col_letter}{row}"
+            cell_margin_article = f"{col_map['Маржа по артикулу %']}{row}"
+
+            formula_margin_article = (
+                f'=IFERROR('
+                f'AVERAGEIFS({rng_marg},{rng_art},{cell_art}) / '
+                f'AVERAGEIFS({rng_sales},{rng_art},{cell_art}) * 100,'
+                f'""'
+                f')'
+            )
+            final_ws[cell_margin_article].value = formula_margin_article
+
+        # --- Формула: "Маржа по артикулу %" через AVERAGEIFS ---
+        required_for_margin_article = [
+            'Артикул продавца',
+            'Маржинальность руб',
+            sales_for_percent_col,
+            'Маржа по артикулу %',
+        ]
+
+        if all(col in col_map for col in required_for_margin_article):
+            art_col_letter   = col_map['Артикул продавца']
+            marg_col_letter  = col_map['Маржинальность руб']
+            sales_col_letter = col_map[sales_for_percent_col]
+
+            rng_art   = f"${art_col_letter}${start_row}:${art_col_letter}${end_row}"
+            rng_marg  = f"${marg_col_letter}${start_row}:${marg_col_letter}${end_row}"
+            rng_sales = f"${sales_col_letter}${start_row}:${sales_col_letter}${end_row}"
+
+            cell_art = f"{art_col_letter}{row}"
+            cell_margin_article = f"{col_map['Маржа по артикулу %']}{row}"
+
+            formula_margin_article = (
+                f'=IFERROR('
+                f'AVERAGEIFS({rng_marg},{rng_art},{cell_art}) / '
+                f'AVERAGEIFS({rng_sales},{rng_art},{cell_art}) * 100,'
+                f'""'
+                f')'
+            )
+            final_ws[cell_margin_article].value = formula_margin_article
+
+        # --- Дополнительные формулы для некоторых клиентов --- #
+        apply_wb_extra_formulas(final_ws, col_map, row, start_row, end_row, client_name)
 
     # --- Условное форматирование столбцов с маржинальностью ---
 
@@ -2977,7 +3414,9 @@ def format_excel(
         "Маржинальность %",
         "Маржинальность на ед. товара",
         "Маржа от себестоимости %",
-        "Приход денег на РС"
+        'Маржа по артикулу %',
+        "Приход денег на РС",
+        "Приход денег на РС в рамках артикула",
     ]
 
     # Цвета

@@ -1,4 +1,5 @@
 from pathlib import Path
+import requests
 
 # Файл с настройками и номером клиента
 from options import settings, client_number
@@ -11,6 +12,9 @@ headers = {
 "Authorization": api_key,
 "Content-Type": "application/json",
 }
+# Глобальный session для ВСЕХ запросов к WB
+session = requests.Session()
+session.headers.update(headers)
 
 # Корень проекта
 project_root = Path(__file__).parents[2]

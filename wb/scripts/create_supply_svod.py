@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import difflib
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 from wb.scripts.wb_logger import wb_client_logger as logger
@@ -257,20 +258,76 @@ def replace_clusters(
 ) -> pd.DataFrame:
     """
     Объединяет несколько складов в один кластер согласно маппингу.
-    Похоже на ozon.replace_clusters, но использует таблицу Excel с маппингом.
+
+    Поведение:
+    - Склады, для которых в маппинге есть значение в колонке cluster_col,
+      заменяются на это значение (объединяются в кластеры).
+    - Склады, которых нет в маппинге, остаются как есть (их 'Склад' не меняем).
+    - Для таких складов:
+        * выводится один logger.warning с перечнем складов без группировки
+          и списком «похожих» складов в маппинге с номерами строк.
     """
     df_merged = df_with_clusters.copy()
 
-    df_merged = df_merged.merge(clusters_mapping_df, how="left", on="Склад")
+    # Нормализуем названия складов (обрезаем пробелы)
+    df_merged["Склад"] = df_merged["Склад"].astype(str).str.strip()
+    clusters_mapping_norm = clusters_mapping_df.copy()
+    clusters_mapping_norm["Склад"] = clusters_mapping_norm["Склад"].astype(str).str.strip()
 
-    for col in clusters_mapping_df.columns:
-        if col in df_merged.columns:
-            df_merged[col] = df_merged[col].fillna("Неизвестный склад")
-
-    df_merged = df_merged.drop(columns="Склад").rename(
-        columns={cluster_col: "Склад"}
+    # Мержим по 'Склад'
+    df_merged = df_merged.merge(
+        clusters_mapping_norm,
+        how="left",
+        on="Склад",
+        suffixes=("", "_map"),
     )
 
+    # Склады без группировки (cluster_col == NaN)
+    mask_not_mapped = df_merged[cluster_col].isna()
+    unmapped_warehouses = (
+        df_merged.loc[mask_not_mapped, "Склад"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    if unmapped_warehouses:
+        # Подготовим данные для поиска похожих складов
+        known_warehouses = clusters_mapping_norm["Склад"].astype(str)
+        known_list = known_warehouses.tolist()
+
+        # Собираем строки для одного большого warning’a
+        lines_for_log: list[str] = []
+
+        for wh in sorted(unmapped_warehouses):
+            similar = difflib.get_close_matches(wh, known_list, n=5, cutoff=0.6)
+
+            if not similar:
+                lines_for_log.append(f"{wh}: похожие склады не найдены")
+                continue
+
+            similar_parts: list[str] = []
+            for sim in similar:
+                idx_list = clusters_mapping_norm.index[known_warehouses == sim].tolist()
+                # excel-строки = индекс + 2 (1 — заголовок, индексация с 0)
+                excel_rows = [i + 2 for i in idx_list]
+                similar_parts.append(f"{sim} (строки: {', '.join(map(str, excel_rows))})")
+
+            lines_for_log.append(f"{wh}: " + ", ".join(similar_parts))
+
+        logger.warning(
+            "Похожие склады для складов без группировки:\n  " +
+            "\n  ".join(lines_for_log)
+        )
+
+    # Если для склада есть значение в колонке cluster_col — используем его,
+    # иначе оставляем исходное название склада.
+    df_merged["Склад_новый"] = df_merged[cluster_col].fillna(df_merged["Склад"])
+
+    df_merged = df_merged.drop(columns=["Склад"]).rename(columns={"Склад_новый": "Склад"})
+
+    # Агрегация после замены кластеров
     group_columns = [
         "Артикул_Размер",
         "№ товара",
@@ -284,13 +341,11 @@ def replace_clusters(
 
     df_aggregated = (
         df_merged[group_columns + sum_columns]
-        .groupby(group_columns)
+        .groupby(group_columns, as_index=False)
         .sum()
-        .reset_index()
     )
+
     return df_aggregated
-
-
 # ============================================================================
 # ФУНКЦИИ РАСЧЕТА ПОКАЗАТЕЛЕЙ
 # ============================================================================
