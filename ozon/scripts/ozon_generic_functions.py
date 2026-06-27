@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 import requests
 import re
 
@@ -12,16 +13,34 @@ BASE_DIR = Path(__file__).parent.parent
 
 # Некоторые константы
 from ozon.scripts.constants import (
-    client_name
+    client_name,
+    article_replacements
 )
 
-# Функции выгрузки данных по API Seller
-from ozon.scripts.uploadDataFromOzon import (
-    getOrders,
-    getOrders_v2,
-    getStockReminders_fbo_v2,
-    getStockReminders_fbs
-)
+# Функция очистки артикула от всякого тупого вонючего говна, гавна и дерьма
+def clean_ozon_article(val):
+    # Пропуски оставляем пропусками
+    if pd.isna(val):
+        return np.nan
+
+    # Если это число — обрабатываем как «артикул, случайно прочитанный числом»
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        # Красиво превращаем в строку без лишних .0, .00 и т.п.
+        s = ('%g' % val)  # 123.0 -> "123", 123.50 -> "123.5"
+        return s
+
+    # Всё остальное — строки / объекты — обрабатываем как текстовый артикул
+    s = str(val)
+
+    # Применяем regex-словарь ТОЛЬКО к строке
+    # Оборачиваем в Series, чтобы использовать .replace(regex=True)
+    s_clean = (
+        pd.Series([s])
+        .replace(article_replacements, regex=True)
+        .iloc[0]
+    )
+
+    return s_clean
 
 
 # Функция выгрузки отчета о заказах
@@ -35,6 +54,7 @@ def get_orders(headers, date_start, date_end):
     - date_end: дата окончания периода (строка в формате ISO 8601)
     Возвращает объединенный датафрейм с заказами
     """
+    from ozon.scripts.uploadDataFromOzon import getOrders
     # Выгружаем отчет об отправлениях fbo и fbs
     df_orders_fbo = getOrders(headers, date_start, date_end, delivery_schema='fbo', to_save=False)
     df_orders_fbs = getOrders(headers, date_start, date_end, delivery_schema='fbs', to_save=False)
@@ -101,6 +121,12 @@ def get_orders(headers, date_start, date_end):
 
 # Функция выгрузки остатков потоварно
 def get_reminders_by_product(df_products, headers, to_agg=True, agg_col=['Артикул']):
+
+    from ozon.scripts.uploadDataFromOzon import (
+        getStockReminders_fbo_v2,
+        getStockReminders_fbs
+    )
+
     # Выгружаем остатки FBO и FBS
     df_reminders_fbo = getStockReminders_fbo_v2(headers, df_products, to_save=False)
     df_reminders_fbs = getStockReminders_fbs(headers, df_products, to_save=False)

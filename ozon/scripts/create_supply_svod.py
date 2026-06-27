@@ -18,6 +18,7 @@ from ozon.scripts.constants import (
     project_root,
     marketplace_name,
     special_clients_supply_report,
+    article_replacements,
     clusters_mapping,
     clusters_mapping_jewelry,
     marketplace_dir_path,
@@ -126,11 +127,9 @@ def process_product_list(df_products: pd.DataFrame) -> pd.DataFrame:
         ),
     ]
 
-    df["Артикул"] = (
-        df["Артикул"]
-        .astype(str)
-        .str.replace("'", "", regex=False)
-    )
+    # Важно: regex=True применяется ко всем строковым ключам,
+    # а значение np.nan корректно запишется в ячейку.
+    df["Артикул"] = df["Артикул"].astype(str).replace(article_replacements, regex=True)
 
     sortable = {
         "длина": 450,
@@ -232,8 +231,12 @@ def process_catalog(catalog_df: pd.DataFrame) -> pd.DataFrame:
     # Удаляем дубликаты колонок, если есть. Оставляем первую встречающуюся.
     catalog_processed = catalog_processed.loc[:, ~catalog_processed.columns.duplicated()]
 
-    # Переводим артикул в строку
-    catalog_processed["Артикул"] = catalog_processed["Артикул"].astype(str)
+    # Переводим SKU в int
+    if 'SKU' in catalog_processed.columns:
+        catalog_processed['SKU'] = catalog_processed['SKU'].astype('Int64')
+
+    # Переводим артикул в строку и зменяем некоторые значения
+    catalog_processed["Артикул"] = catalog_processed["Артикул"].astype(str).replace(article_replacements, regex=True)
 
     # Добавляем колонку с кратностью коробов
     if 'Кратность коробов' or 'Кратность короба' not in catalog_processed.columns:

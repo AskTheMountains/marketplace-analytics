@@ -22,7 +22,7 @@ from ozon.scripts.command_args_parser import cli_actions
 # Файл с некоторыми константами
 from ozon.scripts.constants import (
     catalog_action_columns, client_name, marketplace_name, project_root,
-    headers, headers_wb, marketplace_dir_path,
+    headers, headers_wb, marketplace_dir_path, article_replacements,
     net_cost_koef, svod_actions_cols, default_path_download_actions
 )
 # Функция форматирования excel с планом акций, отдельный скрипт
@@ -606,7 +606,7 @@ def process_catalog_data(catalog):
         'Актуальная ссылка на рыночную цену', 'Размер НДС, %'
        ])]
     # Удаляем лишние символы из артикула
-    catalog_processed['Артикул'] = catalog_processed['Артикул'].str.replace("'", "", regex=False)
+    catalog_processed['Артикул'] = catalog_processed['Артикул'].astype(str).replace(article_replacements, regex=True)
     # Переводим баркод в строку
     catalog_processed['Barcode'] = catalog_processed['Barcode'].astype(str)
     # catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
@@ -873,22 +873,31 @@ def get_catalog_reference_columns(catalog_ozon_wb):
     # catalog_reference = pd.read_excel(reference_table_path)
     catalog_reference = get_reference_table()
     catalog_reference.rename(columns={"Основной артикул": "Основной Артикул"}, inplace=True)
+
     # Переименовываем колонки для удобства
     catalog_reference = catalog_reference.rename(columns={
         'Артикул': 'Артикул продавца',
         'Маржинальность, %': 'Желаемая маржинальность, %'
         })
+
     # Если какой-то из нужных колонок нет, добавляем её, чтобы не было ошибок
     for col in catalog_action_columns:
         if col not in catalog_reference.columns:
             catalog_reference[col] = np.nan
+
     # Принудительно переводим некоторые колонки в числовой тип, чтобы не было ошибок
     col_to_numeric = ['Себестоимость', 'Минимальная цена расчетная, руб.', 'РРЦ', 'Желаемая маржинальность, %', 'Нижняя граница цены после скидки, руб', 'Верхняя граница цены после скидки, руб']
     for col in col_to_numeric:
         if col in catalog_reference.columns:
             catalog_reference[col] = catalog_reference[col].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-    # Переводим артикул продавца в строку
-    catalog_reference['Артикул продавца'] = catalog_reference['Артикул продавца'].astype(str)
+
+    # Переводим артикул продавца в строку и заменяем некоторые значения
+    catalog_reference['Артикул продавца'] = (
+        catalog_reference['Артикул продавца']
+        .astype(str)
+        .replace(article_replacements, regex=True)
+    )
+
     # Объединение со справочной таблицей
     catalog_with_reference = catalog_ozon_wb.merge(
         catalog_reference[catalog_action_columns],

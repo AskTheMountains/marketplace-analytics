@@ -28,7 +28,7 @@ from ozon.scripts.command_args_parser import cli_dates
 from ozon.scripts.constants import (client_name, headers, marketplace_dir_path,
                                     ozon_seller_api_url)
 # Функции выгрузки данных по АПИ, которые уже готовы
-from ozon.scripts.uploadDataFromOzon import getOrders
+from ozon.scripts.uploadDataFromOzon import getOrders, get_transactions
 
 parser = argparse.ArgumentParser(
     description="Создание сводного отчета по продажам и заказам на Ozon.",
@@ -248,64 +248,107 @@ def union_fbo_and_fbs_orders(df_postings_fbo, df_postings_fbs):
     return df_postings_all
 
 # Функция расчета продаж
-def calc_sales(df_transactions_list, date_range_df):
-    # Достаем информацию об отправлениях из списка транзакций
-    postings = pd.json_normalize(df_transactions_list['posting'])
-    # Добавляем тип (заказ\возврат), стоимость и количество товаров в отправлении
-    postings = pd.concat([postings, df_transactions_list[['type', 'operation_date', 'operation_type', 'operation_type_name', 'amount', 'accruals_for_sale', 'items_amount']]], axis=1)
-    # Там, где тип начисления возврат, делаем отрицательное число штук товара,
-    # чтобы потом просто посчитать сумму
-    postings['Количество шт'] = np.where(
-        postings['operation_type_name'] == 'Получение возврата, отмены, невыкупа от покупателя',
-        postings['items_amount'] * (-1),
-        postings['items_amount']
-    )
-    # Колонка, по котрой берем дату для расчета продаж
-    date_column = 'operation_date'
-    # Колонка, по которой считаем итоговую сумму
-    total_column = 'accruals_for_sale'
-    # Переводим колонку с датой в timestamp
-    postings[date_column] = pd.to_datetime(postings[date_column])
-    # Оставляем только дату
-    postings[date_column] = postings[date_column].dt.date
-    # Переименовываем колонку для мерджа
-    postings = postings.rename(columns={
-        date_column: 'date',
-        total_column: 'Продажи руб'
-        })
+def calc_sales(df_transactions: pd.DataFrame, date_range_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Рассчитывает продажи по дням на основе нового списка транзакций.
 
-    # Делаем выборку по нужным типам начислений и считаем итоговую цену для каждого отправления
-    sales = (
-        postings
-        .loc[(postings['operation_type_name'] \
-              .isin(
-                  ['Доставка покупателю', 'Получение возврата, отмены, невыкупа от покупателя']
-                  )
-                  ),
-            :]
-        .groupby(['date'])
-        .agg(**{
-            'Продажи руб': ('Продажи руб', 'sum'),
-            'Продажи шт': ('Количество шт', 'sum')
-            })
-        .reset_index()
+    На вход подается df_transactions в новом формате:
+      - 'Дата'         — дата операции (или колонка, которую можно привести к дате)
+      - 'Тип начисления' ∈ {'Продажи руб', 'Продажи шт', 'Возвраты руб', 'Возвраты шт'}
+      - 'Итого'        — сумма/количество по транзакции
+    """
+
+    # Колонка, по котрой берем дату для расчета продаж
+    date_column = "Дата"
+    # Колонки, по которым считаем итоговые суммы
+    type_column = "Тип начисления"
+    value_column = "Итого"
+
+    if df_transactions is None or df_transactions.empty:
+        logger.info("calc_sales: df_transactions пуст, возвращаем нули по date_range_df.")
+        # возвращаем просто date_range_df с нулевыми продажами
+        sales = date_range_df.copy()
+        sales["Продажи руб"] = 0
+        sales["Продажи шт"] = 0
+        return sales
+
+    sales_df = df_transactions.copy()
+
+    # Переводим колонку с датой в timestamp (если ещё не datetime)
+    sales_df[date_column] = pd.to_datetime(sales_df[date_column], errors="coerce")
+    # Оставляем только дату
+    sales_df[date_column] = sales_df[date_column].dt.date
+
+    # Делаем выборку по нужным типам начислений и считаем итоговую цену для каждого дня
+    # Продажи руб/шт — заказы, Возвраты руб/шт — возвраты, для штук считаем знак явно
+    filtered = sales_df.loc[
+        sales_df[type_column].isin(
+            ["Продажи руб", "Возвраты руб", "Продажи шт", "Возвраты шт"]
+        ),
+        [date_column, type_column, value_column],
+    ].copy()
+
+    # Разносим по отдельным колонкам
+    filtered["Продажи_руб"] = np.where(
+        filtered[type_column] == "Продажи руб",
+        filtered[value_column],
+        0,
     )
+    filtered["Возвраты_руб"] = np.where(
+        filtered[type_column] == "Возвраты руб",
+        filtered[value_column],
+        0,
+    )
+    filtered["Продажи_шт"] = np.where(
+        filtered[type_column] == "Продажи шт",
+        filtered[value_column],
+        0,
+    )
+    filtered["Возвраты_шт"] = np.where(
+        filtered[type_column] == "Возвраты шт",
+        filtered[value_column],
+        0,
+    )
+
+    # Группируем по дате и считаем суммы
+    agg = (
+        filtered
+        .groupby(date_column, as_index=False)
+        .agg(
+            Продажи_руб=("Продажи_руб", "sum"),
+            Возвраты_руб=("Возвраты_руб", "sum"),
+            Продажи_шт=("Продажи_шт", "sum"),
+            Возвраты_шт=("Возвраты_шт", "sum"),
+        )
+    )
+
+    # Чистые продажи: продажи - возвраты
+    # (если возвраты уже отрицательные в исходном df, вместо "-" можно использовать "+")
+    agg["Продажи руб"] = agg["Продажи_руб"] - agg["Возвраты_руб"]
+    agg["Продажи шт"] = agg["Продажи_шт"] - agg["Возвраты_шт"]
+
+    sales = agg[[date_column, "Продажи руб", "Продажи шт"]].rename(
+        columns={date_column: "date"}
+    )
+
     # Мерджим с диапазоном дат, т.к. бывает, что не все дни присутствуют в заказах
     sales = sales.merge(
         date_range_df,
-        on='date',
-        how='outer'
+        on="date",
+        how="outer"
     )
+
     # Заполняем пропуски после мерджа
-    for col in ['Продажи руб', 'Продажи шт']:
-        sales[col] = sales[col].fillna(0)
+    for col in ["Продажи руб", "Продажи шт"]:
+        if col not in sales.columns:
+            sales[col] = 0
+        else:
+            sales[col] = sales[col].fillna(0)
 
     return sales
-
     # returns = postings_total.loc[postings_total['type'] == 'returns', :]
-    # orders = postings_total.loc[postings_total['type'] == 'orders', :]
+    # orders  = postings_total.loc[postings_total['type'] == 'orders', :]
     # a = orders.merge(returns, on='posting_number', how='outer', indicator=True)
-
 
 # Функция расчета заказов
 def calc_orders(df_orders_all, date_range_df):
@@ -531,7 +574,7 @@ if __name__ == '__main__':
     # Выгружаем заказы FBO и FBS
     df_orders_all = get_orders(headers, date_start, date_end)
     # Выгружаем список транзакций
-    df_transactions_list = getTransactionReport(headers, date_start, date_end)
+    df_transactions_list = get_transactions(headers, date_start, date_end, to_save=False)
 
     # Считаем заказы в штуках и рублях
     orders = calc_orders(df_orders_all, date_range_df)

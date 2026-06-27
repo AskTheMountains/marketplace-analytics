@@ -7,14 +7,16 @@ import os
 import re
 import time
 from ast import literal_eval
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from colorama import Fore, Back, Style, init
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from itertools import islice
 from io import BytesIO
 from urllib.parse import urlparse
+from pandas import DataFrame
 from xlsx2csv import Xlsx2csv
 import requests
 # from loguru import logger
@@ -33,12 +35,16 @@ from ozon.scripts.constants import (
     headers,
     marketplace_dir_path,
     ozon_seller_api_url,
+    article_replacements,
     api_columns,
     include_previous_supplies
 )
 # Функция обновления кластеров Озон
 from ozon.scripts.update_clusters import update_cluster_list
 # Некоторые доп. функции
+from ozon.scripts.ozon_generic_functions import (
+    clean_ozon_article
+)
 from generic_functions import (
     custom_pd_explode
 )
@@ -234,7 +240,10 @@ def getOzonProduct(headers, to_save=True):
 
             # Убираем лишние символы из 'Артикул'
             if 'Артикул' in df_products.columns:
-                df_products['Артикул'] = df_products['Артикул'].str.replace("'", "", regex=False)
+                df_products['Артикул'] = (
+                    df_products['Артикул']
+                    .map(clean_ozon_article)
+                )
 
             # Сохраняем финальный результат или возвращаем DataFrame
             if to_save:
@@ -334,6 +343,11 @@ def get_products_info(headers, df_products=None):
             'offer_id': 'Артикул',
             # 'is_super': 'Super-товар'
         })
+    )
+    # Заменяем некоторые значенияе в колонке артикула
+    df_products_info['Артикул'] = (
+        df_products_info['Артикул']
+        .map(clean_ozon_article)
     )
 
     return df_products_info
@@ -437,10 +451,20 @@ def get_products_prices(headers, df_products=None):
         'Цена с учетом скидок (на карточке товара)',
         'Цена поставщика'
     ])]
+    # Заменяем некоторые значения в колонке артикула
+    df_products_prices_all['Артикул'] = (
+        df_products_prices_all['Артикул']
+        .map(clean_ozon_article)
+    )
+    df_products_['Артикул'] = (
+        df_products_['Артикул']
+        .astype(str)
+        .replace(article_replacements, regex=True)
+    )
     # Объединяем с df товаров
     df_products_with_prices = (
         df_products_
-        .loc[:, df_products_.columns.isin(['Артикул'])]
+        .loc[:, ['Артикул']]
         .merge(
             df_products_prices_all,
             how='left',
@@ -567,6 +591,11 @@ def get_products_attributes(headers, df_products=None):
                  'description_category_id',
                  'attributes'
         ]]
+    )
+    # Заменяем некоторые значения в колонке Артикул
+    df_products_model_info['Артикул'] = (
+        df_products_model_info['Артикул']
+        .map(clean_ozon_article)
     )
 
     # Получаем df с характеристиками товара
@@ -1352,6 +1381,45 @@ def clean_payload(data, keep_keys=None):
     return data
 
 
+def _normalize_ozon_datetime(dt_str: str) -> str:
+    """
+    Приводит строку даты к формату YYYY-MM-DDTHH:MM:SSZ (ISO8601, UTC, без микросекунд).
+    Если не получается распарсить — выбрасывает ValueError.
+    """
+    s = dt_str.strip()
+
+    # уже в целевом формате
+    try:
+        # 2025-01-31T12:34:56Z
+        if s.endswith("Z"):
+            return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+    except Exception:
+        pass
+
+    # универсальный парсинг с учётом возможной таймзоны/микросекунд
+    # предполагаем, что строка соответствует ISO8601
+    try:
+        # заменяем Z на +00:00 для fromisoformat
+        if s.endswith("Z"):
+            s_parsed = s[:-1] + "+00:00"
+        else:
+            s_parsed = s
+
+        dt = datetime.fromisoformat(s_parsed)
+
+        # если дата naive — считаем, что это уже UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+
+        return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception as exc:
+        raise ValueError(f"Некорректный формат даты для Ozon: {dt_str!r}") from exc
+
+
 # Функция выгрузки списка отправлений FBO
 def get_ozon_fbo_list(
     headers: dict[str, str],   # словарь заголовков HTTP
@@ -1368,11 +1436,19 @@ def get_ozon_fbo_list(
 
     Режимы работы:
     - Если order_numbers и posting_numbers не переданы -> выгрузка по периоду дат.
-    - Если переданы order_numbers и/или posting_numbers -> даты игнорируются,
-      выгружаются только эти отправления (batched по 1000 штук).
-    Приоритет фильтра: если переданы оба списка, используется только posting_numbers.
+    - Если переданы order_numbers и/или posting_numbers -> даты всё равно передаются
+      (требование API), но фильтр строится только по номерам (batched по 1000 штук).
+      Приоритет фильтра: если переданы оба списка, используется только posting_numbers.
+
+    Требования:
+    - Даты всегда в формате YYYY-MM-DDTHH:MM:SSZ.
+    - Даты всегда присутствуют в фильтре, при любых фильтрах по номерам.
     """
     endpoint = f"{ozon_seller_api_url}/v3/posting/fbo/list"
+
+    # Нормализуем даты в формат YYYY-MM-DDTHH:MM:SSZ
+    date_start_norm = _normalize_ozon_datetime(date_start)
+    date_end_norm = _normalize_ozon_datetime(date_end)
 
     # Нормализуем параметры
     order_numbers = order_numbers or []
@@ -1384,20 +1460,23 @@ def get_ozon_fbo_list(
         chunks_to_process = list(chunked(posting_numbers, 1000))
         logger.info(
             f"Начало выгрузки отправлений FBO по posting_numbers "
-            f"(кол-во={len(posting_numbers)}), игнорируя order_numbers."
+            f"(кол-во={len(posting_numbers)}), игнорируя order_numbers. "
+            f"Период дат: {date_start_norm} — {date_end_norm}"
         )
     elif order_numbers:
         filter_mode = "order"
         chunks_to_process = list(chunked(order_numbers, 1000))
         logger.info(
             f"Начало выгрузки отправлений FBO по order_numbers "
-            f"(кол-во={len(order_numbers)})."
+            f"(кол-во={len(order_numbers)}). "
+            f"Период дат: {date_start_norm} — {date_end_norm}"
         )
     else:
         filter_mode = "dates"
         chunks_to_process = [None]
         logger.info(
-            f"Начало выгрузки отправлений FBO по датам с {date_start} по {date_end}"
+            f"Начало выгрузки отправлений FBO по датам с "
+            f"{date_start_norm} по {date_end_norm}"
         )
 
     all_orders_fbo = []
@@ -1424,32 +1503,35 @@ def get_ozon_fbo_list(
                 f"по order_numbers: {len(chunk_values)} шт."
             )
         else:
-            logger.info("Обработка выгрузки по датам (без фильтра по номерам).")
+            logger.info(
+                "Обработка выгрузки по датам (без фильтра по номерам)."
+            )
 
+        # Цикл по курсору для текущего чанка
         while True:
             # Формируем фильтр
             if filter_mode == "posting":
                 filter_block = {
                     "posting_number": chunk_values,
                     "order_number": [],
-                    "since": None,
-                    "to": None,
+                    "since": date_start_norm,
+                    "to": date_end_norm,
                     "statuses": [],
                 }
             elif filter_mode == "order":
                 filter_block = {
                     "posting_number": [],
                     "order_number": chunk_values,
-                    "since": None,
-                    "to": None,
+                    "since": date_start_norm,
+                    "to": date_end_norm,
                     "statuses": [],
                 }
             else:  # filter_mode == "dates"
                 filter_block = {
                     "posting_number": [],
                     "order_number": [],
-                    "since": date_start,
-                    "to": date_end,
+                    "since": date_start_norm,
+                    "to": date_end_norm,
                     "statuses": [],
                 }
 
@@ -1533,6 +1615,7 @@ def get_ozon_fbo_list(
                 )
                 break
 
+            # Переходим к следующей "странице" по тому же фильтру
             cursor = next_cursor
 
         if total_received >= offset_limit:
@@ -2100,8 +2183,11 @@ def process_fbs_list(
         'products.name': 'Наименование товара',
         'products.quantity': 'Количество',
         'products.price.amount': 'Цена товара',
+        'products.price': 'Цена товара',
         'products.price.currency': 'Валюта цены товара',
     })
+    # Удаляем дубликаты колонок, оставляем первую
+    df_products_fbs = df_products_fbs.loc[:, ~df_products_fbs.columns.duplicated()]
     # Переводим некоторые колонки в нужный тип
     column_types = {
         'Артикул': str,
@@ -2196,6 +2282,1121 @@ def getOrders_v2(
     logger.info("Выгрузка заказов завершена.")
 
     # return
+
+
+# Функция выгрузки типов транзакций
+def uploadAccrualTypes(headers):
+    """
+    Выгружает справочник типов начислений из Ozon API /v1/finance/accrual/types.
+
+    Параметры:
+        headers - заголовки с авторизацией для Ozon Seller API
+
+    Возвращает:
+        pandas.DataFrame с колонками: ['id', 'name', 'description'].
+        Если данных нет или произошла ошибка — пустой DataFrame.
+    """
+    url = f"{ozon_seller_api_url}/v1/finance/accrual/types"
+    logger.info("Выгрузка справочника типов начислений начата.")
+
+    try:
+        resp = requests.post(url, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as ex:
+        logger.error(f"Ошибка запроса API при выгрузке справочника начислений: {ex}")
+        return pd.DataFrame(columns=["id", "name", "description"])
+    except Exception as ex:
+        logger.error(f"Общая ошибка при выгрузке справочника начислений: {ex}")
+        return pd.DataFrame(columns=["id", "name", "description"])
+
+    accrual_types = data.get("accrual_types", []) or []
+
+    if not accrual_types:
+        logger.info("Справочник типов начислений пуст или не возвращён.")
+        return pd.DataFrame(columns=["id", "name", "description"])
+
+    df_accrual_types = pd.DataFrame(accrual_types)
+    # На всякий случай упорядочим и гарантируем наличие нужных колонок
+    for col in ("id", "name", "description"):
+        if col not in df_accrual_types.columns:
+            df_accrual_types[col] = None
+    df_accrual_types = df_accrual_types[["id", "name", "description"]]
+    # Переименовываем колонки
+    df_accrual_types = df_accrual_types.rename(columns={
+        'id': 'type_id'
+    })
+
+    logger.info(
+        f"Выгрузка справочника типов начислений завершена. "
+        f"Найдено записей: {df_accrual_types.shape[0]}."
+    )
+    return df_accrual_types
+
+# Функция перевода даты в формат date
+def _parse_to_date_only(dt_value):
+    """
+    Преобразует входное значение (строка/датавремя) к дате (datetime.date).
+    Поддерживаем несколько форматов строк:
+      - YYYY-MM-DD
+      - YYYY-MM-DDTHH:MM:SSZ
+      - YYYY-MM-DDTHH:MM:SS
+      - YYYY-MM-DD HH:MM:SS
+      - и любые форматы, которые понимает pandas.to_datetime
+    """
+    if isinstance(dt_value, (datetime, pd.Timestamp)):
+        return dt_value.date()
+
+    if isinstance(dt_value, str):
+        s = dt_value.strip()
+        # убираем 'Z' в конце, если есть
+        if s.endswith("Z") or s.endswith("z"):
+            s = s[:-1]
+        # Пытаемся явно разобрать несколько типичных форматов
+        for fmt in ("%Y-%m-%d",
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S.%f",
+                    "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        # Если не сработало — пробуем через pandas.to_datetime (более универсально)
+        return pd.to_datetime(dt_value).date()
+
+    # если пришло что-то ещё (например, date) — пробуем через pandas
+    return pd.to_datetime(dt_value).date()
+
+
+# Функция выгрузки транзакций по дням
+def uploadAccrualByDay(headers, date_start, date_end):
+    """
+    Выгружает данные начислений по Ozon API /v1/finance/accrual/by-day
+    за каждый день в указанном диапазоне с пагинацией по last_id.
+
+    Параметры:
+        headers    - заголовки с авторизацией для Ozon Seller API
+        date_start - начало периода (строка или datetime, разные форматы поддерживаются)
+        date_end   - конец периода (строка или datetime, разные форматы поддерживаются)
+
+    Возвращает:
+        pandas.DataFrame с объединёнными начислениями за все дни периода.
+    """
+
+    # маленькая пауза между успешными запросами
+    sleep_interval_success = 0.2
+    # большая пауза между повторными попытками после ошибок
+    sleep_interval_error = 10
+    max_retries = 5
+
+    # Приводим входные даты к типу date (без времени и таймзоны)
+    start_date = _parse_to_date_only(date_start)
+    end_date = _parse_to_date_only(date_end)
+
+    if start_date > end_date:
+        raise ValueError("date_start не может быть больше date_end")
+
+    logger.info(f"Выгрузка начислений по дням с {start_date} по {end_date} начата.")
+
+    all_accruals = []
+
+    current_date = start_date
+    while current_date <= end_date:
+        date_str = current_date.strftime("%Y-%m-%d")
+        logger.info(f"Обработка даты начислений: {date_str}")
+
+        last_id = ""  # стартуем без last_id
+        page_idx = 1  # счётчик для логирования
+
+        while True:
+            payload = {
+                "date": date_str,
+                "last_id": last_id
+            }
+
+            attempt = 1
+            success = False
+            response_data = None
+
+            while attempt <= max_retries and not success:
+                try:
+                    resp = requests.post(
+                        f"{ozon_seller_api_url}/v1/finance/accrual/by-day",
+                        headers=headers,
+                        data=json.dumps(payload),
+                        timeout=60
+                    )
+                    resp.raise_for_status()
+                    response_data = resp.json()
+                    success = True
+
+                    # небольшая пауза только ПОСЛЕ успешного запроса
+                    if sleep_interval_success > 0:
+                        logger.info(
+                            f"Пауза {sleep_interval_success} секунд перед следующим запросом..."
+                        )
+                        time.sleep(sleep_interval_success)
+
+                except requests.RequestException as ex:
+                    logger.error(
+                        f"Ошибка запроса API по начислениям "
+                        f"(дата {date_str}, страница {page_idx}, попытка {attempt}/{max_retries}): {ex}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток для "
+                            f"даты {date_str}, страницы {page_idx}. Переходим к следующей дате."
+                        )
+                        break
+                    logger.info(
+                        f"Пауза {sleep_interval_error} секунд перед повторной попыткой..."
+                    )
+                    time.sleep(sleep_interval_error)
+                    attempt += 1
+
+                except Exception as ex:
+                    logger.error(
+                        f"Общая ошибка по начислениям "
+                        f"(дата {date_str}, страница {page_idx}, попытка {attempt}/{max_retries}): {ex}"
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"Достигнуто максимальное число попыток (общая ошибка) для "
+                            f"даты {date_str}, страницы {page_idx}. Переходим к следующей дате."
+                        )
+                        break
+                    logger.info(
+                        f"Пауза {sleep_interval_error} секунд перед повторной попыткой..."
+                    )
+                    time.sleep(sleep_interval_error)
+                    attempt += 1
+
+            if not success or response_data is None:
+                # Переходим к следующей дате
+                break
+
+            accruals = response_data.get("accruals", [])
+            resp_last_id = response_data.get("last_id")
+
+            if not accruals:
+                logger.info(
+                    f"Начисления за дату {date_str}, страница {page_idx} отсутствуют. "
+                    f"Переходим к следующей дате."
+                )
+                break
+
+            # Добавляем дату запроса как поле в каждую запись (для удобства)
+            for acc in accruals:
+                acc["_request_date"] = date_str
+            all_accruals.extend(accruals)
+
+            logger.info(
+                f"Дата {date_str}, страница {page_idx} обработана. "
+                f"Получено записей: {len(accruals)}."
+            )
+
+            # Логика пагинации: если last_id пустой/None — больше страниц нет
+            if not resp_last_id:
+                logger.info(f"Пагинация по дате {date_str} завершена (last_id пустой).")
+                break
+
+            last_id = resp_last_id
+            page_idx += 1
+
+        current_date += pd.Timedelta(days=1)
+
+    if not all_accruals:
+        logger.info("Начисления не найдены по указанному периоду.")
+        return pd.DataFrame()
+
+    df_accruals = pd.DataFrame(all_accruals)
+    logger.info(
+        f"Выгрузка начислений по дням завершена. "
+        f"Найдено {df_accruals.shape[0]} записей."
+    )
+
+    return df_accruals
+
+# Функция обработки начислений по отправлениям
+def process_posting_accruals(
+    df_accruals: pd.DataFrame,
+    df_accrual_types: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Обрабатывает начисления по отправлениям (posting) и
+    возвращает единый DataFrame в длинном формате:
+
+        Дата | ID Начисления | Схема доставки | SKU | Тип начисления | Итого
+
+    Где в 'Тип начисления' могут быть, в т.ч.:
+        - Продажи руб
+        - Продажи шт
+        - Возвраты руб
+        - Возвраты шт
+        - Баллы за скидки
+        - Программы партнеров
+        - Вознаграждение Ozon
+        - типы начислений по доставке (из df_accrual_types.description)
+    """
+
+    target_cols = ["Дата", "ID Начисления", "Схема доставки", "SKU", "Тип начисления", "Итого"]
+
+    # === 0. Проверка входных данных ===
+    if df_accruals is None or df_accruals.empty:
+        logger.info("process_posting_accruals: df_accruals пустой или None.")
+        return pd.DataFrame(columns=target_cols)
+
+    if df_accrual_types is None or df_accrual_types.empty:
+        logger.warning("process_posting_accruals: df_accrual_types пустой или None.")
+
+    # === 1. Фильтрация начислений по отправлениям ===
+    df_posting = (
+        df_accruals[df_accruals["posting"].notna()]
+        .reset_index(drop=True)
+        .copy()
+    )
+    if df_posting.empty:
+        logger.info("process_posting_accruals: нет строк с непустым posting.")
+        return pd.DataFrame(columns=target_cols)
+
+    base_required_cols = ["date", "total_amount", "posting", "unit_number"]
+    for col in base_required_cols:
+        if col not in df_posting.columns:
+            df_posting[col] = None
+    df_posting = df_posting[base_required_cols].reset_index(drop=True)
+
+    # === 2. Распаковка posting ===
+    try:
+        df_posting_unpacked = custom_pd_explode(df_posting, "posting")
+    except Exception as ex:
+        logger.error(f"Ошибка при распаковке 'posting': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    if df_posting_unpacked.empty:
+        logger.info("После распаковки posting данных не осталось.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Переименуем delivery_schema уже здесь, чтобы он не потерялся
+    if "posting.delivery_schema" in df_posting_unpacked.columns:
+        df_posting_unpacked = df_posting_unpacked.rename(
+            columns={"posting.delivery_schema": "Схема доставки"}
+        )
+    else:
+        df_posting_unpacked["Схема доставки"] = None
+
+    # Теперь распаковываем posting.products
+    try:
+        df_posting_products = custom_pd_explode(df_posting_unpacked, "posting.products")
+    except Exception as ex:
+        logger.error(f"Ошибка при распаковке 'posting.products': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    if df_posting_products.empty:
+        logger.info("После распаковки posting.products данных не осталось.")
+        return pd.DataFrame(columns=target_cols)
+
+    # === 3. Начисления по товарам (комиссии и т.п.) ===
+    product_rename_map = {
+        "posting.products.sku": "SKU",
+        # "Схема доставки" уже есть из df_posting_unpacked
+        "posting.products.commission.sale_price.amount": "Выручка",
+        "posting.products.commission.seller_price.amount": "Цена продавца",
+        "posting.products.commission.sale_amount.amount": "Реализовано на сумму",
+        "posting.products.commission.bonus.amount": "Баллы за скидки",
+        "posting.products.commission.coinvestment.amount": "Программы партнеров",
+        "posting.products.commission.sale_commission.amount": "Вознаграждение Ozon",
+    }
+    df_posting_products = df_posting_products.rename(columns=product_rename_map)
+
+    # денежные поля в числа
+    for _, ru_col in product_rename_map.items():
+        if ru_col in df_posting_products.columns:
+            df_posting_products[ru_col] = pd.to_numeric(
+                df_posting_products[ru_col], errors="coerce"
+            )
+
+    # Продажи руб / Возвраты руб
+    df_posting_products["Продажи руб"] = np.nan
+    df_posting_products["Возвраты руб"] = np.nan
+
+    if "Выручка" in df_posting_products.columns:
+        df_posting_products["Продажи руб"] = np.where(
+            df_posting_products["Выручка"] > 0,
+            df_posting_products["Выручка"],
+            np.nan,
+        )
+        df_posting_products["Возвраты руб"] = np.where(
+            df_posting_products["Выручка"] < 0,
+            df_posting_products["Выручка"],
+            np.nan,
+        )
+
+    # Продажи шт / Возвраты шт (Реализовано / Цена, дробная часть отбрасывается)
+    df_posting_products["Продажи шт"] = 0
+    df_posting_products["Возвраты шт"] = 0
+
+    if (
+        "Реализовано на сумму" in df_posting_products.columns
+        and "Цена продавца" in df_posting_products.columns
+        and "Выручка" in df_posting_products.columns
+    ):
+        qty_raw = (
+            df_posting_products["Реализовано на сумму"]
+            / df_posting_products["Цена продавца"]
+        )
+        qty_int = qty_raw.fillna(0).astype(int)
+
+        df_posting_products.loc[
+            df_posting_products["Выручка"] > 0, "Продажи шт"
+        ] = qty_int[df_posting_products["Выручка"] > 0]
+
+        df_posting_products.loc[
+            df_posting_products["Выручка"] < 0, "Возвраты шт"
+        ] = qty_int[df_posting_products["Выручка"] < 0]
+
+    # Колонки, которые считаем типами начислений по товарам
+    product_accrual_cols = [
+        col
+        for col in [
+            "Продажи руб",
+            "Продажи шт",
+            "Возвраты руб",
+            "Возвраты шт",
+            "Баллы за скидки",
+            "Программы партнеров",
+            "Вознаграждение Ozon",
+        ]
+        if col in df_posting_products.columns
+    ]
+
+    # Колонки-идентификаторы (широкий формат)
+    id_cols = ["date", "unit_number", "Схема доставки", "SKU"]
+
+    # === 3.1. Перевод начислений по товарам в длинный формат ===
+    if product_accrual_cols:
+        df_products_long = (
+            df_posting_products[id_cols + product_accrual_cols]
+            .melt(
+                id_vars=id_cols,
+                value_vars=product_accrual_cols,
+                var_name="Тип начисления",
+                value_name="Итого",
+            )
+        )
+        df_products_long = df_products_long.dropna(subset=["Итого"])
+    else:
+        df_products_long = pd.DataFrame(
+            columns=id_cols + ["Тип начисления", "Итого"]
+        )
+
+    # === 4. Прочие начисления по доставке (delivery.services) ===
+    delivery_col = "posting.products.delivery.services"
+    if delivery_col in df_posting_products.columns:
+        df_postings_transactions_raw = (
+            df_posting_products[id_cols + [delivery_col]]
+            .explode(delivery_col)
+            .reset_index(drop=True)
+        )
+
+        if not df_postings_transactions_raw[delivery_col].isna().all():
+            delivery_norm = pd.json_normalize(df_postings_transactions_raw[delivery_col])
+            if not delivery_norm.empty:
+                df_postings_transactions = pd.concat(
+                    [
+                        df_postings_transactions_raw[id_cols].reset_index(drop=True),
+                        delivery_norm.reset_index(drop=True),
+                    ],
+                    axis=1,
+                )
+
+                if "accrued.amount" in df_postings_transactions.columns:
+                    df_postings_transactions["accrued.amount"] = pd.to_numeric(
+                        df_postings_transactions["accrued.amount"], errors="coerce"
+                    )
+                else:
+                    df_postings_transactions["accrued.amount"] = np.nan
+
+                if (
+                    df_accrual_types is not None
+                    and not df_accrual_types.empty
+                    and "type_id" in df_accrual_types.columns
+                    and "description" in df_accrual_types.columns
+                ):
+                    df_postings_transactions = df_postings_transactions.merge(
+                        df_accrual_types[["type_id", "description"]],
+                        how="left",
+                        on="type_id",
+                    )
+                    df_postings_transactions["Тип начисления"] = df_postings_transactions["description"]
+                else:
+                    logger.warning(
+                        "Справочник начислений не использован (нет type_id/description)."
+                    )
+                    df_postings_transactions["Тип начисления"] = (
+                        df_postings_transactions["type_id"].astype(str)
+                        if "type_id" in df_postings_transactions.columns
+                        else "Прочее начисление"
+                    )
+
+                df_postings_transactions_long = df_postings_transactions.rename(
+                    columns={"accrued.amount": "Итого"}
+                )[
+                    id_cols + ["Тип начисления", "Итого"]
+                ]
+
+                df_postings_transactions_long = df_postings_transactions_long.dropna(subset=["Итого"])
+                df_postings_transactions_long = df_postings_transactions_long[
+                    df_postings_transactions_long["Итого"] != 0
+                ]
+            else:
+                df_postings_transactions_long = pd.DataFrame(
+                    columns=id_cols + ["Тип начисления", "Итого"]
+                )
+        else:
+            df_postings_transactions_long = pd.DataFrame(
+                columns=id_cols + ["Тип начисления", "Итого"]
+            )
+    else:
+        df_postings_transactions_long = pd.DataFrame(
+            columns=id_cols + ["Тип начисления", "Итого"]
+        )
+
+    # === 5. Объединяем всё и приводим к целевой структуре ===
+    df_postings_transactions_processed = pd.concat(
+        [df_products_long, df_postings_transactions_long],
+        ignore_index=True
+    )
+
+    if df_postings_transactions_processed.empty:
+        logger.info("После обработки не осталось начислений по отправлениям.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Переименовываем некоторые колонки
+    df_postings_transactions_processed = df_postings_transactions_processed.rename(
+        columns={
+            "date": "Дата",
+            "unit_number": "ID Начисления",
+        }
+    )
+    # Обрабатываем колонку со схемой доставки
+    df_postings_transactions_processed['Схема доставки'] = (
+        # Переводим схему доставки в верхний регистр
+        df_postings_transactions_processed['Схема доставки']
+        .str.upper()
+        # Заменяем схему RFBS на FBS для совместимости
+        .str.replace('RFBS', 'FBS')
+    )
+    # Создаем искусственно финальные колонки, если они не нашлись
+    for c in target_cols:
+        if c not in df_postings_transactions_processed.columns:
+            df_postings_transactions_processed[c] = None
+
+    df_postings_transactions_processed = df_postings_transactions_processed[target_cols]
+
+    return df_postings_transactions_processed
+
+
+# Функция выгрузки дополнительной информации по отправлениям из списка транзакций
+def upload_additional_postings_transactions_info(
+    df_postings_transactions_processed: pd.DataFrame,
+    headers,
+    date_start,
+    date_end
+) -> pd.DataFrame:
+    """
+    По списку начислений догружает дополнительную информацию по отправлениям FBO/FBS,
+    считает кластеры, и джойнится по:
+        - ID Начисления (номер отправления)
+        - Схема доставки
+    """
+
+    if df_postings_transactions_processed is None or df_postings_transactions_processed.empty:
+        logger.info("upload_additional_postings_transactions_info: входной DF пуст.")
+        return df_postings_transactions_processed
+
+    # --- 1. Собираем списки FBO/FBS posting_numbers из начислений ---
+    fbo_postings = (
+        df_postings_transactions_processed
+        .loc[
+            df_postings_transactions_processed['Схема доставки']
+            .astype(str).str.upper() == 'FBO',
+            'ID Начисления'
+        ]
+        .dropna().astype(str).unique().tolist()
+    )
+
+    fbs_postings = (
+        df_postings_transactions_processed
+        .loc[
+            df_postings_transactions_processed['Схема доставки']
+            .astype(str).str.upper().isin(['FBS', 'RFBS']),
+            'ID Начисления'
+        ]
+        .dropna().astype(str).unique().tolist()
+    )
+
+    df_fbo_list = pd.DataFrame()
+    df_fbs_list = pd.DataFrame()
+
+    # --- 2. Основная выгрузка FBO списком ---
+    if fbo_postings:
+        try:
+            df_fbo_list = get_ozon_fbo_list(
+                headers=headers,
+                date_start=date_start,
+                date_end=date_end,
+                posting_numbers=fbo_postings,
+            )
+        except Exception as ex:
+            logger.error(f"Ошибка при выгрузке списка FBO отправлений: {ex}")
+            df_fbo_list = pd.DataFrame()
+
+        # Проверяем недостающие FBO
+        if not df_fbo_list.empty and "posting_number" in df_fbo_list.columns:
+            returned_fbo_postings = (
+                df_fbo_list["posting_number"].astype(str).unique().tolist()
+            )
+            missing_fbo_postings = sorted(
+                set(fbo_postings) - set(returned_fbo_postings)
+            )
+        else:
+            missing_fbo_postings = fbo_postings.copy()
+
+        # --- 2.1. Дозагрузка недостающих FBO через get_ozon_fbo_info ---
+        if missing_fbo_postings:
+            logger.warning(
+                f"Не найдено {len(missing_fbo_postings)} FBO-отправлений "
+                f"в списке (будут дозагружены поштучно)"
+            )
+            try:
+                df_fbo_missing = get_ozon_fbo_info(
+                    headers=headers,
+                    posting_numbers=missing_fbo_postings,
+                )
+            except Exception as ex:
+                logger.error(f"Ошибка при дозагрузке FBO (get_ozon_fbo_info): {ex}")
+                df_fbo_missing = pd.DataFrame()
+
+            if not df_fbo_missing.empty:
+                if (
+                    not df_fbo_list.empty
+                    and "posting_number" in df_fbo_list.columns
+                    and "posting_number" in df_fbo_missing.columns
+                ):
+                    df_fbo_list = (
+                        pd.concat([df_fbo_list, df_fbo_missing], ignore_index=True)
+                        .drop_duplicates(subset=["posting_number"], ignore_index=True)
+                    )
+                else:
+                    df_fbo_list = df_fbo_missing.copy()
+
+    # --- 2.2. Обработка списка FBO: кластеры ---
+    if not df_fbo_list.empty:
+        df_fbo_list_processed = process_fbo_list(df_fbo_list)
+        df_fbo_clusters = (
+            df_fbo_list_processed.loc[
+                :,
+                ['Номер отправления', 'Кластер отправления', 'Кластер доставки']
+            ]
+            .drop_duplicates(subset=['Номер отправления'])
+            .reset_index(drop=True)
+        )
+        # добавляем схему доставки для джойна
+        df_fbo_clusters['Схема доставки'] = 'FBO'
+    else:
+        df_fbo_clusters = pd.DataFrame(
+            columns=['Номер отправления', 'Кластер отправления', 'Кластер доставки', 'Схема доставки']
+        )
+
+    # --- 3. Основная выгрузка FBS списком ---
+    if fbs_postings:
+        try:
+            df_fbs_list = get_ozon_fbs_list(
+                headers=headers,
+                date_start=date_start,
+                date_end=date_end,
+                posting_numbers=fbs_postings,
+            )
+        except Exception as ex:
+            logger.error(f"Ошибка при выгрузке списка FBS отправлений: {ex}")
+            df_fbs_list = pd.DataFrame()
+
+        # Проверяем недостающие FBS
+        if not df_fbs_list.empty and "posting_number" in df_fbs_list.columns:
+            returned_fbs_postings = (
+                df_fbs_list["posting_number"].astype(str).unique().tolist()
+            )
+            missing_fbs_postings = sorted(
+                set(fbs_postings) - set(returned_fbs_postings)
+            )
+        else:
+            missing_fbs_postings = fbs_postings.copy()
+
+        # --- 3.1. Дозагрузка недостающих FBS через get_ozon_fbs_info ---
+        if missing_fbs_postings:
+            logger.warning(
+                f"Не найдено {len(missing_fbs_postings)} FBS-отправлений "
+                f"в списке (будут дозагружены поштучно)"
+            )
+            try:
+                df_fbs_missing = get_ozon_fbs_info(
+                    headers=headers,
+                    posting_numbers=missing_fbs_postings,
+                )
+            except Exception as ex:
+                logger.error(f"Ошибка при дозагрузке FBS (get_озon_fbs_info): {ex}")
+                df_fbs_missing = pd.DataFrame()
+
+            if not df_fbs_missing.empty:
+                if (
+                    not df_fbs_list.empty
+                    and "posting_number" in df_fbs_list.columns
+                    and "posting_number" in df_fbs_missing.columns
+                ):
+                    df_fbs_list = (
+                        pd.concat([df_fbs_list, df_fbs_missing], ignore_index=True)
+                        .drop_duplicates(subset=["posting_number"], ignore_index=True)
+                    )
+                else:
+                    df_fbs_list = df_fbs_missing.copy()
+
+    # --- 3.2. Обработка списка FBS: кластеры ---
+    if not df_fbs_list.empty:
+        df_fbs_list_processed = process_fbs_list(df_fbs_list)
+        df_fbs_clusters = (
+            df_fbs_list_processed.loc[
+                :,
+                ['Номер отправления', 'Кластер отправления', 'Кластер доставки']
+            ]
+            .drop_duplicates(subset=['Номер отправления'])
+            .reset_index(drop=True)
+        )
+        df_fbs_clusters['Схема доставки'] = 'FBS'
+    else:
+        df_fbs_clusters = pd.DataFrame(
+            columns=['Номер отправления', 'Кластер отправления', 'Кластер доставки', 'Схема доставки']
+        )
+
+    # --- 4. Объединяем FBO/FBS кластеры и джойним по (ID Начисления, Схема доставки) ---
+    df_clusters_all = pd.concat(
+        [df_fbo_clusters, df_fbs_clusters],
+        ignore_index=True
+    )
+
+    if df_clusters_all.empty:
+        logger.info("Кластеры отправлений не получены.")
+        return df_postings_transactions_processed
+
+    # Приводим ключи к общему виду:
+    #   ID Начисления (в начислениях) ↔ Номер отправления (в кластерах)
+    #   и совпадающая Схема доставки ('FBO'/'FBS')
+    df_clusters_all = df_clusters_all.rename(
+        columns={"Номер отправления": "ID Начисления"}
+    )
+    # на всякий случай приводим типы к строке для точного совпадения
+    df_clusters_all["ID Начисления"] = df_clusters_all["ID Начисления"].astype(str)
+    df_clusters_all["Схема доставки"] = df_clusters_all["Схема доставки"].astype(str)
+
+    df_postings_transactions_processed["ID Начисления"] = (
+        df_postings_transactions_processed["ID Начисления"].astype(str)
+    )
+    df_postings_transactions_processed["Схема доставки"] = (
+        df_postings_transactions_processed["Схема доставки"].astype(str)
+    )
+
+    df_result = df_postings_transactions_processed.merge(
+        df_clusters_all,
+        how="left",
+        on=["ID Начисления", "Схема доставки"],
+        suffixes=("", "_cluster"),
+    )
+
+    return df_result
+
+# Функция обработки прочих начислений по товарам
+def process_item_accruals(
+    df_accruals: pd.DataFrame,
+    df_accrual_types: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Обрабатывает прочие начисления по товарам из поля item_fees.
+
+    Структура item_fees (пример):
+        {
+          "fees": [
+            {
+              "sku": 1878177167,
+              "fees": [
+                {"type_id": 1, "accrued": {"amount": "-25.49", "currency": "RUB"}},
+                ...
+              ]
+            },
+            ...
+          ]
+        }
+
+    На выходе — длинный DataFrame с колонками:
+        Дата | SKU | Тип начисления | Итого
+    """
+
+    target_cols = ["Дата", "SKU", "Тип начисления", "Итого"]
+
+    # === 0. Проверка входных данных ===
+    if df_accruals is None or df_accruals.empty:
+        logger.info("process_item_accruals: df_accruals пустой или None.")
+        return pd.DataFrame(columns=target_cols)
+
+    if df_accrual_types is None or df_accrual_types.empty:
+        logger.warning("process_item_accruals: df_accrual_types пустой или None.")
+
+    if "item_fees" not in df_accruals.columns:
+        logger.info("process_item_accruals: в df_accruals нет колонки 'item_fees'.")
+        return pd.DataFrame(columns=target_cols)
+
+    # === 1. Фильтрация начислений, где есть item_fees ===
+    df_items = (
+        df_accruals[df_accruals["item_fees"].notna()]
+        .reset_index(drop=True)
+        .copy()
+    )
+    if df_items.empty:
+        logger.info("process_item_accruals: нет строк с item_fees.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Идентификаторы, которые хотим сохранить (можно расширить при необходимости)
+    id_cols = ["date"]
+    for col in id_cols:
+        if col not in df_items.columns:
+            df_items[col] = None
+
+    # === 2. Уровень item_fees -> item_fees.fees ===
+    # после этого появится колонка item_fees.fees (список dict-ов со sku и fees)
+    try:
+        df_level1 = custom_pd_explode(df_items, "item_fees")
+    except Exception as ex:
+        logger.error(f"Ошибка custom_pd_explode по 'item_fees': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    if "item_fees.fees" not in df_level1.columns:
+        logger.info("process_item_accruals: после custom_pd_explode нет 'item_fees.fees'.")
+        return pd.DataFrame(columns=target_cols)
+
+    # === 3. Уровень item_fees.fees -> item_fees.fees.sku, item_fees.fees.fees ===
+    # здесь каждая строка соответствует одному sku, а внутри ещё список fees
+    try:
+        df_level2 = custom_pd_explode(df_level1, "item_fees.fees")
+    except Exception as ex:
+        logger.error(f"Ошибка custom_pd_explode по 'item_fees.fees': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    if "item_fees.fees.fees" not in df_level2.columns:
+        logger.info("process_item_accruals: после второго explode нет 'item_fees.fees.fees'.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Переименуем sku
+    if "item_fees.fees.sku" in df_level2.columns:
+        df_level2 = df_level2.rename(columns={"item_fees.fees.sku": "SKU"})
+    else:
+        df_level2["SKU"] = None
+
+    # === 4. Уровень item_fees.fees.fees -> type_id, accrued.amount ===
+    try:
+        df_level3 = custom_pd_explode(df_level2, "item_fees.fees.fees")
+    except Exception as ex:
+        logger.error(f"Ошибка custom_pd_explode по 'item_fees.fees.fees': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    # На этом уровне custom_pd_explode создаст колонки:
+    #   item_fees.fees.fees.type_id
+    #   item_fees.fees.fees.accrued.amount
+    #   item_fees.fees.fees.accrued.currency
+    if "item_fees.fees.fees.type_id" not in df_level3.columns:
+        logger.info("process_item_accruals: нет 'item_fees.fees.fees.type_id' после третьего explode.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Упрощаем названия технических колонок
+    df_flat = df_level3.rename(
+        columns={
+            "item_fees.fees.fees.type_id": "type_id",
+            "item_fees.fees.fees.accrued.amount": "accrued.amount",
+        }
+    )
+
+    # Оставляем только нужные поля (идентификаторы + начисления)
+    keep_cols = id_cols + ["SKU", "type_id", "accrued.amount"]
+    keep_cols = [c for c in keep_cols if c in df_flat.columns]
+    df_flat = df_flat[keep_cols].copy()
+
+    # === 5. Приводим сумму к числу ===
+    if "accrued.amount" in df_flat.columns:
+        df_flat["accrued.amount"] = pd.to_numeric(
+            df_flat["accrued.amount"], errors="coerce"
+        )
+    else:
+        df_flat["accrued.amount"] = np.nan
+
+    # === 6. Мерджим со справочником типов начислений ===
+    if (
+        df_accrual_types is not None
+        and not df_accrual_types.empty
+        and "type_id" in df_accrual_types.columns
+        and "description" in df_accrual_types.columns
+    ):
+        df_flat = df_flat.merge(
+            df_accrual_types[["type_id", "description"]],
+            how="left",
+            on="type_id",
+        )
+        df_flat["Тип начисления"] = df_flat["description"]
+    else:
+        logger.warning(
+            "Справочник начислений не использован (нет type_id/description). "
+            "Тип начисления будет равен type_id."
+        )
+        df_flat["Тип начисления"] = df_flat.get("type_id").astype(str)
+
+    # === 7. Формируем итоговый длинный DataFrame ===
+    df_items_long = df_flat.rename(
+        columns={
+            "date": "Дата",
+            "accrued.amount": "Итого",
+        }
+    )[["Дата", "SKU", "Тип начисления", "Итого"]]
+
+    df_items_long = df_items_long.dropna(subset=["Итого"])
+    # при необходимости можно убрать нули:
+    # df_items_long = df_items_long[df_items_long["Итого"] != 0]
+
+    # Гарантируем порядок и наличие всех целевых колонок
+    for col in target_cols:
+        if col not in df_items_long.columns:
+            df_items_long[col] = None
+    df_items_long = df_items_long[target_cols]
+
+    return df_items_long
+
+# Функция обработки начислений без товаров
+def process_non_item_accruals(
+    df_accruals: pd.DataFrame,
+    df_accrual_types: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Обрабатывает начисления, лежащие в поле non_item_fee.
+
+    Пример структуры non_item_fee:
+        {
+          "type_id": 27,
+          "accrued": {"amount": "-500", "currency": "RUB"}
+        }
+
+    На выходе — длинный DataFrame с колонками:
+        Дата | ID Начисления | Тип начисления | Итого
+    """
+
+    target_cols = ["Дата", "ID Начисления", "Тип начисления", "Итого"]
+
+    # === 0. Проверка входных данных ===
+    if df_accruals is None or df_accruals.empty:
+        logger.info("process_non_item_accruals: df_accruals пустой или None.")
+        return pd.DataFrame(columns=target_cols)
+
+    if df_accrual_types is None or df_accrual_types.empty:
+        logger.warning("process_non_item_accruals: df_accrual_types пустой или None.")
+
+    if "non_item_fee" not in df_accruals.columns:
+        logger.info("process_non_item_accruals: в df_accruals нет колонки 'non_item_fee'.")
+        return pd.DataFrame(columns=target_cols)
+
+    # === 1. Фильтрация начислений, где есть non_item_fee ===
+    df_non_items = (
+        df_accruals[df_accruals["non_item_fee"].notna()]
+        .copy()
+        .reset_index(drop=True)
+    )
+    if df_non_items.empty:
+        logger.info("process_non_item_accruals: нет строк с non_item_fee.")
+        return pd.DataFrame(columns=target_cols)
+
+    # Идентификаторы, которые хотим сохранить
+    id_cols = ["date", "unit_number"]
+    for col in id_cols:
+        if col not in df_non_items.columns:
+            df_non_items[col] = None
+
+    # === 2. Распаковываем non_item_fee через custom_pd_explode ===
+    try:
+        df_flat = custom_pd_explode(df_non_items, "non_item_fee")
+    except Exception as ex:
+        logger.error(f"Ошибка custom_pd_explode по 'non_item_fee': {ex}")
+        return pd.DataFrame(columns=target_cols)
+
+    # Ожидаемые колонки после explode:
+    #   non_item_fee.type_id
+    #   non_item_fee.accrued.amount
+    if "non_item_fee.type_id" not in df_flat.columns:
+        logger.info("process_non_item_accruals: нет 'non_item_fee.type_id' после explode.")
+        return pd.DataFrame(columns=target_cols)
+
+    df_flat = df_flat.rename(
+        columns={
+            "non_item_fee.type_id": "type_id",
+            "non_item_fee.accrued.amount": "accrued.amount",
+        }
+    )
+
+    keep_cols = id_cols + ["type_id", "accrued.amount"]
+    keep_cols = [c for c in keep_cols if c in df_flat.columns]
+    df_flat = df_flat[keep_cols].copy()
+
+    # === 3. Приводим сумму к числу ===
+    if "accrued.amount" in df_flat.columns:
+        df_flat["accrued.amount"] = pd.to_numeric(
+            df_flat["accrued.amount"], errors="coerce"
+        )
+    else:
+        df_flat["accrued.amount"] = np.nan
+
+    # === 4. Мерджим со справочником типов начислений ===
+    if (
+        df_accrual_types is not None
+        and not df_accrual_types.empty
+        and "type_id" in df_accrual_types.columns
+        and "description" in df_accrual_types.columns
+    ):
+        df_flat = df_flat.merge(
+            df_accrual_types[["type_id", "description"]],
+            how="left",
+            on="type_id",
+        )
+        df_flat["Тип начисления"] = df_flat["description"]
+    else:
+        logger.warning(
+            "Справочник начислений не использован (нет type_id/description). "
+            "Тип начисления будет равен type_id."
+        )
+        df_flat["Тип начисления"] = df_flat.get("type_id").astype(str)
+
+    # === 5. Формируем итоговый длинный DataFrame ===
+    df_non_items_long = df_flat.rename(
+        columns={
+            "date": "Дата",
+            "unit_number": "ID Начисления",
+            "accrued.amount": "Итого",
+        }
+    )[["Дата", "ID Начисления", "Тип начисления", "Итого"]]
+
+    df_non_items_long = df_non_items_long.dropna(subset=["Итого"])
+    # если нужно, можно убрать нулевые суммы:
+    # df_non_items_long = df_non_items_long[df_non_items_long["Итого"] != 0]
+
+    # Гарантируем порядок и наличие всех целевых колонок
+    for col in target_cols:
+        if col not in df_non_items_long.columns:
+            df_non_items_long[col] = None
+    df_non_items_long = df_non_items_long[target_cols]
+
+    return df_non_items_long
+
+# Функция объединения всех транзакций в один df
+def union_all_transactions(df_transactions_dict: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Принимает словарь с датафреймами транзакций:
+        {
+          "postings": df_postings_transactions_processed,
+          "items": df_item_transactions,
+          "non_items": df_non_item_transactions,
+        }
+    Объединяет их в один DataFrame, добавляя колонку 'source'
+    и фильтруя строки с Итого != 0.
+    Дополнительно:
+      - SKU приводится к int (ошибки -> NaN, потом отбрасываются).
+    """
+    pieces = []
+    for name, df in df_transactions_dict.items():
+        if df is None or df.empty:
+            continue
+        tmp = df.copy()
+        tmp["source"] = name  # чтобы знать, откуда пришла строка
+        pieces.append(tmp)
+
+    if not pieces:
+        logger.info("union_all_transactions: все входные датафреймы пусты.")
+        return pd.DataFrame()
+
+    df_all = pd.concat(pieces, ignore_index=True, sort=False)
+
+    # Приводим Итого к числу и фильтруем != 0
+    if "Итого" in df_all.columns:
+        df_all["Итого"] = pd.to_numeric(df_all["Итого"], errors="coerce")
+        df_all = df_all[df_all["Итого"] != 0].copy()
+
+    # Приводим SKU к int, если колонка есть
+    if "SKU" in df_all.columns:
+        df_all["SKU"] = pd.to_numeric(df_all["SKU"], errors="coerce")
+        # если нужно выбрасывать строки без корректного SKU:
+        # df_all = df_all[df_all["SKU"].notna()].copy()
+        df_all["SKU"] = df_all["SKU"].astype("Int64")  # nullable int
+
+    return df_all
+
+# Функция выгрузки и обработки списка транзакций
+def get_transactions(
+        headers,
+        date_start,
+        date_end,
+        upload_additional_postings_info=False,
+        to_save=True
+):
+    # Выгружаем список транзакций
+    df_accruals = uploadAccrualByDay(headers, date_start, date_end)
+    # Выгружаем справочник типов начислений
+    df_accrual_types = uploadAccrualTypes(headers)
+    # Обрабатываем транзакции по отправлениям
+    df_postings_transactions_processed = process_posting_accruals(
+        df_accruals,
+        df_accrual_types
+    )
+    # Если стоит флаг - выгружаем доп. информацию по отправлениям
+    if upload_additional_postings_info:
+        df_postings_transactions_processed = upload_additional_postings_transactions_info(
+            df_postings_transactions_processed,
+            headers,
+            date_start,
+            date_end
+        )
+    # Обрабатываем прочие начисления по товарам
+    df_item_transactions = process_item_accruals(
+        df_accruals,
+        df_accrual_types,
+    )
+
+    # Обрабатываем начисления без товаров
+    df_non_item_transactions = process_non_item_accruals(
+        df_accruals,
+        df_accrual_types
+    )
+    # Объединяем все транзакции в один df, убираем 0, делаем небольшую обработку
+    df_all_transactions = union_all_transactions({
+        "postings": df_postings_transactions_processed,
+        "items": df_item_transactions,
+        "non_items": df_non_item_transactions,
+    })
+    # Если стоит флаг сохранения - сохраняем
+    if to_save:
+        # Задаем имя файла для транзакций
+        file_name_transactions = (
+            uploaddir_today /
+            f"{str(date.today())}_Транзакции.csv"
+        )
+        df_all_transactions.to_csv(
+            file_name_transactions,
+            sep=';',
+            index=False,
+            encoding='utf-8-sig'
+        )
+
+    return df_all_transactions
 
 
 def generate_monthly_intervals(date_start: str, date_end: str):
@@ -3207,197 +4408,6 @@ def getReturns_v2(
     return df_returns_processed
 
 
-# Продажи FBO
-def getSalesFBO(headers):
-    # Задаем имя файла для списка транзакций
-    file_name_transactions = (
-        uploaddir_today /
-        f"{str(date.today())}_Транзакции.csv"
-    )
-    # Задаем имя файла для продаж FBO
-    file_name_sales_fbo = (
-        uploaddir_today /
-        f"{str(date.today())}_Продажи_fbo.csv"
-    )
-    # Считываем файл со списком транзакций
-    # BUG: при чтении excel все словари в колонках переводятся в строки. Приходится их переводить обратно при помощи eval()
-    df_transactions_list = pd.read_csv(file_name_transactions, sep=';')
-    df_transactions_list['posting'] = df_transactions_list['posting'].apply(literal_eval)
-    # Достаем информацию об отправлениях из списка транзакций
-    postings = pd.json_normalize(df_transactions_list['posting'])
-    # Добавляем тип (заказ\возврат), стоимость и количество товаров в отправлении
-    postings = pd.concat([postings, df_transactions_list[['type', 'operation_date', 'operation_type', 'operation_type_name', 'amount', 'accruals_for_sale', 'items_amount']]], axis=1)
-
-    # Делаем выборку только по FBO и считаем итоговую цену для каждого отправления
-    postings_fbo = (
-        postings
-        # Продажей считаем тип начисления - Доставка покупателю
-        .loc[(postings['delivery_schema'] == 'FBO')& (postings['operation_type_name'].isin(['Доставка покупателю'])), :]
-        .groupby(['posting_number', 'type', 'order_date'])
-        .agg(amount=('amount', 'sum'))
-        .reset_index()
-    )
-    # Делаем фильтр по типу отправления, нужны только заказы (orders) без возвратов
-    postings_fbo = (
-        postings_fbo
-        .loc[postings_fbo['type'] == 'orders', :]
-        .drop_duplicates(subset=['posting_number'])
-        .sort_values(['order_date'])
-    )
-
-    # Если есть продажи по FBO
-    if postings_fbo.shape[0] > 0:
-        # Выгружаем данные по отправлениям FBO
-        sales_fbo = pd.DataFrame()
-        loaded_posting_count = 0
-        total_posting_count = len(postings_fbo['posting_number'])
-        for posting_number in postings_fbo['posting_number']:
-            params_fbo = json.dumps({
-                "posting_number": posting_number,
-                "translit": True,
-                "with": {
-                    "analytics_data": True,
-                    "financial_data": True
-                }
-            })
-            result = requests.post(f"{ozon_seller_api_url}/v2/posting/fbo/get",headers=headers, data=params_fbo).json()
-            # Получаем дату заказа (для логов)
-            orderDate = str(re.findall(r'[0-9]*-[0-9]*-[0-9][0-9]',result['result']['created_at']))
-            # Достаем из результата данные о товаре
-            products_fbo = pd.DataFrame(result['result']['products'])
-            products_fbo = products_fbo.assign(
-                Номер_заказа=result['result']['order_number'],
-                Номер_отправления=result['result']['posting_number'],
-                Склад = result['result']['analytics_data']['warehouse_name'],
-                Кластер_отправления=result['result']['financial_data']['cluster_from'],
-                Кластер_доставки=result['result']['financial_data']['cluster_to'],
-                Сумма_отправления=postings_fbo.loc[postings_fbo['posting_number'] == posting_number, 'amount'].values[0],
-                Статус=result['result']['status']
-            )
-            # Объединяем данные с предыдущим заказом
-            sales_fbo = pd.concat([sales_fbo, products_fbo])
-            # Сколько уже загружено заказов
-            loaded_posting_count += 1
-            # Сколько осталось выгрузить заказов в процентах
-            loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
-            logger.info(str(loaded_percent) + ' % ' + "Upload FBO sales from "+ orderDate.replace("['",'').replace("']",''))
-            # Делаем паузу 3 с., чтоб ы часто не вызывать метод апи
-            # time.sleep(3)
-
-        # Переименовываем некоторые колонки для удобства и убираем лишние
-        sales_fbo = sales_fbo.rename(columns={
-            'offer_id': 'Артикул',
-            'name': 'Название товара',
-            'quantity': 'Количество',
-            'currency_code': 'Валюта отправления'
-        })
-        # Указываем, что схема доставки FBO
-        sales_fbo['Схема доставки'] = 'FBO'
-        sales_fbo = sales_fbo.loc[:, ~sales_fbo.columns.isin(['price', 'digital_codes'])]
-    # Если продаж не было, сохраняем пустой df с продажами
-    else:
-        colnames_sales_fbo = ['sku', 'Название товара', 'Количество', 'Артикул',
-       'Валюта отправления', 'Номер_заказа', 'Номер_отправления', 'Склад',
-       'Кластер_отправления', 'Кластер_доставки', 'Сумма_отправления', 'Схема доставки', 'Статус']
-        sales_fbo = pd.DataFrame(columns=colnames_sales_fbo)
-    sales_fbo.to_csv(file_name_sales_fbo, sep=';', index=False, encoding='utf-8-sig')
-
-
-# Продажи FBS
-def getSalesFBS(headers):
-    # Задаем имя файла для списка транзакций
-    file_name_transactions = (
-        uploaddir_today /
-        f"{str(date.today())}_Транзакции.csv"
-    )
-    # Задаем имя файла для продаж FBS
-    file_name_sales_fbs = (
-        uploaddir_today /
-        f"{str(date.today())}_Продажи_fbs.csv"
-    )
-    # Считываем файл со списком транзакций
-    # BUG: при чтении excel все словари в колонках переводятся в строки. Приходится их переводить обратно при помощи eval()
-    df_transactions_list = pd.read_csv(file_name_transactions, sep=';')
-    df_transactions_list['posting'] = df_transactions_list['posting'].apply(literal_eval)
-    # Достаем информацию об отправлениях из списка транзакций
-    postings = pd.json_normalize(df_transactions_list['posting'])
-    # Добавляем тип (заказ\возврат), стоимость и количество товаров в отправлении
-    postings = pd.concat([postings, df_transactions_list[['type', 'operation_date', 'operation_type', 'operation_type_name', 'amount', 'accruals_for_sale', 'items_amount']]], axis=1)
-
-    # Делаем выборку только по FBO и считаем итоговую цену для каждого отправления
-    postings_fbs = (
-        postings
-        # Продажей считаем тип начисления - Доставка покупателю
-        .loc[(postings['delivery_schema'] == 'FBS')& (postings['operation_type_name'].isin(['Доставка покупателю'])), :]
-        .groupby(['posting_number', 'type', 'order_date'])
-        .agg(amount=('amount', 'sum'))
-        .reset_index()
-    )
-    # Делаем фильтр по типу отправления, нужны только заказы (orders) без возвратов
-    postings_fbs = (
-        postings_fbs
-        .loc[postings_fbs['type'] == 'orders', :]
-        .drop_duplicates(subset=['posting_number'])
-        .sort_values(['order_date'])
-    )
-
-    # Если есть продажи по FBS
-    if postings_fbs.shape[0] > 0:
-        # Выгружаем данные по отправлениям FBO
-        sales_fbs = pd.DataFrame()
-        loaded_posting_count = 0
-        total_posting_count = postings_fbs['posting_number'].shape[0]
-        for posting_number in postings_fbs['posting_number']:
-            params_fbs = json.dumps({
-                "posting_number": posting_number,
-                "translit": True,
-                "with": {
-                    "analytics_data": True,
-                    "financial_data": True
-                }
-            })
-            result = requests.post(f"{ozon_seller_api_url}/v3/posting/fbs/get",headers=headers, data=params_fbs).json()
-            # Получаем дату заказа (для логов)
-            orderDate = str(re.findall(r'[0-9]*-[0-9]*-[0-9][0-9]',result['result']['in_process_at']))
-            # Достаем из результата данные о товаре
-            products_fbs = pd.DataFrame(result['result']['products'])
-            products_fbs = products_fbs.assign(
-                Номер_заказа=result['result']['order_number'],
-                Номер_отправления=result['result']['posting_number'],
-                Склад = result['result']['analytics_data']['warehouse'],
-                Кластер_отправления=result['result']['financial_data']['cluster_from'],
-                Кластер_доставки=result['result']['financial_data']['cluster_to'],
-                Сумма_отправления=postings_fbs.loc[postings_fbs['posting_number'] == posting_number, 'amount'].values[0],
-                Статус=result['result']['status']
-            )
-            # Объединяем данные с предыдущим заказом
-            sales_fbs = pd.concat([sales_fbs, products_fbs])
-            # Сколько уже загружено заказов
-            loaded_posting_count += 1
-            # Сколько осталось выгрузить заказов в процентах
-            loaded_percent = round(loaded_posting_count / total_posting_count * 100, 2)
-            logger.info(str(loaded_percent) + ' % ' + "Upload FBS sales from "+ orderDate.replace("['",'').replace("']",''))
-            # Делаем паузу 3 с., чтоб ы часто не вызывать метод апи
-            # time.sleep(3)
-
-        # Переименовываем некоторые колонки для удобства и убираем лишние
-        sales_fbs = sales_fbs.rename(columns={
-            'offer_id': 'Артикул',
-            'name': 'Название товара',
-            'quantity': 'Количество',
-            'currency_code': 'Валюта отправления'
-        })
-        # Указываем, что схема доставки FBS
-        sales_fbs['Схема доставки'] = 'FBS'
-        sales_fbs = sales_fbs.loc[:, ~sales_fbs.columns.isin(['price', 'digital_codes', 'mandatory_mark', 'dimensions'])]
-    # Если продаж не было, сохраняем пустой df с продажами
-    else:
-        colnames_sales_fbs = ['Артикул', 'Название товара', 'sku', 'Количество', 'Валюта отправления',
-       'Номер_заказа', 'Номер_отправления', 'Склад', 'Кластер_отправления',
-       'Кластер_доставки', 'Сумма_отправления', 'Статус', 'Схема доставки']
-        sales_fbs = pd.DataFrame(columns=colnames_sales_fbs)
-    sales_fbs.to_csv(file_name_sales_fbs, sep=';', index=False, encoding='utf-8-sig')
-
 
 # Остатки FBO
 def getStockReminders_fbo_v2(headers, df_products=None, to_save=True):
@@ -4145,6 +5155,118 @@ def get_supply_orders_details(
 
     return df_supply_details
 
+def get_supply_orders_details_v1(
+    df_supply_order_list: pd.DataFrame,
+    headers: dict,
+    method_url: str = "/v1/supply-order/details"
+) -> pd.DataFrame:
+    """
+    Получает DataFrame с деталями по заявкам на поставку через Seller API Ozon (v1/supply-order/details).
+
+    Параметры
+    ---------
+    df_supply_order_list : pd.DataFrame
+        DataFrame с колонкой 'order_id'.
+    headers : dict
+        Заголовки для API.
+    method_url : str, default="/v1/supply-order/details"
+        URL метода Ozon Seller API.
+
+    Возвращает
+    ----------
+    pd.DataFrame
+        DataFrame с деталями:
+        order_id, order_number, dropoff_warehouse_id, dropoff_warehouse_name,
+        bundle_id, storage_warehouse_id, storage_warehouse_name, supply_id, state
+    """
+    supply_info_url = f"{ozon_seller_api_url}/{method_url}"
+    order_ids = df_supply_order_list["order_id"].tolist()
+    extracted_rows = []
+
+    logger.info(f"Запросим детали по {len(order_ids)} заявкам (по одной в запрос).")
+
+    for order_id in order_ids:
+        payload = {"order_id": order_id}
+        response = requests.post(supply_info_url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            logger.error(
+                f"Ошибка API {supply_info_url} для order_id={order_id}: "
+                f"{response.status_code} — {response.text}"
+            )
+            continue
+
+        data = response.json()
+
+        # В v1 структура плоская, без списка orders
+        order_number = data.get("order_number")
+        state = data.get("state")
+        drop_id = data.get("dropoff_warehouse_id")
+        # В v1 нет имени склада в явном виде, поэтому dropoff_warehouse_name будет None
+        drop_name = data.get("dropoff_warehouse_name")  # на случай, если появится в API
+        supplies = data.get("supplies", [])
+
+        if supplies:
+            for supply in supplies:
+                # В v1 bundle_id лежит в content.bundle_id
+                content = supply.get("content", {}) or {}
+                bundle_id = content.get("bundle_id")
+
+                supply_id = supply.get("supply_id")
+
+                # storage_warehouse может отсутствовать или быть None
+                storage = supply.get("storage_warehouse", None)
+                if storage is None:
+                    logger.warning(
+                        f"Для order_id={order_id}, supply_id={supply_id}, state={state} "
+                        f"отсутствует поле 'storage_warehouse' или оно равно None. "
+                        f"Используем данные dropoff-склада."
+                    )
+                    storage_id = drop_id
+                    storage_name = drop_name
+                else:
+                    storage_id = storage.get("warehouse_id")
+                    storage_name = storage.get("name")
+
+                extracted_rows.append({
+                    "order_id": order_id,
+                    "order_number": order_number,
+                    "dropoff_warehouse_id": drop_id,
+                    "dropoff_warehouse_name": drop_name,
+                    "bundle_id": bundle_id,
+                    "storage_warehouse_id": storage_id,
+                    "storage_warehouse_name": storage_name,
+                    "supply_id": supply_id,
+                    "state": state,
+                })
+        else:
+            # supplies пустой — добавляем строку только по заявке
+            extracted_rows.append({
+                "order_id": order_id,
+                "order_number": order_number,
+                "dropoff_warehouse_id": drop_id,
+                "dropoff_warehouse_name": drop_name,
+                "bundle_id": None,
+                "storage_warehouse_id": None,
+                "storage_warehouse_name": None,
+                "supply_id": None,
+                "state": state,
+            })
+
+    df_supply_details = pd.DataFrame(extracted_rows)
+
+    # Проверка — все ли order_ids были в ответе
+    received_orders = set(df_supply_details["order_id"].unique())
+    requested_orders = set(order_ids)
+    missing = requested_orders - received_orders
+    if missing:
+        logger.warning(f"Не получены детали для order_ids: {missing}")
+    else:
+        logger.success("Все order_ids найдены в ответе!")
+
+    return df_supply_details
+
+
 # Функция получения товаров в заявках на поставку
 def get_supply_bundle_items(
     df_supply_details: pd.DataFrame,
@@ -4543,15 +5665,20 @@ if __name__ == '__main__':
     # Заказы
     # getOrders_v2(headers, date_start, date_end)
 
-    # Список транзакций
-    df_transaction_report = get_transactions_report(headers, date_start, date_end)
-    # Продажи FBO
-    # getSalesFBO(headers)
-    df_sales_fbo = getSalesFBO_v2(headers, date_start, date_end, upload_transactions=False)
-    # Продажи FBS
-    # getSalesFBS(headers)
-    df_sales_fbs = getSalesFBS_v2(headers, date_start, date_end, upload_transactions=False)
-
+    # # Список транзакций
+    # df_transaction_report = get_transactions_report(headers, date_start, date_end)
+    # # Продажи FBO
+    # # getSalesFBO(headers)
+    # df_sales_fbo = getSalesFBO_v2(headers, date_start, date_end, upload_transactions=False)
+    # # Продажи FBS
+    # # getSalesFBS(headers)
+    # df_sales_fbs = getSalesFBS_v2(headers, date_start, date_end, upload_transactions=False)
+    df_transactions_all = get_transactions(
+        headers,
+        date_start,
+        date_end,
+        upload_additional_postings_info=True
+    )
     # Возвраты (FBO + FBS)
     df_returns = getReturns_v2(headers, date_start, date_end)
 
@@ -4562,7 +5689,6 @@ if __name__ == '__main__':
 
     # Поставки FBO
     # df_supply_orders = get_supply_orders_full(headers, uploaddir_today=uploaddir_today)
-
     df_supply_orders_current, df_supply_orders_previous = export_all_supplies_for_client(headers, uploaddir_today=uploaddir_today)
 
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
