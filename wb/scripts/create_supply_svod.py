@@ -16,13 +16,20 @@ import difflib
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 from wb.scripts.wb_logger import wb_client_logger as logger
+# from wb.scripts.uploadDataFromWB import get_warehouses_load_full
 import wb.scripts.format_supply_svod as format_supply_svod
 from wb.scripts.get_reference_table import get_reference_table
 from wb.scripts.command_args_parser import cli_reference_date
 from wb.scripts.constants import (
+    headers,
+    article_replacement,
+    WB_MERGE_KEY,
     cargo_type,
     catalog_supply_columns,
     cargo_multiplicity,
+    default_warehouse_planning_days,
+    client_warehouse_planning_overrides,
+    warehouse_days_default,
     DEMAND_PERIOD_1,
     DEMAND_PERIOD_2,
     client_name,
@@ -94,6 +101,10 @@ def read_metrics_file(
     """
     file_path = METRICS_DIR / f"{date_metrics}_МетрикиИтоги.xlsx"
     metrics = pd.read_excel(file_path, sheet_name=sheet_name)
+    # Переименовываем некоторые колонки для унификации
+    # metrics = metrics.rename(columns={
+    #     'Артикул_размер': 'Артикул_Размер',
+    # })
     return metrics.copy()
 
 
@@ -110,7 +121,30 @@ def process_catalog(catalog: pd.DataFrame) -> pd.DataFrame:
 
     catalog_processed["Размер"] = catalog_processed["Размер"].fillna('0')
 
-    if "Кратность коробов" not in catalog_processed.columns:
+    # Делаем первую букву в названиях столбцов заглавной, остальные - строчными
+    catalog_processed.columns = [col.capitalize() for col in catalog_processed.columns]
+
+    # Переименовываем ещё некоторые колонки
+    catalog_processed = catalog_processed.rename(columns={
+        # "Артикул продавца": "Артикул",
+        'Артикул wb': 'Артикул WB',
+        "Артикул 1с": "Артикул 1С",
+        "Сортируемость товара": "Сортируемость",
+        "Статус товара - переносим в отчет": "Статус",
+        'Статус продажи fbo/fbs': 'Статус продажи FBO/FBS',
+        'Габариты товара': 'Габариты товара (справочно)',
+        'Ррц': 'РРЦ',
+        'Товары в пути': 'В производстве',
+        "Остатки на складе 1с": "Остатки на складе 1С",
+    })
+    if client_name in ('BIO', 'ARK'):
+        catalog_processed = catalog_processed.rename(columns={
+            "Статус": "Статус товара",
+        })
+    # Удаляем дубликаты колонок, если есть. Оставляем первую встречающуюся.
+    catalog_processed = catalog_processed.loc[:, ~catalog_processed.columns.duplicated()]
+
+    if not {"Кратность коробов", "Кратность короба"} & set(catalog_processed.columns):
         logger.info(
             "Колонка 'Кратность коробов' не найдена в справочной "
             f"таблице. Добавляем с дефолтным значением: {DEFAULT_BOX_MULTIPLICITY}."
@@ -175,68 +209,218 @@ def read_clusters_mapping(cargo_type_param: str) -> pd.DataFrame:
     return clusters_mapping
 
 
+def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
+    """
+    Читает файл с загруженностью складов WB за указанную дату выгрузки
+    и переименовывает ключевые столбцы:
+      warehouseName -> Склад
+      boxAcceptanceType -> Ограничения
+
+    Ожидаемый путь:
+      <marketplace_dir_path>/Clients/<client_name>/UploadFiles/UploadFiles_<date_metrics>/
+        <date_metrics>_Склады_WB.csv
+
+    :param date_metrics: дата выгрузки в формате 'YYYY-MM-DD'
+    :return: DataFrame c данными по складам или пустой DF, если файл не найден.
+    """
+    uploaddir = (
+        Path(marketplace_dir_path)
+        / "Clients"
+        / client_name
+        / "UploadFiles"
+    )
+    uploaddir_metrics = uploaddir / f"UploadFiles_{date_metrics}"
+    file_path = uploaddir_metrics / f"{date_metrics}_Склады_WB.csv"
+
+    try:
+        df_warehouses = pd.read_csv(file_path, sep=";")
+    except FileNotFoundError:
+        logger.error(
+            "Файл с загруженностью складов WB не найден: {}",
+            file_path,
+        )
+        return pd.DataFrame()
+
+    # Переименование столбцов
+    rename_map = {
+        "warehouseName": "Склад",
+        "boxAcceptanceType": "Ограничения",
+    }
+    existing_rename = {
+        col_src: col_dst
+        for col_src, col_dst in rename_map.items()
+        if col_src in df_warehouses.columns
+    }
+    if existing_rename:
+        df_warehouses = df_warehouses.rename(columns=existing_rename)
+
+    logger.info(
+        "Считан файл с загруженностью складов WB: {}, строк: {}, колонок: {}",
+        file_path.name,
+        len(df_warehouses),
+        len(df_warehouses.columns),
+    )
+    return df_warehouses
+
+def read_products(date_metrics: str) -> pd.DataFrame:
+    """
+    Читает файл со списком товаров без дополнительной обработки.
+    """
+    file_path = (
+        UPLOAD_DIR
+        / f"UploadFiles_{date_metrics}"
+        / f"{date_metrics}_Товары.csv"
+    )
+
+    try:
+        df_products = pd.read_csv(file_path, sep=";")
+    except FileNotFoundError:
+        logger.error(f"Файл со списком товаров не найден: {file_path}")
+        return pd.DataFrame()
+
+    logger.info(
+        f"Считан файл со списком товаров: {file_path.name}, "
+        f"строк: {len(df_products)}, колонок: {len(df_products.columns)}"
+    )
+    return df_products
+
+
+def process_products(
+    df_products: pd.DataFrame,
+    article_replacement: Optional[dict] = None,
+) -> pd.DataFrame:
+    """
+    Обработка списка товаров:
+    - нормализует 'Артикул продавца';
+    - нормализует/создает 'Размер' (строковый, '0' при отсутствии);
+    - приводит штрихкоды к строке;
+    - при необходимости заменяет артикулы по словарю article_replacement и удаляет дубликаты;
+    - формирует колонку 'Артикул_Размер';
+    - добавляет признак 'Габариты товара' по габаритам (СГТ/КГТ/Обычный/...).
+    """
+    df = df_products.copy()
+
+    # 1. Артикул продавца
+    if "Артикул продавца" not in df.columns:
+        logger.warning(
+            "В списке товаров не найдена колонка 'Артикул продавца'. "
+            "Дальнейшая обработка может быть некорректной."
+        )
+    else:
+        df["Артикул продавца"] = (
+            df["Артикул продавца"]
+            .astype(str)
+            .str.replace("'", "", regex=False)
+            .str.strip()
+        )
+
+    # 2. Размер
+    if "Размер" in df.columns:
+        if client_name in ["KU_And_KU", "Soyuz"]:
+            df["Размер"] = (
+                df["Размер"]
+                .astype(str)
+                .str.replace(",", ".", regex=False)
+                .apply(lambda x: pd.to_numeric(x, errors="coerce"))
+                .fillna(0)
+            )
+        df["Размер"] = df["Размер"].astype(str)
+    else:
+        # Если колонки 'Размер' нет — создаём её и заполняем строковым '0'
+        df["Размер"] = "0"
+
+    # 3. Штрихкоды → строка (если есть)
+    for bc_col in ["Штрихкод", "barcode", "last_barcode"]:
+        if bc_col in df.columns:
+            df[bc_col] = df[bc_col].astype(str)
+
+    # 4. Замена артикулов по словарю и удаление дубликатов после замены
+    if article_replacement and "Артикул продавца" in df.columns:
+        df["Артикул продавца"] = df["Артикул продавца"].replace(article_replacement)
+
+    if "Артикул продавца" in df.columns:
+        df = df.drop_duplicates(subset=["Артикул продавца", "Размер"])
+
+    # 5. Колонка Артикул_Размер
+    if "Артикул продавца" in df.columns:
+        df["Артикул_Размер"] = (
+            df[["Артикул продавца", "Размер"]]
+            .apply(lambda row: "_size_".join(row.values.astype(str)), axis=1)
+        )
+
+    # 6. Признак крупногабаритного товара (СГТ/КГТ)
+    # Приводим габариты и вес к числу, NaN -> 0
+    for col in ["Длина, см", "Ширина, см", "Высота, см", "Вес, кг"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        else:
+            df[col] = 0.0
+
+    # Сумма трёх сторон
+    df["Сумма_3_сторон"] = df["Длина, см"] + df["Ширина, см"] + df["Высота, см"]
+
+    # Базовый признак
+    df["Габариты товара (расчет)"] = "Стандарт"
+
+    # Опционально: некорректные габариты
+    if "Корректность габаритов" in df.columns:
+        mask_bad_dims = df["Корректность габаритов"].astype(str).str.contains(
+            "некоррект", case=False, na=False
+        )
+        df.loc[mask_bad_dims, "Габариты товара (расчет)"] = "Некорректные габариты"
+
+    # --- Условия СГТ ---
+    # Вес одной коробки — от 25 до 100 кг включительно
+    cond_sgt_weight = (df["Вес, кг"] >= 25) & (df["Вес, кг"] <= 100)
+    # Длина хотя бы одной стороны упаковки — от 121 до 400 см включительно
+    cond_sgt_side = (
+        df["Длина, см"].between(121, 400)
+        | df["Ширина, см"].between(121, 400)
+        | df["Высота, см"].between(121, 400)
+    )
+    # Сумма трех сторон упаковки — от 201 до 1 200 см включительно
+    cond_sgt_sum = df["Сумма_3_сторон"].between(201, 1200)
+    # Если выполняется хотя бы одно из условий — СГТ
+    mask_sgt = cond_sgt_weight | cond_sgt_side | cond_sgt_sum
+    df.loc[mask_sgt, "Габариты товара (расчет)"] = "СГТ"
+
+    # --- Условия КГТ ---
+    mask_not_sgt = ~mask_sgt
+    # Вес менее 25 кг
+    cond_kgt_weight = df["Вес, кг"] < 25
+    # Одна сторона от 121 до 200 см
+    cond_kgt_side = (
+        df["Длина, см"].between(121, 200)
+        | df["Ширина, см"].between(121, 200)
+        | df["Высота, см"].between(121, 200)
+    )
+    # Сумма трех сторон от 201 до 280 см
+    cond_kgt_sum = df["Сумма_3_сторон"].between(201, 280)
+    # КГТ: вес < 25 кг и (одна сторона в диапазоне или сумма сторон в диапазоне)
+    mask_kgt = mask_not_sgt & cond_kgt_weight & (cond_kgt_side | cond_kgt_sum)
+    df.loc[mask_kgt, "Габариты товара (расчет)"] = "КГТ"
+
+    # Вспомогательный столбец можно убрать, если не нужен в отчёте
+    df.drop(columns=["Сумма_3_сторон"], inplace=True)
+
+    return df
+
 # ============================================================================
 # ФУНКЦИИ ОБРАБОТКИ КЛАСТЕРОВ
 # ============================================================================
 
-
-def add_missing_clusters(date_metrics: str) -> pd.DataFrame:
+def get_warehouse_planning_days_for_client(client_name: str) -> dict:
     """
-    Добавляет недостающие комбинации Артикул_Размер–Склад
-    (аналог add_clusters в Ozon).
+    Возвращает словарь 'Склад -> дни планирования' для клиента WB:
+    - берёт default_warehouse_planning_days как базу;
+    - поверх накладывает client_warehouse_planning_overrides[client_name], если есть.
     """
-    metrics_clusters = read_metrics_file(
-        date_metrics,
-        sheet_name="claster_report",
-    )
-    metrics_summary = read_metrics_file(
-        date_metrics,
-        sheet_name="summary",
-    )
+    planning = default_warehouse_planning_days.copy()
+    overrides = client_warehouse_planning_overrides.get(client_name)
+    if overrides:
+        planning.update(overrides)
+    return planning
 
-    sku_clusters = list(
-        product(
-            metrics_summary["Артикул_Размер"].unique(),
-            metrics_clusters["Склад"].unique(),
-        )
-    )
-    sku_clusters_df = pd.DataFrame(
-        sku_clusters,
-        columns=["Артикул_Размер", "Склад"],
-    )
-
-    metrics_merged = sku_clusters_df.merge(
-        metrics_clusters[
-            [
-                "Артикул_Размер",
-                "Склад",
-                "Продажи",
-                "Заказы",
-                "Ожидаемое поступление",
-                "Остатки",
-            ]
-        ],
-        on=["Артикул_Размер", "Склад"],
-        how="left",
-    )
-
-    fill_columns = ["Продажи", "Заказы", "Ожидаемое поступление", "Остатки"]
-    metrics_merged[fill_columns] = metrics_merged[fill_columns].fillna(0)
-
-    metrics_merged = metrics_merged.merge(
-        metrics_summary.drop(
-            columns=[
-                "Продажи",
-                "Заказы",
-                "Ожидаемое поступление",
-                "Остатки",
-                "Остатки_fbs",
-            ]
-        ),
-        on="Артикул_Размер",
-        how="left",
-    )
-    return metrics_merged
 
 
 def get_cluster_column_from_mapping(
@@ -253,99 +437,174 @@ def get_cluster_column_from_mapping(
 
 def replace_clusters(
     clusters_mapping_df: pd.DataFrame,
-    cluster_col: str,
     df_with_clusters: pd.DataFrame,
+    sgt_labels: tuple[str, ...] = ("СГТ", "КГТ"),
+    aggregate: bool = True,
+    log_unmapped: bool = True,
 ) -> pd.DataFrame:
     """
-    Объединяет несколько складов в один кластер согласно маппингу.
+    Объединяет склады в кластеры согласно маппингу, с учётом габаритов товара.
 
-    Поведение:
-    - Склады, для которых в маппинге есть значение в колонке cluster_col,
-      заменяются на это значение (объединяются в кластеры).
-    - Склады, которых нет в маппинге, остаются как есть (их 'Склад' не меняем).
-    - Для таких складов:
-        * выводится один logger.warning с перечнем складов без группировки
-          и списком «похожих» складов в маппинге с номерами строк.
+    Параметры
+    ----------
+    clusters_mapping_df : pd.DataFrame
+        Таблица маппинга складов WB. Ожидаемые колонки:
+          - 'Склад' — исходное имя склада WB;
+          - 'Группировка' — целевой кластер для обычных товаров;
+          - 'Группировка СГТ' — целевой кластер для СГТ/КГТ‑товаров.
+        Перед использованием дубликаты по 'Склад' удаляются, чтобы
+        исключить размытие данных при merge.
+
+    df_with_clusters : pd.DataFrame
+        Исходные данные по складам, как минимум с колонками:
+          - 'Склад' — имя склада WB (будет нормализовано strip());
+          - 'Габариты товара' или 'Габариты товара (расчет)' — тип
+            габаритов для определения СГТ/КГТ.
+        Все остальные колонки (продажи, заказы, остатки и т.п.) сохраняются.
+
+    sgt_labels : tuple[str, ...], optional
+        Набор значений, по которым определяется тяжёлый товар.
+        Если значение в 'Габариты товара' / 'Габариты товара (расчет)'
+        принадлежит этому набору, склад относится к СГТ/КГТ и для него
+        используется 'Группировка СГТ'. По умолчанию: ('СГТ', 'КГТ').
+
+    aggregate : bool, optional
+        Управляет агрегацией:
+          - True (по умолчанию): после добавления 'Склад для группировки'
+            выполняется groupby по колонкам
+              ['WB_MERGE_KEY', '№ товара', 'Склад', 'Склад для группировки']
+            с суммированием ['Продажи', 'Заказы', 'Ожидаемое поступление',
+            'Остатки'] (если эти колонки присутствуют).
+          - False: никаких groupby не выполняется, возвращается
+            df_with_clusters с добавленным 'Склад для группировки'.
+
+    log_unmapped : bool, optional
+        Флаг логирования складов без группировки:
+          - True (по умолчанию): для всех складов, у которых и 'Группировка',
+            и 'Группировка СГТ' равны NaN, формируется warning с
+            перечислением таких складов и списком похожих складов из
+            маппинга с номерами строк (Excel‑нумерация).
+          - False: логирование пропускается.
+
+    Возвращает
+    ----------
+    pd.DataFrame
+        Если aggregate=False:
+          - исходный df_with_clusters с добавленным столбцом
+            'Склад для группировки' (и временными колонками маппинга).
+        Если aggregate=True:
+          - агрегированный DataFrame по складам:
+              * группирующие колонки — ['WB_MERGE_KEY', '№ товара',
+                'Склад', 'Склад для группировки'] (только те, что есть в df);
+              * числовые колонки ['Продажи', 'Заказы',
+                'Ожидаемое поступление', 'Остатки'] суммируются.
     """
     df_merged = df_with_clusters.copy()
 
-    # Нормализуем названия складов (обрезаем пробелы)
+    # Нормализуем названия складов
     df_merged["Склад"] = df_merged["Склад"].astype(str).str.strip()
-    clusters_mapping_norm = clusters_mapping_df.copy()
-    clusters_mapping_norm["Склад"] = clusters_mapping_norm["Склад"].astype(str).str.strip()
 
-    # Мержим по 'Склад'
+    clusters_mapping_norm = clusters_mapping_df.copy()
+    clusters_mapping_norm["Склад"] = (
+        clusters_mapping_norm["Склад"].astype(str).str.strip()
+    )
+    # Удаляем дубликаты по "Склад", чтобы при merge не было размытия
+    clusters_mapping_norm = clusters_mapping_norm.drop_duplicates(subset=["Склад"])
+
+    # Мержим по 'Склад', забираем обе группировки
     df_merged = df_merged.merge(
-        clusters_mapping_norm,
+        clusters_mapping_norm[["Склад", "Группировка", "Группировка СГТ"]],
         how="left",
         on="Склад",
         suffixes=("", "_map"),
     )
 
-    # Склады без группировки (cluster_col == NaN)
-    mask_not_mapped = df_merged[cluster_col].isna()
-    unmapped_warehouses = (
-        df_merged.loc[mask_not_mapped, "Склад"]
-        .dropna()
-        .astype(str)
-        .unique()
-        .tolist()
+    # ---- Определяем тип габаритов ----
+    if "Габариты товара" in df_merged.columns:
+        dims = df_merged["Габариты товара"].astype(str).str.strip()
+    elif "Габариты товара (расчет)" in df_merged.columns:
+        dims = df_merged["Габариты товара (расчет)"].astype(str).str.strip()
+    else:
+        dims = pd.Series("", index=df_merged.index)
+
+    is_sgt = dims.isin(sgt_labels)
+
+    # Таргет для СГТ/КГТ и обычных
+    target_sgt = df_merged["Группировка СГТ"].where(
+        df_merged["Группировка СГТ"].notna(), df_merged["Склад"]
+    )
+    target_norm = df_merged["Группировка"].where(
+        df_merged["Группировка"].notna(), df_merged["Склад"]
     )
 
-    if unmapped_warehouses:
-        # Подготовим данные для поиска похожих складов
-        known_warehouses = clusters_mapping_norm["Склад"].astype(str)
-        known_list = known_warehouses.tolist()
+    # Новый столбец с группировкой для расчёта
+    df_merged["Склад для группировки"] = np.where(is_sgt, target_sgt, target_norm)
 
-        # Собираем строки для одного большого warning’a
-        lines_for_log: list[str] = []
-
-        for wh in sorted(unmapped_warehouses):
-            similar = difflib.get_close_matches(wh, known_list, n=5, cutoff=0.6)
-
-            if not similar:
-                lines_for_log.append(f"{wh}: похожие склады не найдены")
-                continue
-
-            similar_parts: list[str] = []
-            for sim in similar:
-                idx_list = clusters_mapping_norm.index[known_warehouses == sim].tolist()
-                # excel-строки = индекс + 2 (1 — заголовок, индексация с 0)
-                excel_rows = [i + 2 for i in idx_list]
-                similar_parts.append(f"{sim} (строки: {', '.join(map(str, excel_rows))})")
-
-            lines_for_log.append(f"{wh}: " + ", ".join(similar_parts))
-
-        logger.warning(
-            "Похожие склады для складов без группировки:\n  " +
-            "\n  ".join(lines_for_log)
+    # ---- Логирование складов без группировки (опционально) ----
+    if log_unmapped:
+        mask_no_group = (
+            df_merged["Группировка"].isna()
+            & df_merged["Группировка СГТ"].isna()
         )
+        unmapped_warehouses = (
+            df_merged.loc[mask_no_group, "Склад"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        if unmapped_warehouses:
+            known_warehouses = clusters_mapping_norm["Склад"].astype(str)
+            known_list = known_warehouses.tolist()
+            lines_for_log: list[str] = []
+            for wh in sorted(unmapped_warehouses):
+                similar = difflib.get_close_matches(
+                    wh, known_list, n=5, cutoff=0.6
+                )
+                if not similar:
+                    lines_for_log.append(f"{wh}: похожие склады не найдены")
+                    continue
+                similar_parts: list[str] = []
+                for sim in similar:
+                    idx_list = clusters_mapping_norm.index[
+                        known_warehouses == sim
+                    ].tolist()
+                    # excel-строки = индекс + 2 (заголовок + 1)
+                    excel_rows = [i + 2 for i in idx_list]
+                    similar_parts.append(
+                        f"{sim} (строки: {', '.join(map(str, excel_rows))})"
+                    )
+                lines_for_log.append(f"{wh}: " + ", ".join(similar_parts))
+            logger.warning(
+                "Похожие склады для складов без группировки:\n  "
+                + "\n  ".join(lines_for_log)
+            )
 
-    # Если для склада есть значение в колонке cluster_col — используем его,
-    # иначе оставляем исходное название склада.
-    df_merged["Склад_новый"] = df_merged[cluster_col].fillna(df_merged["Склад"])
+    # ---- Если агрегация не нужна — возвращаем df_merged как есть ----
+    if not aggregate:
+        return df_merged
 
-    df_merged = df_merged.drop(columns=["Склад"]).rename(columns={"Склад_новый": "Склад"})
-
-    # Агрегация после замены кластеров
+    # ---- Агрегация: используем 'Склад для группировки', исходный 'Склад' сохраняем ----
     group_columns = [
-        "Артикул_Размер",
+        WB_MERGE_KEY,
         "№ товара",
-        "Склад",
-        "Предмет",
-        "Наименование товара",
-        "Цвет",
-        "Штрихкод",
+        "Склад",              # исходный склад
+        "Склад для группировки",  # агрегирующий кластер
     ]
     sum_columns = ["Продажи", "Заказы", "Ожидаемое поступление", "Остатки"]
 
+    # Оставляем только существующие колонки из group_columns + sum_columns
+    existing_group_cols = [c for c in group_columns if c in df_merged.columns]
+    existing_sum_cols = [c for c in sum_columns if c in df_merged.columns]
+
     df_aggregated = (
-        df_merged[group_columns + sum_columns]
-        .groupby(group_columns, as_index=False)
+        df_merged[existing_group_cols + existing_sum_cols]
+        .groupby(existing_group_cols, as_index=False)
         .sum()
     )
 
     return df_aggregated
+
 # ============================================================================
 # ФУНКЦИИ РАСЧЕТА ПОКАЗАТЕЛЕЙ
 # ============================================================================
@@ -382,14 +641,110 @@ def add_demand_columns(
 
 def calc_svod_for_clusters(
     metrics_df_with_clusters: pd.DataFrame,
+    warehouse_planning_days: dict,
+    default_planning_days: int,
 ) -> pd.DataFrame:
     """
-    Расчет потребности и оборачиваемости по кластерам (лист 'По кластерам').
-    Логика аналогична Ozon: оборачиваемость, потребность на два периода,
-    корректировка по второму периоду.
+    Расчет потребности и оборачиваемости по складам (лист 'По кластерам').
+
+    Для клиентов BIO и ARK:
+      - Оборачиваемость:
+          * для КГТ/СГТ: Заказы / DAYS_IN_PERIOD;
+          * для остальных товаров: (Заказы + Продажи) / 2 / DAYS_IN_PERIOD.
+      - Дни планирования:
+          * берутся из warehouse_planning_days по имени склада
+            (Склад для группировки, если есть; иначе Склад);
+          * если склад не найден в словаре (в т.ч. СГТ-склады) —
+            используется default_planning_days (дефолт для клиента).
+      - Потребность = Оборачиваемость * Дни планирования.
+      - Считаются:
+          'Потребность',
+          'Дефицит/Избыток',
+          'Дефицит/Избыток с учетом FBS',
+          'Потребность (округл.)',
+          'Потребность с учетом FBS (округл.)',
+          'Корректировка с учетом нулевых остатков' = 'Потребность (округл.)'.
+
+    Для остальных клиентов:
+      - Оборачиваемость = (Заказы + Продажи) / 2 / DAYS_IN_PERIOD.
+      - Потребность на DEMAND_PERIOD_1/2 через add_demand_columns.
+      - 'Корректировка с учетом нулевых остатков' =
+         'Потребность на {DEMAND_PERIOD_2} дней (округл.)'.
     """
     df = metrics_df_with_clusters.copy()
 
+    # Числа без NaN
+    for col in ["Заказы", "Продажи", "Остатки", "Остатки_fbs", "Ожидаемое поступление"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        else:
+            df[col] = 0
+
+    # ----------------- Логика для BIO и ARK -----------------
+    if client_name in ("BIO", "ARK"):
+        # Базовая оборачиваемость (как обычно)
+        base_turnover = (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
+        # Только по заказам
+        orders_turnover = df["Заказы"] / DAYS_IN_PERIOD
+
+        # Признак КГТ/СГТ по габаритам
+        if "Габариты товара" in df.columns:
+            dims = df["Габариты товара"].astype(str).str.strip()
+        elif "Габариты товара (расчет)" in df.columns:
+            dims = df["Габариты товара (расчет)"].astype(str).str.strip()
+        else:
+            dims = pd.Series("", index=df.index)
+
+        is_heavy = dims.isin(["КГТ", "СГТ"])
+
+        # Оборачиваемость: тяжелые → только по заказам, остальные → базовая
+        df["Оборачиваемость"] = np.where(is_heavy, orders_turnover, base_turnover)
+
+        # Имя склада для планирования: Склад для группировки (если есть), иначе Склад
+        warehouse_col = (
+            "Склад для группировки"
+            if "Склад для группировки" in df.columns
+            else "Склад"
+        )
+        warehouses_norm = df[warehouse_col].astype(str).str.strip()
+
+        # Дни планирования: из словаря, если нет — дефолт по клиенту
+        df["Дни планирования"] = (
+            warehouses_norm.map(warehouse_planning_days)
+            .fillna(default_planning_days)
+            .astype(int)
+        )
+
+        days = df["Дни планирования"]
+        turnover = df["Оборачиваемость"]
+
+        demand = turnover * days
+
+        stock = df["Остатки"] + df["Ожидаемое поступление"]
+        stock_with_fbs = (
+            df["Остатки"] + df["Остатки_fbs"] + df["Ожидаемое поступление"]
+        )
+
+        deficit = stock - demand
+        deficit_fbs = stock_with_fbs - demand
+
+        df["Потребность"] = demand
+        df["Дефицит/Избыток"] = deficit
+        df["Дефицит/Избыток с учетом FBS"] = deficit_fbs
+
+        df["Потребность (округл.)"] = np.where(
+            deficit > 0, 0, np.ceil(np.abs(deficit))
+        )
+        df["Потребность с учетом FBS (округл.)"] = np.where(
+            deficit_fbs > 0, 0, np.ceil(np.abs(deficit_fbs))
+        )
+
+        df["Корректировка с учетом нулевых остатков"] = df["Потребность (округл.)"]
+
+        df["№"] = np.arange(1, len(df) + 1)
+        return df
+
+    # ----------------- Общая логика для остальных клиентов -----------------
     df["Оборачиваемость"] = (
         (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
     )
@@ -406,22 +761,37 @@ def calc_svod_for_clusters(
     df["№"] = np.arange(1, len(df) + 1)
     return df
 
-
 def create_pivot_clusters(
     svod_for_clusters: pd.DataFrame,
+    df_warehouses_limits: Optional[pd.DataFrame] = None,
+    default_limit: str | int = "Неизвестно",
 ) -> Tuple[pd.DataFrame, List[str]]:
     """
     Создание сводной таблицы по кластерам (аналог Ozon):
-    - 'Потребность <Склад>' по 'Корректировка с учетом нулевых остатков'
-    - 'Остаток <Склад>' по 'Остатки'
+      - 'Потребность <Склад>' по 'Корректировка с учетом нулевых остатков'
+      - 'Остаток <Склад>' по 'Остатки'
+      - 'Ограничения <Склад>' по колонке 'Ограничения' из справочника складов.
 
     index: Артикул_Размер
     columns: Склад
+
+    :param svod_for_clusters: DataFrame с расчётом по складам.
+    :param df_warehouses_limits: DataFrame с колонками 'Склад' и 'Ограничения'
+                                 (результат load_wb_warehouses_load с rename).
+    :param default_limit: значение ограничения по умолчанию, если для склада
+                          ничего не найдено в справочнике.
     """
+    pivot_cluster_col = (
+        "Склад для группировки"
+        if "Склад для группировки" in svod_for_clusters.columns
+        else "Склад"
+    )
+
+    # Базовый pivot по потребности и остаткам
     df_pivot = pd.pivot_table(
         svod_for_clusters,
-        columns="Склад",
-        index="Артикул_Размер",
+        columns=pivot_cluster_col,
+        index=WB_MERGE_KEY,
         values=["Корректировка с учетом нулевых остатков", "Остатки"],
         aggfunc="sum",
         fill_value=0,
@@ -437,55 +807,98 @@ def create_pivot_clusters(
         )
         for col in df_pivot.columns.values
     ]
-
     df_pivot = df_pivot.reset_index()
 
-    clusters = svod_for_clusters["Склад"].unique().tolist()
-    cols_order = ["Артикул_Размер"] + [
-        val
-        for cluster in clusters
-        for val in (f"Потребность {cluster}", f"Остаток {cluster}")
-    ]
+    clusters = svod_for_clusters[pivot_cluster_col].astype(str).unique().tolist()
+
+    # Формируем порядок колонок: Потребность / Остаток / Ограничения для каждого склада
+    cols_order = [WB_MERGE_KEY]
+    for cluster in clusters:
+        cols_order.append(f"Потребность {cluster}")
+        cols_order.append(f"Остаток {cluster}")
+        cols_order.append(f"Ограничения {cluster}")
+
+    # Добавляем колонки Ограничения <Склад>, заполняя default_limit
+    if df_warehouses_limits is not None and not df_warehouses_limits.empty:
+        # нормализуем имена складов
+        limits = df_warehouses_limits.copy()
+        limits["Склад"] = limits["Склад"].astype(str).str.strip()
+        limits = limits.set_index("Склад")["Ограничения"].to_dict()
+    else:
+        limits = {}
+
+    # Для каждого склада создаём колонку с одним и тем же значением ограничения
+    for cluster in clusters:
+        col_name = f"Ограничения {cluster}"
+        limit_value = limits.get(cluster, default_limit)
+        # Колонка должна быть того же размера, что и df_pivot
+        df_pivot[col_name] = limit_value
+
+    # Оставляем только существующие колонки в заданном порядке
     cols_order = [c for c in cols_order if c in df_pivot.columns]
-
     df_pivot = df_pivot[cols_order]
+
     return df_pivot, clusters
-
-
-def calc_svod_by_sku(metrics_df_with_clusters: pd.DataFrame) -> pd.DataFrame:
-    """
-    Расчет агрегированного свода по SKU (без разреза по складам).
-    """
-    metrics_df_by_sku = (
-        metrics_df_with_clusters.groupby(
-            ["Артикул продавца", "Размер", "Наименование товара", "Предмет", "РРЦ"]
-        )
-        .agg(
-            Продажи=("Продажи", "sum"),
-            Заказы=("Заказы", "sum"),
-            Остатки=("Остатки", "sum"),
-            Ожидаемое_поступление=("Ожидаемое поступление", "sum"),
-        )
-        .reset_index()
-        .rename(columns={"Ожидаемое_поступление": "Ожидаемое поступление"})
-    )
-    return metrics_df_by_sku
 
 
 def calc_svod_for_sku(metrics_df_by_sku: pd.DataFrame) -> pd.DataFrame:
     """
     Расчет потребности и оборачиваемости для товаров по SKU (лист 'Всего').
+
+    Для клиентов BIO и ARK:
+      - если товар КГТ, оборачиваемость считается только по заказам:
+          Оборачиваемость = Заказы / DAYS_IN_PERIOD;
+      - для остальных товаров:
+          Оборачиваемость = (Заказы + Продажи) / 2 / DAYS_IN_PERIOD.
+
+    Для остальных клиентов:
+      - Оборачиваемость = (Заказы + Продажи) / 2 / DAYS_IN_PERIOD.
+
+    Во всех случаях:
+      - потребность считается на DEMAND_PERIOD_1/2 через add_demand_columns
+        от запаса с учётом FBS;
+      - нумерация строк в колонке '№'.
     """
     df = metrics_df_by_sku.copy()
 
-    df["Оборачиваемость"] = (
-        (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
-    )
+    # Защита от NaN в числовых полях
+    for col in ["Заказы", "Продажи", "Остатки", "Остатки_fbs", "Ожидаемое поступление"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        else:
+            df[col] = 0
 
+    # ----------------- Логика для BIO и ARK -----------------
+    if client_name in ("BIO", "ARK"):
+        # Базовая оборачиваемость: как раньше
+        base_turnover = (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
+        # Оборачиваемость только по заказам
+        orders_turnover = df["Заказы"] / DAYS_IN_PERIOD
+
+        # Признак КГТ: сначала по итоговой колонке "Габариты товара",
+        # если её нет — пробуем "Габариты товара (расчет)".
+        if "Габариты товара" in df.columns:
+            is_kgt = df["Габариты товара"].astype(str).str.strip() == "КГТ"
+        elif "Габариты товара (расчет)" in df.columns:
+            is_kgt = df["Габариты товара (расчет)"].astype(str).str.strip() == "КГТ"
+        else:
+            is_kgt = pd.Series(False, index=df.index)
+
+        # Оборачиваемость: КГТ — только заказы, остальные — базовая формула
+        df["Оборачиваемость"] = np.where(is_kgt, orders_turnover, base_turnover)
+
+    # ----------------- Общая логика для остальных клиентов -----------------
+    else:
+        df["Оборачиваемость"] = (
+            (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
+        )
+
+    # Запас с учётом FBS
     stock_with_fbs = (
         df["Остатки"] + df["Остатки_fbs"] + df["Ожидаемое поступление"]
     )
 
+    # Потребность на DEMAND_PERIOD_1 дней (без и с учётом FBS)
     df = add_demand_columns(df, stock_with_fbs, DEMAND_PERIOD_1)
     df = add_demand_columns(
         df,
@@ -493,16 +906,18 @@ def calc_svod_for_sku(metrics_df_by_sku: pd.DataFrame) -> pd.DataFrame:
         DEMAND_PERIOD_1,
         "с учетом FBS",
     )
+
+    # Потребность на DEMAND_PERIOD_2 дней
     df = add_demand_columns(df, stock_with_fbs, DEMAND_PERIOD_2)
 
+    # Нумерация строк
     df["№"] = np.arange(1, len(df) + 1)
-    return df
 
+    return df
 
 # ============================================================================
 # ФУНКЦИИ ОБЪЕДИНЕНИЯ ДАННЫХ
 # ============================================================================
-
 
 def add_demand_for_cluster_columns(
     df_pivot_by_clusters: pd.DataFrame,
@@ -510,39 +925,119 @@ def add_demand_for_cluster_columns(
 ) -> pd.DataFrame:
     """
     Добавляет в таблицу по SKU колонки с потребностью/остатком по кластерам
-    через merge с pivot-таблицей по 'Артикул_Размер' (аналог Ozon).
+    через merge с pivot-таблицей по WB_MERGE_KEY.
+
+    - Числовые колонки (Потребность/Остаток и т.п.) заполняются нулями.
+    - Колонки с ограничениями ('Ограничения <склад>') заполняются
+      по всему складу единым значением (по колонке), чтобы внутри склада
+      не было NaN.
     """
     df_result = metrics_df_by_sku_with_stats.copy()
-    df_result = (
-        df_result.merge(
-            df_pivot_by_clusters,
-            how="left",
-            on="Артикул_Размер",
-        )
-        .fillna(0)
+
+    # merge по ключу WB_MERGE_KEY
+    df_result = df_result.merge(
+        df_pivot_by_clusters,
+        how="left",
+        on=WB_MERGE_KEY,
     )
+
+    # Колонки, пришедшие из pivot (кроме merge-key)
+    new_cols = [c for c in df_pivot_by_clusters.columns if c != WB_MERGE_KEY]
+
+    # Разделим новые колонки на:
+    #  - ограничения: начинаются с 'Ограничения '
+    #  - остальные: числовые (Потребность/Остаток/Прошлые поставки и т.п.)
+    limit_cols = [c for c in new_cols if c.startswith("Ограничения ")]
+    numeric_cols = [c for c in new_cols if c not in limit_cols]
+
+    # 1) Числовые новые колонки заполняем нулями
+    if numeric_cols:
+        df_result[numeric_cols] = df_result[numeric_cols].fillna(0)
+
+    # 2) Колонки с ограничениями:
+    #    если в колонке есть NaN, берём первое ненулевое значение
+    #    и подставляем его во все NaN (ограничение действует на весь склад).
+    for col in limit_cols:
+        if col not in df_result.columns:
+            continue
+        series = df_result[col]
+        if series.isna().any():
+            default_limit = series.dropna().iloc[0] if series.dropna().size > 0 else "Нет ограничений"
+            df_result[col] = series.fillna(default_limit)
+
     return df_result
 
+def add_columns_from_products(
+    svod: pd.DataFrame,
+    df_products_processed: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Добавляет в свод колонку 'Габариты товара (расчет)' из списка товаров WB.
+    Мерж по 'Артикул_Размер'.
+    """
+    # Берём только нужные поля из списка товаров
+    cols_for_merge = [WB_MERGE_KEY, "Габариты товара (расчет)"]
+    cols_for_merge = [c for c in cols_for_merge if c in df_products_processed.columns]
+
+    df_products_short = df_products_processed[cols_for_merge].copy()
+
+    svod_with_additional = svod.merge(
+        df_products_short,
+        how="left",
+        on=WB_MERGE_KEY,
+    )
+    return svod_with_additional
 
 def add_columns_from_catalog(
     metrics_df_by_sku_with_stats: pd.DataFrame,
     catalog_processed: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Добавляет колонки из справочной таблицы (по Артикул_Размер).
+    Добавляет колонки из справочной таблицы (по Артикул_Размер) и формирует
+    итоговую колонку 'Габариты товара' по аналогии с Ozon:
+      1) 'Габариты товара (справочно)' из справочника,
+      2) если пусто — 'Габариты товара (расчет)' из метрик/списка товаров,
+      3) если всё ещё пусто — 'Стандарт'.
+
+    Также заполняет 'Кратность коробов' дефолтным значением, если оно отсутствует.
     """
     df_merged = metrics_df_by_sku_with_stats.copy()
 
+    # Merge справочника по Артикул_Размер
     df_merged = df_merged.merge(
         catalog_processed[catalog_supply_columns],
         how="left",
-        on=["Артикул_Размер"],
+        on=WB_MERGE_KEY,
+        suffixes=("", "_catalog_reference")
     )
 
+    # Заполнение кратности коробов дефолтом
     fill_values = {"Кратность коробов": DEFAULT_BOX_MULTIPLICITY}
     df_merged = df_merged.fillna(value=fill_values)
-    return df_merged
 
+    # Итоговая колонка "Габариты товара":
+    # приоритет — справочник, затем расчет, затем "Стандарт"
+    has_ref = "Габариты товара (справочно)" in df_merged.columns
+    has_calc = "Габариты товара (расчет)" in df_merged.columns
+
+    if has_ref and has_calc:
+        df_merged["Габариты товара"] = (
+            df_merged["Габариты товара (справочно)"]
+            .fillna(df_merged["Габариты товара (расчет)"])
+            .fillna("Стандарт")
+        )
+    elif has_ref:
+        df_merged["Габариты товара"] = (
+            df_merged["Габариты товара (справочно)"].fillna("Стандарт")
+        )
+    elif has_calc:
+        df_merged["Габариты товара"] = (
+            df_merged["Габариты товара (расчет)"].fillna("Стандарт")
+        )
+    else:
+        df_merged["Габариты товара"] = "Стандарт"
+
+    return df_merged
 
 def add_columns_for_excel(
     df_with_stats: pd.DataFrame,
@@ -556,31 +1051,35 @@ def add_columns_for_excel(
     Подготавливает DataFrame для записи в Excel (как в Ozon).
     """
     df = df_with_stats.copy()
-
-    df["Артикул продавца"] = df["Артикул_Размер"].str.split("_size_").str[0]
-    df["Размер"] = df["Артикул_Размер"].str.split("_size_").str[1]
+    if 'Артикул_Размер' not in df.columns:
+        df["Артикул продавца"] = df["Артикул_Размер"].str.split("_size_").str[0]
+        df["Размер"] = df["Артикул_Размер"].str.split("_size_").str[1]
 
     if svod_type == "Всего":
         svod_columns = supply_svod_total_columns.copy()
         cluster_columns = [
             val
             for cluster in cluster_list
-            for val in (f"Потребность {cluster}", f"Остаток {cluster}")
+            for val in (f"Потребность {cluster}", f"Остаток {cluster}", f"Ограничения {cluster}")
         ]
         svod_columns.extend(cluster_columns)
     else:
         svod_columns = supply_svod_clusters_columns.copy()
+
+    # Удаляем дубликаты колонок
+    svod_columns = list(dict.fromkeys(svod_columns))
 
     for col in svod_columns:
         if col not in df.columns:
             df[col] = np.nan
 
     df = df[svod_columns]
-    df = df.sort_values(by=["Артикул продавца", "Размер"])
+    df = df.sort_values(by=WB_MERGE_KEY, ignore_index=True)
 
     date_metrics_dt = datetime.strptime(date_metrics, "%Y-%m-%d")
     rename_mapping = {
         "Наименование товара": "Наименование",
+        "Продажи_факт_2м": "Продажи (факт) за 2 месяца",
         "Заказы": f"ЗАКАЗЫ с {day_start.strftime('%d.%m')} по {day_end.strftime('%d.%m')}, шт.",
         "Продажи": f"ПРОДАЖИ с {day_start.strftime('%d.%m')} по {day_end.strftime('%d.%m')}, шт.",
         "Остатки": f"ОСТАТОК {date_metrics_dt.strftime('%d.%m')}",
@@ -701,12 +1200,10 @@ def save_sheets_to_excel(
 def format_excel_file(
     client_name: str,
     date_metrics: str,
-    clusters_mapping_df: pd.DataFrame,
-    cluster_column: str,
-    cluster_column_jewelry: str,
     svod_excel_sku: pd.DataFrame,
     svod_excel_by_sku_jewelry: Optional[pd.DataFrame],
     svod_excel_clusters: pd.DataFrame,
+    WB_MERGE_KEY: str = WB_MERGE_KEY,
 ) -> None:
     """
     Форматирует Excel-файл (формулы, стили) через wb.scripts.format_supply_svod.
@@ -735,8 +1232,7 @@ def format_excel_file(
         date_report_created=date_metrics,
         svod_excel=svod_excel_sku,
         svod_excel_clusters=svod_excel_clusters,
-        clusters_mapping_df=clusters_mapping_df,
-        cluster_column=cluster_column,
+        WB_MERGE_KEY=WB_MERGE_KEY,
         sheet_name="Всего",
         demand_period_1=DEMAND_PERIOD_1,
         demand_period_2=DEMAND_PERIOD_2,
@@ -751,8 +1247,7 @@ def format_excel_file(
             date_report_created=date_metrics,
             svod_excel=svod_excel_by_sku_jewelry,
             svod_excel_clusters=svod_excel_clusters,
-            clusters_mapping_df=clusters_mapping_df,
-            cluster_column=cluster_column_jewelry,
+            WB_MERGE_KEY=WB_MERGE_KEY,
             sheet_name="Всего по ювелирным складам",
             demand_period_1=DEMAND_PERIOD_1,
             demand_period_2=DEMAND_PERIOD_2,
@@ -771,8 +1266,8 @@ def format_excel_file(
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================================
 
-
-def create_supply_svod_report(date_metrics: str) -> None:
+# %%
+def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
     """
     Основная функция создания отчета по поставкам WB.
     """
@@ -788,111 +1283,164 @@ def create_supply_svod_report(date_metrics: str) -> None:
         f"{'включено' if APPLY_BOX_ROUNDING else 'отключено'}"
     )
 
-    catalog = get_reference_table()
-    catalog_processed = process_catalog(catalog)
+    # ---------- 1. Настройки планирования по складам ----------
+    warehouse_days_by_warehouse = get_warehouse_planning_days_for_client(client_name)
 
+    # ---------- 2. Справочник и список товаров ----------
+    catalog_df = get_reference_table()
+    catalog_processed = process_catalog(catalog_df)
 
+    products_raw = read_products(date_metrics)
+    products_prepared = process_products(products_raw, article_replacement)
 
-    # Данные по всем кластерам (сырые)
-    metrics_df_all_clusters = read_metrics_file(
+    # ---------- 3. Метрики по складам (claster_report) ----------
+    metrics_clusters_raw = read_metrics_file(
         date_metrics,
         sheet_name="claster_report",
     )
 
-    # Лист "По кластерам" (без объединения складов)
-    svod_for_clusters = calc_svod_for_clusters(metrics_df_all_clusters)
-
-    # Маппинг складов
-    clusters_mapping_df = read_clusters_mapping(cargo_type)
-    cluster_column = get_cluster_column_from_mapping(is_heavy_cargo)
-    cluster_column_jewelry = get_cluster_column_from_mapping(
-        is_heavy_cargo,
-        specific_mapping=True,
+    # 3.1. Добавляем габариты из списка товаров (Габариты товара (расчет))
+    metrics_clusters_with_products = add_columns_from_products(
+        metrics_clusters_raw,
+        products_prepared,
     )
 
-    # Объединяем склады в кластеры
-    metrics_df_union_clusters = replace_clusters(
-        clusters_mapping_df,
-        cluster_column,
-        metrics_df_all_clusters,
-    )
-
-    metrics_df_with_stats = calc_svod_for_clusters(metrics_df_union_clusters)
-
-    # Pivot по кластерам (потребность + остаток), как на Ozon
-    df_pivot_by_clusters, cluster_list = create_pivot_clusters(
-        metrics_df_with_stats
-    )
-
-    # Обработка данных по SKU
-    metrics_df_by_sku = read_metrics_file(date_metrics)
-    metrics_df_by_sku_stats = calc_svod_for_sku(metrics_df_by_sku)
-
-    # Добавляем потребность/остатки по кластерам в свод по SKU
-    svod = add_demand_for_cluster_columns(
-        df_pivot_by_clusters,
-        metrics_df_by_sku_stats,
-    )
-
-    # Добавляем данные из каталога
-    svod_with_catalog_by_sku = add_columns_from_catalog(svod, catalog_processed)
-    svod_with_catalog_for_clusters = add_columns_from_catalog(
-        svod_for_clusters,
+    # 3.2. Добавляем данные из справочника (итоговая 'Габариты товара', кратность)
+    metrics_clusters_enriched = add_columns_from_catalog(
+        metrics_clusters_with_products,
         catalog_processed,
     )
 
-    report_dates = read_dates_file(date_metrics)
+    # ---------- 4. Маппинг складов ----------
+    warehouses_mapping = read_clusters_mapping(cargo_type)
+    jewelry_group_column = "Группировка ювелирка"
 
-    svod_excel_by_sku = add_columns_for_excel(
-        svod_with_catalog_by_sku,
-        cluster_list,
+    # 4.1. Для листа "По кластерам":
+    #      добавляем 'Склад для группировки', НО НЕ агрегируем строки
+    metrics_clusters_with_calc = replace_clusters(
+        clusters_mapping_df=warehouses_mapping,
+        df_with_clusters=metrics_clusters_enriched,
+        aggregate=False,     # без groupby
+        log_unmapped=True,   # логируем незамапленные склады
+    )
+
+    # 4.2. Рассчитываем свод "По кластерам" до агрегации по складам
+    svod_clusters_initial = calc_svod_for_clusters(
+        metrics_clusters_with_calc,
+        warehouse_days_by_warehouse,
+        warehouse_days_default,
+    )
+
+    # 4.3. Для pivot и расчёта свода по складам:
+    #      та же функция с агрегированием по 'Склад для группировки'
+    metrics_clusters_grouped = replace_clusters(
+        clusters_mapping_df=warehouses_mapping,
+        df_with_clusters=metrics_clusters_enriched,
+        aggregate=True,      # агрегируем по WB_MERGE_KEY + Склад для группировки
+        log_unmapped=False,  # повторно не логируем
+    )
+
+    svod_clusters_grouped = calc_svod_for_clusters(
+        metrics_clusters_grouped,
+        warehouse_days_by_warehouse,
+        warehouse_days_default,
+    )
+
+    # ---------- 5. Pivot по кластерам + ограничения ----------
+    warehouses_limits = load_wb_warehouses_load(date_metrics)
+    pivot_by_warehouses, warehouse_groups_list = create_pivot_clusters(
+        svod_clusters_grouped,
+        df_warehouses_limits=warehouses_limits,
+        default_limit="Неизвестно",
+    )
+
+    # ---------- 6. Метрики по SKU (summary) ----------
+    metrics_sku_raw = read_metrics_file(
         date_metrics,
-        report_dates["date_start_file"][0],
-        report_dates["date_end_file"][0],
+        sheet_name="summary",
+    )
+
+    # 6.1. Добавляем габариты из списка товаров
+    metrics_sku_with_products = add_columns_from_products(
+        metrics_sku_raw,
+        products_prepared,
+    )
+
+    # 6.2. Добавляем справочник (итоговая 'Габариты товара', кратность)
+    metrics_sku_enriched = add_columns_from_catalog(
+        metrics_sku_with_products,
+        catalog_processed,
+    )
+
+    # 6.3. Считаем свод по SKU (BIO/ARK: отдельная логика по КГТ/СГТ)
+    svod_sku_with_stats = calc_svod_for_sku(metrics_sku_enriched)
+
+    # 6.4. Добавляем потребность/остатки по складам в свод по SKU (через merge по WB_MERGE_KEY)
+    svod_sku_with_clusters = add_demand_for_cluster_columns(
+        pivot_by_warehouses,
+        svod_sku_with_stats,
+    )
+
+    # ---------- 7. Подготовка таблиц для Excel ----------
+    # 7.1. "По кластерам" — обогащаем справочником (если нужны поля каталога)
+    svod_clusters_final = add_columns_from_catalog(
+        svod_clusters_initial,
+        catalog_processed,
+    )
+
+    report_dates_df = read_dates_file(date_metrics)
+    date_start_period = report_dates_df["date_start_file"][0]
+    date_end_period = report_dates_df["date_end_file"][0]
+
+    # Лист "Всего"
+    svod_excel_total = add_columns_for_excel(
+        svod_sku_with_clusters,
+        warehouse_groups_list,
+        date_metrics,
+        date_start_period,
+        date_end_period,
         svod_type="Всего",
     )
 
-    svod_excel_by_sku_jewelry = create_jewelry_clusters_svod(
-        clusters_mapping_df,
-        metrics_df_all_clusters,
-        cluster_column_jewelry,
+    # Лист "Всего по ювелирным складам"
+    svod_excel_jewelry = create_jewelry_clusters_svod(
+        warehouses_mapping,
+        metrics_clusters_enriched,
+        jewelry_group_column,
         date_metrics,
         catalog_processed,
     )
 
-    svod_excel_for_clusters = add_columns_for_excel(
-        svod_with_catalog_for_clusters,
-        cluster_list,
+    # Лист "По кластерам"
+    svod_excel_clusters = add_columns_for_excel(
+        svod_clusters_final,
+        warehouse_groups_list,
         date_metrics,
-        report_dates["date_start_file"][0],
-        report_dates["date_end_file"][0],
+        date_start_period,
+        date_end_period,
         svod_type="По кластерам",
     )
 
+    # ---------- 8. Сохранение и форматирование Excel ----------
     save_sheets_to_excel(
-        svod_excel_by_sku,
-        svod_excel_by_sku_jewelry,
-        svod_excel_for_clusters,
-        clusters_mapping_df,
+        svod_excel_total,
+        svod_excel_jewelry,
+        svod_excel_clusters,
+        warehouses_mapping,
         date_metrics,
     )
 
     format_excel_file(
         client_name,
         date_metrics,
-        clusters_mapping_df,
-        cluster_column,
-        cluster_column_jewelry,
-        svod_excel_by_sku,
-        svod_excel_by_sku_jewelry,
-        svod_excel_for_clusters,
+        svod_excel_total,
+        svod_excel_jewelry,
+        svod_excel_clusters,
     )
 
     logger.info(
         f"Отчет успешно создан для {client_name} на дату {date_metrics}"
     )
-
-
 
 # ============================================================================
 # ТОЧКА ВХОДА
@@ -902,3 +1450,5 @@ def create_supply_svod_report(date_metrics: str) -> None:
 if __name__ == "__main__":
     date_metrics = cli_reference_date(parser)
     create_supply_svod_report(date_metrics)
+
+# %%

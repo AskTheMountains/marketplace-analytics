@@ -1,4 +1,5 @@
 # %% Определение функций
+import ast
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -906,6 +907,103 @@ def filter_report_dates(date_start, date_end, df_realization_report_new_columns,
 
 
     return df_realization_report_date_filtered
+
+# Функция добавления размера товара в отчет реализации
+def add_sizes_to_realization_report(
+        df_realization_report_date_filtered,
+        df_products
+    ):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_realization_report_with_sizes = df_realization_report_date_filtered.copy()
+    df_products_barcodes = df_products.copy()
+
+    # Преобразуем sku_list из строки вида "['1234', '5678']" в настоящий список
+    df_products_barcodes['sku_list'] = df_products_barcodes['sku_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    # Распаковываем список баркодов
+    df_products_barcodes = (
+        df_products_barcodes
+        .explode('sku_list')
+        .rename(columns={
+            'sku_list': 'Баркод',
+            'Размер': 'Размер (список товаров)'
+        })
+        .reset_index(drop=True)
+    )
+
+    # Переводим баркод в строку
+    df_products_barcodes['Баркод'] = (
+        df_products_barcodes['Баркод']
+        .astype(str)
+    )
+
+    df_realization_report_with_sizes['Баркод'] = (
+        pd.to_numeric(
+            df_realization_report_with_sizes['Баркод'], errors='coerce'
+        )
+        .fillna(0)
+        .astype(int)
+        .astype(str)
+    )
+
+    # Объединяем df с размерами и баркодами с отчетом реализации по баркоду
+    df_realization_report_with_sizes = (
+        df_realization_report_with_sizes
+        .merge(
+            df_products_barcodes[['Баркод', 'Размер (список товаров)']],
+            on='Баркод',
+            how='left',
+            indicator='Наличие в списке товаров с размерами'
+        )
+        .reset_index(drop=True)
+    )
+
+    # Там, где в отчете реализации размер 0 или пропуск, берем размер из списка товаров, если он там есть
+    mask_sizes = (
+        (df_realization_report_with_sizes['Размер'].isna() |
+         (df_realization_report_with_sizes['Размер'] == '0'))
+        & (df_realization_report_with_sizes['Наличие в списке товаров с размерами'] == 'both')
+    )
+
+    # Логируем, сколько строк будет дополнено
+    filled_count = mask_sizes.sum()
+    total_rows = len(df_realization_report_with_sizes)
+    percentage = (filled_count / total_rows * 100) if total_rows else 0
+    logger.info(
+        "Размеры дополнены из списка товаров для {} строк ({:.2f}% от {})",
+        filled_count, percentage, total_rows
+    )
+
+    df_realization_report_with_sizes['Размер дополненный'] = np.where(
+        mask_sizes,
+        df_realization_report_with_sizes['Размер (список товаров)'],
+        df_realization_report_with_sizes['Размер']
+    )
+
+    # Удаляем вспомогательные колонки
+    df_realization_report_with_sizes = df_realization_report_with_sizes.drop(
+        columns=[
+            'Размер (список товаров)',
+            'Наличие в списке товаров с размерами'
+        ]
+    )
+
+    # Переименовываем дополненную колонку с размерами
+    df_realization_report_with_sizes = df_realization_report_with_sizes.rename(columns={
+        'Размер': 'Размер (исходный)',
+        'Размер дополненный': 'Размер'
+    })
+
+    # Перемещаем колонки в начало df
+    df_realization_report_with_sizes = move_columns(
+        df_realization_report_with_sizes,
+        ['Размер (исходный)', 'Размер'],
+        position='Артикул продавца'
+    )
+
+    return df_realization_report_with_sizes
 
 
 # Функция получения дат отчета

@@ -118,17 +118,13 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
     Возвращает результат в виде pandas DataFrame.
     """
     url = "https://content-api.wildberries.ru/content/v2/get/cards/list"
-
     # Пустой список для сохранения всех карточек
     all_cards = []
-
     # Начальные параметры пагинации
     cursor = {
         "limit": 100  # Запрашиваем по 100 карточек за раз
     }
-
     logger.info("Начало выгрузки карточек товаров")
-
     while True:
         # Подготовка тела запроса
         payload = {
@@ -142,24 +138,18 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
                 }
             }
         }
-
         logger.info(f"Выполняем запрос к API с параметрами курсора: {cursor}")
-
         # Выполняем POST запрос к API Wildberries
         response = requests.post(url, json=payload, headers=headers)
-
         if response.status_code == 200:
             data = response.json()
             logger.info(f"Запрос выполнен успешно. Количество карточек в ответе: {len(data.get('cards', []))}")
-
             # Добавляем карточки в общий список
             all_cards.extend(data.get('cards', []))
-
             # Проверяем, достигли ли мы конца данных
             if len(data['cards']) < cursor['limit']:
                 logger.info("Все карточки выгружены.")
                 break
-
             # Обновляем курсор для следующего запроса
             cursor.update({
                 "updatedAt": data['cursor']['updatedAt'],
@@ -168,7 +158,6 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         else:
             logger.error(f"Ошибка при выполнении запроса: {response.status_code}, {response.text}")
             raise Exception(f"Ошибка: {response.status_code}, {response.text}")
-
         # Пауза между запросами, чтобы не перегружать API
         pause_interval = 0.7
         logger.info(f"Пауза {pause_interval} секунды перед следующим запросом")
@@ -182,6 +171,31 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
     # Если есть товары, начинаем получение нужных атрибутов товаров
     if df_products.shape[0] > 0:
         df_products = df_products.reset_index(drop=True)
+
+        # --- ДОБАВЛЕНО: распаковка габаритов из dimensions ---
+        # dimensions – это словарь с полями length, width, height, weightBrutto, isValid
+        # Сохраняем их как отдельные колонки
+        df_products = df_products.assign(
+            **{
+                "Длина, см": df_products["dimensions"].apply(
+                    lambda d: d.get("length") if isinstance(d, dict) else None
+                ),
+                "Ширина, см": df_products["dimensions"].apply(
+                    lambda d: d.get("width") if isinstance(d, dict) else None
+                ),
+                "Высота, см": df_products["dimensions"].apply(
+                    lambda d: d.get("height") if isinstance(d, dict) else None
+                ),
+                "Вес, кг": df_products["dimensions"].apply(
+                    lambda d: d.get("weightBrutto") if isinstance(d, dict) else None
+                ),
+                "Корректность габаритов": df_products["dimensions"].apply(
+                    lambda d: d.get("isValid") if isinstance(d, dict) else None
+                ),
+            }
+        )
+        # -----------------------------------------------
+
         # Распаковка размеров для одного nmID
         df_products_unpacked = df_products.explode(column=['sizes'], ignore_index=True)
         # Из словарей размеров достаем размер и sku
@@ -204,7 +218,6 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         axis=1)
         # Переводим из list в str
         df_products_unpacked['sku'] = [';'.join(map(str, l)) for l in df_products_unpacked['sku_list']]
-
         # Получение некоторых характеристик товара
         # Распаковка столбцов со словарями
         t = df_products_unpacked.explode("characteristics")
@@ -222,16 +235,7 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
                    on=['vendorCode', 'Размер'])
             .rename(columns={'value':'Цвет'})
         )
-        # df_products_unpacked['Цвет'] = ''
-        # for i in range(len(df_products_unpacked)):
-        #     # Скобки нужны, чтобы избавиться от двойного list
-        #     df_products_unpacked['Цвет'][i] = [d.get('value') for d in df_products_unpacked['characteristics'][i] if d['id']==14177449]
-        # #     # df_products_unpacked.loc[i, 'Цвет'] = [element for element in [d.get('value') for d in df_products_unpacked['characteristics'][i] if d['id']==14177449]]
-        # #     #df_products_unpacked['Цвет'] = df_products_unpacked['characteristics'].apply(lambda x: [d.get('value') for d in x if d['id']==14177449])
-
-        # df_products_unpacked['Цвет'] = [';'.join(map(str, l)) for l in df_products_unpacked['Цвет'] if not pd.isnull(l)]
         df_products_unpacked['Цвет'] = df_products_unpacked['Цвет'].str.join(';')
-
         # Переименование некоторых колонок для удобства
         df_products_unpacked = df_products_unpacked.rename(columns={
             "subjectName": "Предмет",
@@ -243,18 +247,35 @@ def getWBProduct(headers, type_products='not_from_recycle', to_save=True):
         df_products_unpacked = df_products_unpacked.drop_duplicates(subset=['Артикул продавца', 'Размер', 'barcode'], keep='first')
         # На всякий случай заполнение nan в размере
         df_products_unpacked['Размер'] = df_products_unpacked['Размер'].fillna(0)
-        # Сохранение в csv нужных колонок
-        df_products_unpacked_csv = df_products_unpacked[["nmID", "imtID", "chrtID", "Артикул продавца", "barcode", "last_barcode", "Наименование товара", "Предмет", "Размер", "Цвет"]]
+
+        # --- ДОБАВЛЕНО: включаем габариты в CSV-выгрузку ---
+        df_products_unpacked_csv = df_products_unpacked[
+            [
+                "nmID",
+                "imtID",
+                "chrtID",
+                "Артикул продавца",
+                "barcode",
+                "last_barcode",
+                "Наименование товара",
+                "Предмет",
+                "Размер",
+                "Цвет",
+                "Длина, см",
+                "Ширина, см",
+                "Высота, см",
+                "Вес, кг",
+                "Корректность габаритов",
+            ]
+        ]
+        # -------------------------------------------------
 
         if to_save:
             file_name_products = uploaddir_today / f"{str(date.today())}_Товары.csv"
             # Сохраняем df с товарами через pathlib
             df_products_unpacked_csv.to_csv(file_name_products, sep=';', encoding='utf-8-sig', index=False)
-
         logger.success(f"Выгрузка карточек товаров успешно завершена, всего товаров: {len(df_products_unpacked)}.")
-
         return df_products_unpacked
-
 
 def get_prices_WB(headers: dict, df_products: pd.DataFrame, to_save: bool = True) -> pd.DataFrame:
     """
@@ -500,7 +521,6 @@ def getOrdersWB(
 
     return df_orders
 
-# Продажи
 def getSalesWB(
     headers: dict,
     date_start: str,
@@ -508,6 +528,7 @@ def getSalesWB(
     to_save: bool = True,
     max_retries: int = 2,
     retry_delay: int = 65,
+    min_days: int | None = None,
 ):
     """
     Загрузка продаж Wildberries за указанный период.
@@ -518,15 +539,43 @@ def getSalesWB(
     :param to_save: Сохранять ли результат в CSV.
     :param max_retries: Кол-во попыток при ошибке 429 или сетевых ошибках.
     :param retry_delay: Пауза между попытками (сек).
+    :param min_days: минимальная длина периода в днях (включительно).
+                     Если задано и исходный период КОРОЧЕ, то date_start
+                     сдвигается назад так, чтобы длина была ровно min_days.
+                     Если исходный период уже длиннее или равен min_days – не меняем.
     :return: DataFrame с продажами.
     :raises: RequestException, ValueError, RuntimeError при неуспехе.
     """
+    # --- 0. Корректировка периода, если задан min_days ---
+    if min_days is not None:
+        # Берём только даты, без времени (WB обычно принимает YYYY-MM-DD)
+        end_date = pd.to_datetime(date_end).date()
+        start_date = pd.to_datetime(date_start).date()
+        orig_days = (end_date - start_date).days  # длина исходного периода
+
+        if orig_days < min_days:
+            # Сдвигаем начало так, чтобы длина была min_days
+            new_start_date = end_date - pd.Timedelta(days=min_days)
+            logger.info(
+                "Период {}–{} короче min_days={} ({} дней). "
+                "Смещаем date_start на {}.",
+                start_date, end_date, min_days, orig_days, new_start_date,
+            )
+            # Собираем обратно строки в формате YYYY-MM-DD
+            date_start = new_start_date.strftime("%Y-%m-%d")
+            date_end = end_date.strftime("%Y-%m-%d")
+        else:
+            logger.info(
+                "Исходный период {}–{} ({} дней) не короче min_days={}, "
+                "оставляем как есть.",
+                start_date, end_date, orig_days, min_days,
+            )
+
     sales_endpoint = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
     params = {
         "dateFrom": date_start,
         "dateTo": date_end,
     }
-
     logger.info(
         "Загрузка продаж WB с {} по {} (max_retries={}, retry_delay={})",
         date_start, date_end, max_retries, retry_delay
@@ -534,11 +583,13 @@ def getSalesWB(
 
     attempt = 0
     response = None
-
     while attempt < max_retries:
         attempt += 1
         try:
-            logger.debug("Отправка запроса к WB (продажи), попытка {} из {}", attempt, max_retries)
+            logger.debug(
+                "Отправка запроса к WB (продажи), попытка {} из {}",
+                attempt, max_retries
+            )
             response = requests.get(
                 sales_endpoint,
                 headers=headers,
@@ -552,7 +603,10 @@ def getSalesWB(
             )
             if attempt >= max_retries:
                 raise
-            logger.info("Ожидание {} секунд перед повторной попыткой...", retry_delay)
+            logger.info(
+                "Ожидание {} секунд перед повторной попыткой...",
+                retry_delay
+            )
             time.sleep(retry_delay)
             continue
 
@@ -596,9 +650,11 @@ def getSalesWB(
 
     # Формирование DataFrame
     df_sales = pd.DataFrame(data)
+
     if df_sales.empty:
         logger.warning("WB вернул пустой список продаж за указанный период.")
     else:
+        # Фильтрация по датам, если колонка есть
         if "date" in df_sales.columns:
             df_sales = df_sales[
                 (df_sales["date"] >= date_start) &
@@ -621,10 +677,19 @@ def getSalesWB(
     if to_save:
         sales_file = uploaddir_today / f"{date.today()}_Продажи.csv"
         try:
-            df_sales.to_csv(sales_file, sep=";", encoding="utf-8-sig", index=False)
+            df_sales.to_csv(
+                sales_file,
+                sep=";",
+                encoding="utf-8-sig",
+                index=False,
+            )
             logger.info("Файл с продажами сохранён: {}", sales_file)
         except Exception as exc:
-            logger.error("Не удалось сохранить файл с продажами {}: {}", sales_file, exc)
+            logger.error(
+                "Не удалось сохранить файл с продажами {}: {}",
+                sales_file,
+                exc,
+            )
             raise
 
     return df_sales
@@ -1194,6 +1259,7 @@ def get_warehouses_load_full(
     warehouse_ids=None,
     base_url: str = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients",
     max_retries: int = 3,
+    to_save: bool = True,
 ):
     """
     Генеральная функция: получает загруженность складов WB и сразу обрабатывает её.
@@ -1212,6 +1278,16 @@ def get_warehouses_load_full(
 
     # 2. Обработка / расшифровка
     df_processed = process_warehouses_load(df_raw)
+
+    # 3. Сохранение в CSV
+    if to_save:
+        output_file = uploaddir_today / f"{date.today()}_Склады_WB.csv"
+        try:
+            df_processed.to_csv(output_file, sep=";", encoding="utf-8-sig", index=False)
+            logger.info("Файл с загруженностью складов сохранён: {}", output_file)
+        except Exception as exc:
+            logger.error("Не удалось сохранить файл с загруженностью складов {}: {}", output_file, exc)
+            raise
 
     return df_processed
 
@@ -1471,18 +1547,20 @@ if __name__ == '__main__':
     # Заказы
     df_orders = getOrdersWB(headers, date_start, date_end)
     # Продажи и возвраты
-    df_sales = getSalesWB(headers, date_start, date_end)
+    df_sales = getSalesWB(headers, date_start, date_end, min_days=61)
     # Остатки
     df_reminders = getStockRemindersWB(headers, date_start, date_end)
     # Остатки fbs
     df_reminders_fbs = getStockReminders_fbs(headers)
 
     # Поставки
-    # %%
     df_supply_items = get_supply_orders_WB_v2(headers)
-    # %%
+
     # Поставки fbs
     get_supply_orders_WB_fbs(headers)
+
+    # Загруженность складов
+    df_warehouses_load = get_warehouses_load_full(headers=headers)
     logger.info(f"DONE UPLOADING FILES FOR CLIENT {client_name}")
     logger.info(f"Uploaded files saved in: {uploaddir_today}")
 

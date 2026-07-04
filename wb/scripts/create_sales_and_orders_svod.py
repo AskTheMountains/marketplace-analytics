@@ -273,9 +273,11 @@ def calc_sales_from_api_report(df_sales_api, date_range_df, price_column='finish
     # df_sales_[amount_column] = 1
     # Там, где тип заказа возврат, делаем отрицательное число штук товара,
     # чтобы потом просто посчитать сумму
-    df_sales_['Продажи шт'] = np.where(df_sales_['saleID'].str.startswith('R'),
-                                        -1,
-                                         1)
+    df_sales_['Продажи шт'] = np.where(
+        df_sales_['saleID'].str.startswith('R'),
+        -1,
+        1
+    )
     # Для продаж в рублях аналогично
     df_sales_['Продажи руб'] = df_sales_[price_column_]
 
