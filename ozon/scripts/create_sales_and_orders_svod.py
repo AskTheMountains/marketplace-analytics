@@ -254,19 +254,31 @@ def calc_sales(df_transactions: pd.DataFrame, date_range_df: pd.DataFrame) -> pd
 
     На вход подается df_transactions в новом формате:
       - 'Дата'         — дата операции (или колонка, которую можно привести к дате)
-      - 'Тип начисления' ∈ {'Продажи руб', 'Продажи шт', 'Возвраты руб', 'Возвраты шт'}
+      - 'Тип начисления' ∈ {
+            'Продажи руб', 'Продажи шт',
+            'Программы партнеров', 'Баллы за скидки',
+            'Возвраты руб', 'Возвраты шт',
+            ...
+        }
       - 'Итого'        — сумма/количество по транзакции
+
+    Условия:
+      - Возвраты в рублях уже приходят ОТРИЦАТЕЛЬНЫМИ в 'Итого'.
+      - Возвраты в штуках приходят ПОЛОЖИТЕЛЬНЫМИ в 'Итого'.
+
+    В результате считаем ЧИСТЫЕ продажи:
+      - 'Продажи руб' = (Продажи руб + Программы партнёров + Баллы за скидки + Возвраты руб)
+        (возвраты руб уже отрицательные, просто суммируем).
+      - 'Продажи шт' = Продажи шт - Возвраты шт
+        (возвраты шт положительные, вычитаем).
     """
 
-    # Колонка, по котрой берем дату для расчета продаж
     date_column = "Дата"
-    # Колонки, по которым считаем итоговые суммы
     type_column = "Тип начисления"
     value_column = "Итого"
 
     if df_transactions is None or df_transactions.empty:
         logger.info("calc_sales: df_transactions пуст, возвращаем нули по date_range_df.")
-        # возвращаем просто date_range_df с нулевыми продажами
         sales = date_range_df.copy()
         sales["Продажи руб"] = 0
         sales["Продажи шт"] = 0
@@ -279,33 +291,49 @@ def calc_sales(df_transactions: pd.DataFrame, date_range_df: pd.DataFrame) -> pd
     # Оставляем только дату
     sales_df[date_column] = sales_df[date_column].dt.date
 
-    # Делаем выборку по нужным типам начислений и считаем итоговую цену для каждого дня
-    # Продажи руб/шт — заказы, Возвраты руб/шт — возвраты, для штук считаем знак явно
+    # Типы начислений, которые учитываем
+    money_types_positive = ["Продажи руб", "Программы партнеров", "Баллы за скидки"]
+    money_types_negative = ["Возвраты руб"]     # уже отрицательные в Итого
+    qty_types_positive = ["Продажи шт"]
+    qty_types_negative = ["Возвраты шт"]        # приходят положительными, надо вычесть
+
     filtered = sales_df.loc[
         sales_df[type_column].isin(
-            ["Продажи руб", "Возвраты руб", "Продажи шт", "Возвраты шт"]
+            money_types_positive + money_types_negative +
+            qty_types_positive + qty_types_negative
         ),
         [date_column, type_column, value_column],
     ].copy()
 
+    if filtered.empty:
+        logger.info("calc_sales: после фильтрации по типам продаж данных нет, возвращаем нули.")
+        sales = date_range_df.copy()
+        sales["Продажи руб"] = 0
+        sales["Продажи шт"] = 0
+        return sales
+
     # Разносим по отдельным колонкам
-    filtered["Продажи_руб"] = np.where(
-        filtered[type_column] == "Продажи руб",
+    # Денежная часть: продажи и «доп. рублёвые» (баллы, программы) идут в плюс,
+    # возвраты руб уже отрицательные в 'Итого', просто добавляем их как есть.
+    filtered["Продажи_руб_плюс"] = np.where(
+        filtered[type_column].isin(money_types_positive),
         filtered[value_column],
         0,
     )
-    filtered["Возвраты_руб"] = np.where(
-        filtered[type_column] == "Возвраты руб",
+    filtered["Возвраты_руб_сырые"] = np.where(
+        filtered[type_column].isin(money_types_negative),
         filtered[value_column],
         0,
     )
-    filtered["Продажи_шт"] = np.where(
-        filtered[type_column] == "Продажи шт",
+
+    # Штучная часть: продажи шт → плюс, возвраты шт → минус (т.к. приходят положительными)
+    filtered["Продажи_шт_плюс"] = np.where(
+        filtered[type_column].isin(qty_types_positive),
         filtered[value_column],
         0,
     )
-    filtered["Возвраты_шт"] = np.where(
-        filtered[type_column] == "Возвраты шт",
+    filtered["Возвраты_шт_плюс"] = np.where(
+        filtered[type_column].isin(qty_types_negative),
         filtered[value_column],
         0,
     )
@@ -315,17 +343,19 @@ def calc_sales(df_transactions: pd.DataFrame, date_range_df: pd.DataFrame) -> pd
         filtered
         .groupby(date_column, as_index=False)
         .agg(
-            Продажи_руб=("Продажи_руб", "sum"),
-            Возвраты_руб=("Возвраты_руб", "sum"),
-            Продажи_шт=("Продажи_шт", "sum"),
-            Возвраты_шт=("Возвраты_шт", "sum"),
+            Продажи_руб_плюс=("Продажи_руб_плюс", "sum"),
+            Возвраты_руб_сырые=("Возвраты_руб_сырые", "sum"),
+            Продажи_шт_плюс=("Продажи_шт_плюс", "sum"),
+            Возвраты_шт_плюс=("Возвраты_шт_плюс", "sum"),
         )
     )
 
-    # Чистые продажи: продажи - возвраты
-    # (если возвраты уже отрицательные в исходном df, вместо "-" можно использовать "+")
-    agg["Продажи руб"] = agg["Продажи_руб"] - agg["Возвраты_руб"]
-    agg["Продажи шт"] = agg["Продажи_шт"] - agg["Возвраты_шт"]
+    # Чистые продажи:
+    # - рубли: продажи плюс + возвраты (возвраты уже отрицательные) → просто сумма
+    agg["Продажи руб"] = agg["Продажи_руб_плюс"] + agg["Возвраты_руб_сырые"]
+
+    # - штуки: возвраты шт приходят положительными, надо вычесть
+    agg["Продажи шт"] = agg["Продажи_шт_плюс"] - agg["Возвраты_шт_плюс"]
 
     sales = agg[[date_column, "Продажи руб", "Продажи шт"]].rename(
         columns={date_column: "date"}
@@ -346,9 +376,6 @@ def calc_sales(df_transactions: pd.DataFrame, date_range_df: pd.DataFrame) -> pd
             sales[col] = sales[col].fillna(0)
 
     return sales
-    # returns = postings_total.loc[postings_total['type'] == 'returns', :]
-    # orders  = postings_total.loc[postings_total['type'] == 'orders', :]
-    # a = orders.merge(returns, on='posting_number', how='outer', indicator=True)
 
 # Функция расчета заказов
 def calc_orders(df_orders_all, date_range_df):

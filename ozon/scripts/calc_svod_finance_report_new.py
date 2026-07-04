@@ -19,6 +19,7 @@ from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
 
 pd.options.mode.chained_assignment = None  # default='warn'
+pd.set_option('display.float_format', '{:,.2f}'.format)
 from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.utils import get_column_letter
@@ -1959,7 +1960,7 @@ def calc_final_costs(df_all_costs_with_catalog):
     # Считаем сумму по всем затратам
     df_final_costs['Все затраты (руб)'] = df_final_costs[final_costs_columns].sum(axis=1)
     # Вычитаем из продаж в рублях все затраты
-    df_final_costs['Маржинальность руб'] = df_final_costs[marg_amount_rub] - df_final_costs['Все затраты (руб)']
+    df_final_costs['Маржинальность руб'] = df_final_costs[marg_amount_rub] + df_final_costs['Все затраты (руб)']
     df_final_costs = df_final_costs.drop(columns=['Все затраты (руб)'])
 
     # Приход денег на РС (как маржинальность, но не учитываем Себестоимость * Факт продаж)
@@ -2120,7 +2121,7 @@ def create_svod_by_operations(df_final_costs):
         # })
     )
     # Пересчитываем некоторые столбцы
-    df_final_costs_by_operation['Маржинальность на ед. товара'] = (
+    df_final_costs_by_operation['Маржинальность на ед. товара руб'] = (
         df_final_costs_by_operation['Маржинальность руб']
         / df_final_costs_by_operation['Продажи - Возвраты (шт)']
     )
@@ -2439,7 +2440,7 @@ def format_excel(
     marg_sales = 'Продажа (Выручка) руб'
     marg_amount = 'Продажи - Возвраты (шт)'
 
-    for row in range(start_row, end_row + 1):
+    for row in range(start_row, end_row):
         # --- Формула для продажи (выручки) руб: сумма по вычисленным колонкам
         if existing_sum_columns:
             sum_cells = ','.join(f"{col_map[col]}{row}" for col in existing_sum_columns)
@@ -2530,7 +2531,7 @@ def format_excel(
             # Получаем букву столбца для "Маржинальность %"
             percent_col_letter = col_map['Маржинальность %']
             # Диапазон строк (от row_start до svod_len + 1)
-            cell_range = final_ws[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row + 1}"]
+            cell_range = final_ws[f"{percent_col_letter}{start_row}:{percent_col_letter}{end_row}"]
             for row in cell_range:
                 for cell in row:
                     cell.number_format = '0%'
@@ -2646,7 +2647,7 @@ if __name__ == "__main__":
 
     # Имя файла с отчетом
     # report_file_name = None
-    report_file_name = "Отчет по начислениям_01.05.2026-31.05.2026(4) (1).xlsx"
+    report_file_name = "Отчет по начислениям_01.06.2026-30.06.2026 (5).xlsx"
 
     # Парсим аргументы командной строки
     finance_cli = cli_finance(parser)

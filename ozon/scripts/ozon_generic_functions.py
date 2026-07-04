@@ -7,6 +7,10 @@ import pandas as pd
 import numpy as np
 import requests
 import re
+import time
+
+# Логгер клиента озон
+from ozon.scripts.ozon_logger import ozon_client_logger as logger
 
 # Папка, где лежит текущий скрипт
 BASE_DIR = Path(__file__).parent.parent
@@ -390,5 +394,122 @@ def get_common_article(df_products: pd.DataFrame) -> pd.Series:
         df_products_processed['Артикул размерного ряда'] = df_products_processed['Артикул']
 
     return df_products_processed['Артикул размерного ряда']
+
+
+class OzonRateLimiter:
+    """
+    Простой лимитер для запросов к Ozon API.
+
+    Параметры:
+      interval          – интервал между УСПЕШНЫМИ запросами (сек),
+      error_interval    – интервал ожидания после неуспешного запроса (сек),
+      max_retries       – максимальное количество попыток при ошибках.
+    """
+
+    def __init__(self, interval: float = 0.2, error_interval: float = 2, max_retries: int = 3):
+        self.interval = float(interval)
+        self.error_interval = float(error_interval)
+        self.max_retries = int(max_retries)
+        self._last_request_ts = None
+
+    def _sleep_if_needed(self):
+        """Выдержать интервал между успешными запросами."""
+        now = time.time()
+        if self._last_request_ts is None:
+            self._last_request_ts = now
+            return
+
+        dt = now - self._last_request_ts
+        if dt < self.interval:
+            sleep_time = self.interval - dt
+            logger.debug(f"Выдерживаем интервал между запросами {self.interval:.2f} сек. "
+                         f"Пауза {sleep_time:.2f} сек.")
+            time.sleep(sleep_time)
+        self._last_request_ts = time.time()
+
+    @staticmethod
+    def _log_ozon_error(resp: requests.Response):
+        """
+        Пытается красиво вывести ошибку Ozon.
+        Если есть поля code / message / details — форматируем их.
+        Иначе выводим сырой текст ответа.
+        """
+        try:
+            data = resp.json()
+        except Exception:
+            logger.error(f"Ошибка Ozon (HTTP {resp.status_code}): {resp.text}")
+            return
+
+        code = data.get("code")
+        message = data.get("message")
+        details = data.get("details")
+
+        # Если структура стандартная
+        if code is not None or message is not None or details is not None:
+            logger.error(f"Ошибка Ozon (HTTP {resp.status_code}): code={code}, message={message}")
+
+            # details может быть списком объектов с typeUrl / value
+            if isinstance(details, list) and details:
+                for i, d in enumerate(details, start=1):
+                    turl = d.get("typeUrl")
+                    val = d.get("value")
+                    logger.error(f"  detail[{i}]: typeUrl={turl}, value={val}")
+        else:
+            # Нестандартная структура
+            logger.error(f"Ошибка Ozon (HTTP {resp.status_code}), тело ответа: {data}")
+
+    def call(self, func, *args, **kwargs):
+        """
+        Вызов HTTP‑функции (session.get / session.post и т.п.) с учётом:
+          - интервала между успешными запросами,
+          - интервала после ошибки,
+          - максимального числа повторов.
+
+        Ожидается, что func(*args, **kwargs) возвращает requests.Response.
+
+        Возвращает:
+          (response, success_flag)
+        """
+
+        for attempt in range(1, self.max_retries + 1):
+            # Интервал между ПОСЛЕДНИМ успешным и текущим запросом
+            self._sleep_if_needed()
+
+            try:
+                resp = func(*args, **kwargs)
+            except Exception as e:
+                func_name = getattr(func, "__name__", "request")
+                logger.error(
+                    f"Ошибка соединения при вызове {func_name} "
+                    f"(попытка {attempt}/{self.max_retries}): {e}"
+                )
+                if attempt == self.max_retries:
+                    return None, False
+                logger.info(f"Повтор запроса через {self.error_interval:.2f} сек.")
+                time.sleep(self.error_interval)
+                continue
+
+            status = resp.status_code
+
+            # Успех (считаем, что 2xx — успех)
+            if 200 <= status < 300:
+                # Фиксируем время успешного запроса для следующего интервала
+                self._last_request_ts = time.time()
+                return resp, True
+
+            # Ошибка от Ozon
+            self._log_ozon_error(resp)
+
+            if attempt == self.max_retries:
+                return resp, False
+
+            logger.info(
+                f"Ошибка Ozon (HTTP {status}), повтор запроса "
+                f"{attempt + 1}/{self.max_retries} через {self.error_interval:.2f} сек."
+            )
+            time.sleep(self.error_interval)
+
+        # Теоретически сюда не дойдём
+        return None, False
 
 # %%

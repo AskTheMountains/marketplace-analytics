@@ -35,6 +35,11 @@ from wb.scripts.uploadDataFromWB import get_wb_product
 # Функция получения справочной таблицы
 from ozon.scripts.get_reference_table import get_reference_table
 
+# Некоторые доп. функции
+from ozon.scripts.ozon_generic_functions import (
+    clean_ozon_article
+)
+
 
 # Добавляем описание скрипта в парсер аргументов
 parser = argparse.ArgumentParser(
@@ -605,12 +610,25 @@ def process_catalog_data(catalog):
         'Зарезервировано на моих складах, шт',
         'Актуальная ссылка на рыночную цену', 'Размер НДС, %'
        ])]
+
+    # Переименовываем некоторые колонки
+    catalog_processed = catalog_processed.rename(columns={
+        'Артикул': 'Артикул продавца',
+        'Название товара': 'Наименование товара',
+        'SKU': 'Ozon SKU ID',
+        'Barcode': 'Штрихкод',
+        'Штрихкод (Серийный номер / EAN)': 'Штрихкод'
+    })
     # Удаляем лишние символы из артикула
-    catalog_processed['Артикул'] = catalog_processed['Артикул'].astype(str).replace(article_replacements, regex=True)
+    catalog_processed["Артикул продавца"] = catalog_processed["Артикул продавца"].map(clean_ozon_article)
+
+    # Удаляем дубликаты колонок, оставляем первую
+    catalog_processed = catalog_processed.loc[:, ~catalog_processed.columns.duplicated()]
+
     # Переводим баркод в строку
-    catalog_processed['Barcode'] = catalog_processed['Barcode'].astype(str)
-    # catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
-    # catalog_processed['Barcode'] = catalog_processed['Barcode'].apply(lambda x: str(x).split('.')[0] if pd.notnull(x) else x).astype('Int64')
+    catalog_processed['Штрихкод'] = catalog_processed['Штрихкод'].astype(str)
+    # catalog_processed['Штрихкод'] = catalog_processed['Штрихкод'].apply(lambda x: format(x, 'f') if pd.notnull(x) else x)
+    # catalog_processed['Штрихкод'] = catalog_processed['Штрихкод'].apply(lambda x: str(x).split('.')[0] if pd.notnull(x) else x).astype('Int64')
     # Переименовываем колонки с ценами, которые приходят из отчета по товарам из апи
     # чтобы потом не было путаницы с ценами, которые мы получаем из отдельного метода
     catalog_processed = catalog_processed.rename(columns={
@@ -630,13 +648,7 @@ def process_catalog_data(catalog):
         'Цена с учетом акций продавца': 'Цена по акции',
         'Цена с учетом всех акций': 'Цена с баллами Озон',
     })
-    # Переименовываем колонки с характеристиками товара
-    catalog_processed = catalog_processed.rename(columns={
-        'Артикул': 'Артикул продавца',
-        'Название товара': 'Наименование товара',
-        'SKU': 'Ozon SKU ID',
-        'Barcode': 'Штрихкод',
-    })
+
 
     return catalog_processed
 

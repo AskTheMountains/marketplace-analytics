@@ -94,23 +94,28 @@ def _apply_cell_borders(all_cells, thin: Side) -> None:
 
 def _auto_adjust_column_width(ws, barcode_column: str | None = None) -> None:
     """
-    Автоподбор ширины столбцов. Для штрихкода — фиксированная ширина.
+    Автоподбор ширины столбцов по длине заголовка.
+    Для колонки со штрихкодом (если передана) — фиксированная ширина.
     """
-    for column in ws.columns:
-        max_length = 0
-        column_letter = column[0].column_letter
-        for cell in column:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(cell.value)
-            except Exception:
-                pass
-        adjusted_width = (max_length + 2) * 1.2
+    # первая строка — заголовки
+    header_row = 1
+    for col_cells in ws.columns:
+        first_cell = col_cells[0]
+        column_letter = first_cell.column_letter
+        header_value = first_cell.value
+
+        try:
+            header_length = len(str(header_value)) if header_value is not None else 0
+        except Exception:
+            header_length = 0
+
+        # небольшое поле + коэффициент, чтобы текст не был впритык
+        adjusted_width = (header_length + 2) * 1.2
         ws.column_dimensions[column_letter].width = adjusted_width
 
+    # Для колонки штрихкода — фиксированная ширина (если нужно)
     if barcode_column:
         ws.column_dimensions[barcode_column].width = 22
-
 
 def _apply_conditional_formatting(
     ws,
@@ -286,7 +291,6 @@ def format_sheet_total(
     - условное форматирование, числовые форматы и выравнивание.
     """
     logger.info(f'Форматирование листа "{sheet_name}"')
-
     file_path = (
         path_supply_svod
         / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon.xlsx"
@@ -301,7 +305,6 @@ def format_sheet_total(
     # Маппинг колонок
     mapping = _create_column_mapping(svod_excel)
     mapping_clusters = _create_column_mapping(svod_excel_clusters)
-
     min_col = mapping["excel_column"].iloc[0]
     max_col = mapping["excel_column"].iloc[-1]
 
@@ -316,6 +319,8 @@ def format_sheet_total(
         "stock_fbs": _get_excel_column(mapping, "ОСТАТОК FBS", contains=True),
         "supplies": _get_excel_column(mapping, "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"),
         "box_multiplicity": _get_excel_column(mapping, "Кратность коробов"),
+        # Тип габаритов / КГТ (для логики BIO / ARK)
+        "size_type": _get_excel_column(mapping, "Габариты товара"),
     }
 
     # Колонки по периодам
@@ -358,6 +363,10 @@ def format_sheet_total(
     cols_clusters = {
         "article": _get_excel_column(mapping_clusters, "Артикул"),
         "cluster": _get_excel_column(mapping_clusters, "Кластер"),
+        "cluster_group": _get_excel_column(   # НОВОЕ
+            mapping_clusters,
+            "Кластер для группировки",
+        ),
         "correction": _get_excel_column(
             mapping_clusters,
             "Корректировка с учетом нулевых остатков",
@@ -388,49 +397,93 @@ def format_sheet_total(
     # Формулы по строкам (оборачиваемость, потребности, дефициты, округления)
     for i in range(row_start, row_end + 1):
         # Оборачиваемость
-        if cols["turnover"] and cols["orders"] and cols["sales"]:
-            ws[f"{cols['turnover']}{i}"] = (
-                f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
-            )
+        if cols["turnover"] and cols["orders"]:
+            # ----------------- Логика для RiverBoats -----------------
+            if client_name == "RiverBoats":
+                # Оборачиваемость = Заказы / days_in_period
+                ws[f"{cols['turnover']}{i}"] = (
+                    f"= {cols['orders']}{i} / {days_in_period}"
+                )
+
+            # ----------------- Логика для BIO и ARK -----------------
+            elif client_name in ("BIO", "ARK"):
+                # Если есть колонка габаритов и колонка продаж:
+                #   - если 'Габариты товара' = "КГТ" → только заказы
+                #   - иначе → (Заказы + Продажи) / 2 / days_in_period
+                if cols["size_type"] and cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        "=IF("
+                        f'{cols["size_type"]}{i}="КГТ", '
+                        f"{cols['orders']}{i} / {days_in_period}, "
+                        f"({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                        ")"
+                    )
+                # Если нет колонки габаритов, но есть продажи — fallback: общая формула
+                elif cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                    )
+                # Если нет продаж — хотя бы по заказам
+                else:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= {cols['orders']}{i} / {days_in_period}"
+                    )
+
+            # ----------------- Общая логика для остальных клиентов -----------------
+            else:
+                if cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                    )
+                else:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= {cols['orders']}{i} / {days_in_period}"
+                    )
+
         # Потребности
-        if cols[f"demand_{demand_period_1}"]:
+        if cols.get(f"demand_{demand_period_1}"):
             ws[f"{cols[f'demand_{demand_period_1}']}{i}"] = (
                 f"= {cols['turnover']}{i} * {demand_period_1}"
             )
-        if cols[f"demand_{demand_period_2}"]:
+        if cols.get(f"demand_{demand_period_2}"):
             ws[f"{cols[f'demand_{demand_period_2}']}{i}"] = (
                 f"= {cols['turnover']}{i} * {demand_period_2}"
             )
+
         # Дефицит / избыток
         if (
-            cols[f"deficit_{demand_period_1}"]
+            cols.get(f"deficit_{demand_period_1}")
             and cols["stock"]
             and cols["supplies"]
+            and cols.get(f"demand_{demand_period_1}")
         ):
             ws[f"{cols[f'deficit_{demand_period_1}']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
             )
         if (
-            cols[f"deficit_{demand_period_1}_fbs"]
+            cols.get(f"deficit_{demand_period_1}_fbs")
             and cols["stock"]
             and cols["stock_fbs"]
             and cols["supplies"]
+            and cols.get(f"demand_{demand_period_1}")
         ):
             ws[f"{cols[f'deficit_{demand_period_1}_fbs']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['stock_fbs']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
             )
         if (
-            cols[f"deficit_{demand_period_2}"]
+            cols.get(f"deficit_{demand_period_2}")
             and cols["stock"]
             and cols["supplies"]
+            and cols.get(f"demand_{demand_period_2}")
         ):
             ws[f"{cols[f'deficit_{demand_period_2}']}{i}"] = (
                 f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_2}']}{i}"
             )
+
         # Округлённые потребности
         if (
-            cols[f"demand_{demand_period_1}_rounded"]
-            and cols[f"deficit_{demand_period_1}"]
+            cols.get(f"demand_{demand_period_1}_rounded")
+            and cols.get(f"deficit_{demand_period_1}")
         ):
             ws[f"{cols[f'demand_{demand_period_1}_rounded']}{i}"] = (
                 _create_demand_rounded_formula(
@@ -442,8 +495,8 @@ def format_sheet_total(
                 )
             )
         if (
-            cols[f"demand_{demand_period_1}_rounded_fbs"]
-            and cols[f"deficit_{demand_period_1}_fbs"]
+            cols.get(f"demand_{demand_period_1}_rounded_fbs")
+            and cols.get(f"deficit_{demand_period_1}_fbs")
         ):
             ws[f"{cols[f'demand_{demand_period_1}_rounded_fbs']}{i}"] = (
                 _create_demand_rounded_formula(
@@ -455,8 +508,8 @@ def format_sheet_total(
                 )
             )
         if (
-            cols[f"demand_{demand_period_2}_rounded"]
-            and cols[f"deficit_{demand_period_2}"]
+            cols.get(f"demand_{demand_period_2}_rounded")
+            and cols.get(f"deficit_{demand_period_2}")
         ):
             ws[f"{cols[f'demand_{demand_period_2}_rounded']}{i}"] = (
                 _create_demand_rounded_formula(
@@ -468,73 +521,95 @@ def format_sheet_total(
                 )
             )
 
-    # Формулы по кластерам (Потребность/Остаток/[Прошлые поставки] <Кластер>) через SUMIFS
+    # Формулы по кластерам (Потребность/Остаток/[Прошлые поставки] <Кластер>)
+    # через одну SUMIFS по "Артикул" + "Кластер для группировки"
     svod_len_clusters = svod_excel_clusters.shape[0]
     row_start_clusters = 2
 
-    for cluster, subcluster_list in clusters_mapping_dict.items():
-        subclusters_full = list(dict.fromkeys([cluster] + list(subcluster_list)))
+    # Колонки-источники на листе "По кластерам"
+    corr_col = cols_clusters.get("correction")
+    stock_src_col = cols_clusters.get("stock")
+    article_src_col = cols_clusters.get("article")
+    cluster_group_src_col = cols_clusters.get("cluster_group")
+    prev_supplies_src_col = cols_clusters.get("prev_supplies") if include_previous_supplies_flag else None
 
-        demand_cluster_col = _get_excel_column(
-            mapping,
-            f"Потребность {cluster}",
+    # Если базовых колонок нет — выходим
+    if not article_src_col or not cluster_group_src_col or not corr_col:
+        pass
+    else:
+        # Диапазоны на листе "По кластерам"
+        corr_range = f"'По кластерам'!${corr_col}${row_start_clusters}:${corr_col}${svod_len_clusters + 1}"
+        stock_range = (
+            f"'По кластерам'!${stock_src_col}${row_start_clusters}:${stock_src_col}${svod_len_clusters + 1}"
+            if stock_src_col
+            else None
         )
-        stock_cluster_col = _get_excel_column(
-            mapping,
-            f"Остаток {cluster}",
+        article_range = f"'По кластерам'!${article_src_col}${row_start_clusters}:${article_src_col}${svod_len_clusters + 1}"
+        cluster_group_range = f"'По кластерам'!${cluster_group_src_col}${row_start_clusters}:${cluster_group_src_col}${svod_len_clusters + 1}"
+        prev_supplies_range = (
+            f"'По кластерам'!${prev_supplies_src_col}${row_start_clusters}:${prev_supplies_src_col}${svod_len_clusters + 1}"
+            if prev_supplies_src_col
+            else None
         )
 
-        # Колонка для ПРОШЛЫЕ_ПОСТАВКИ <Кластер> (на листе "Всего")
-        if include_previous_supplies_flag:
-            prev_supplies_cluster_col = _get_excel_column(
+        for cluster in clusters_mapping_dict.keys():
+            # Итоговые колонки на листе "Всего"
+            demand_cluster_col = _get_excel_column(
                 mapping,
-                f"Прошлые поставки {cluster}",
+                f"Потребность {cluster}",
             )
-        else:
-            prev_supplies_cluster_col = None
+            stock_cluster_col = _get_excel_column(
+                mapping,
+                f"Остаток {cluster}",
+            )
+            if include_previous_supplies_flag:
+                prev_supplies_cluster_col = _get_excel_column(
+                    mapping,
+                    f"Прошлые поставки {cluster}",
+                )
+            else:
+                prev_supplies_cluster_col = None
 
-        # Если нет ни одной целевой колонки — пропускаем
-        if not demand_cluster_col and not stock_cluster_col and not prev_supplies_cluster_col:
-            continue
+            # Если нет ни одной целевой колонки — пропускаем этот кластер
+            if (
+                not demand_cluster_col
+                and not stock_cluster_col
+                and not prev_supplies_cluster_col
+            ):
+                continue
 
-        for i in range(row_start, row_end + 1):
-            demand_parts = []
-            stock_parts = []
-            prev_supplies_parts = []
-
-            for sub in subclusters_full:
-                # Потребность
+            for i in range(row_start, row_end + 1):
+                # Потребность: сумма Корректировки по артикулу и Кластеру для группировки = <cluster>
                 if demand_cluster_col:
-                    demand_parts.append(
-                        f"SUMIFS('По кластерам'!${cols_clusters['correction']}${row_start_clusters}:${cols_clusters['correction']}${svod_len_clusters + 1}, "
-                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
-                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                    ws[f"{demand_cluster_col}{i}"] = (
+                        "=SUMIFS("
+                        f"{corr_range}, "
+                        f"{article_range}, ${cols['article']}{i}, "
+                        f"{cluster_group_range}, \"{cluster}\""
+                        ")"
                     )
                 # Остаток
-                if stock_cluster_col and cols_clusters["stock"]:
-                    stock_parts.append(
-                        f"SUMIFS('По кластерам'!${cols_clusters['stock']}${row_start_clusters}:${cols_clusters['stock']}${svod_len_clusters + 1}, "
-                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
-                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                if stock_cluster_col and stock_range:
+                    ws[f"{stock_cluster_col}{i}"] = (
+                        "=SUMIFS("
+                        f"{stock_range}, "
+                        f"{article_range}, ${cols['article']}{i}, "
+                        f"{cluster_group_range}, \"{cluster}\""
+                        ")"
                     )
                 # ПРОШЛЫЕ_ПОСТАВКИ
-                if include_previous_supplies_flag and prev_supplies_cluster_col and cols_clusters.get("prev_supplies"):
-                    prev_supplies_parts.append(
-                        f"SUMIFS('По кластерам'!${cols_clusters['prev_supplies']}${row_start_clusters}:${cols_clusters['prev_supplies']}${svod_len_clusters + 1}, "
-                        f"'По кластерам'!${cols_clusters['article']}${row_start_clusters}:${cols_clusters['article']}${svod_len_clusters + 1}, ${cols['article']}{i}, "
-                        f"'По кластерам'!${cols_clusters['cluster']}${row_start_clusters}:${cols_clusters['cluster']}${svod_len_clusters + 1}, \"{sub}\")"
+                if (
+                    include_previous_supplies_flag
+                    and prev_supplies_cluster_col
+                    and prev_supplies_range
+                ):
+                    ws[f"{prev_supplies_cluster_col}{i}"] = (
+                        "=SUMIFS("
+                        f"{prev_supplies_range}, "
+                        f"{article_range}, ${cols['article']}{i}, "
+                        f"{cluster_group_range}, \"{cluster}\""
+                        ")"
                     )
-
-            if demand_cluster_col and demand_parts:
-                ws[f"{demand_cluster_col}{i}"] = "= " + " + ".join(demand_parts)
-            if stock_cluster_col and stock_parts:
-                ws[f"{stock_cluster_col}{i}"] = "= " + " + ".join(stock_parts)
-            if (
-                include_previous_supplies_flag
-                and prev_supplies_cluster_col
-                and prev_supplies_parts
-            ):
-                ws[f"{prev_supplies_cluster_col}{i}"] = "= " + " + ".join(prev_supplies_parts)
 
     # Условное форматирование
     deficit_columns = [
@@ -545,7 +620,53 @@ def format_sheet_total(
     deficit_columns = [c for c in deficit_columns if c]
     if deficit_columns:
         _apply_conditional_formatting(ws, deficit_columns, row_start, row_end)
+    # ------------------------------------------------------------------
+    # Доп. условное форматирование для BIO:
+    # если Статус товара = "Основной ассортимент" и Остаток {кластер} = 5,
+    # то подсветить ячейку остатка красным цветом (фон + шрифт).
+    # Кластеры: "СПб и СЗО", "Москва, МО и ДР", "Ростов", "Краснодар".
+    # ------------------------------------------------------------------
+    if client_name in ('BIO', 'ARK'):
+        # колонка со статусом товара
+        status_col = _get_excel_column(mapping, "Статус товара")
+        if status_col:
+            # интересующие кластеры
+            target_clusters = ["СПб и СЗО", "Москва, МО и ДР", "Ростов", "Краснодар"]
 
+            # стиль для подсветки
+            red_font = Font(color="9C0006")
+            red_fill = PatternFill(
+                start_color="FFC7CE",
+                end_color="FFC7CE",
+                fill_type="solid",
+            )
+
+            for cl in target_clusters:
+                stock_col = _get_excel_column(
+                    mapping,
+                    f"Остаток {cl}",
+                )
+                if not stock_col:
+                    continue
+
+                cell_range = f"{stock_col}{row_start}:{stock_col}{row_end}"
+                # Условие: статус = "Основной ассортимент" и значение в этой ячейке = 5
+                # Используем формулу типа:
+                # =AND($<Статус><row>="Основной ассортимент", <эта_ячейка>=5)
+                formula = (
+                    f'AND(${status_col}{row_start}="Основной ассортимент",'
+                    f'{stock_col}{row_start}=5)'
+                )
+
+                ws.conditional_formatting.add(
+                    cell_range,
+                    formatting.rule.FormulaRule(
+                        formula=[formula],
+                        stopIfTrue=False,
+                        fill=red_fill,
+                        font=red_font,
+                    ),
+                )
     # Формат чисел
     two_decimal_cols = [
         cols.get("turnover"),
@@ -571,13 +692,23 @@ def format_sheet_total(
         _apply_number_format(ws, zero_decimal_cols, row_start, row_end, 0)
 
     # Выравнивание
+    center_cols = [
+        "Сезон",
+        "Статус",
+        "Статус товара",
+        "Статус продажи FBO/FBS",
+        "Основной артикул",
+        "Категория",
+        "Предмет",
+        "Цвет",
+    ]
+    center_string = "|".join(center_cols)
     text_mask = mapping["column"].str.contains(
-        "Сезон|Статус|Основной артикул|Артикул|Штрихкод|Наименование|Категория|Цвет",
+        center_string,
         na=False,
     )
     left_cols = mapping.loc[text_mask, "excel_column"].tolist()
     center_cols = mapping.loc[~text_mask, "excel_column"].tolist()
-
     if center_cols:
         _apply_alignment(ws, center_cols, row_start, row_end, "center")
     if left_cols:
@@ -599,38 +730,45 @@ def format_sheet_clusters(
 ) -> None:
     """
     Форматирует лист 'По кластерам' для Ozon.
-    Формулы аналогичны листу 'По кластерам' в WB (без FBS).
+    Формулы аналогичны листу 'По кластерам' в основном расчёте:
+      - для RiverBoats и BIO/ARK используются Дни планирования из колонки
+        'Дни планирования' и оборачиваемость по их правилам;
+      - для остальных клиентов логика такая же, как была:
+        оборачиваемость по (Заказы + Продажи) / 2 / days_in_period
+        и потребности/дефициты на фиксированные периоды.
     """
     logger.info(f'Форматирование листа "{sheet_name}"')
-
     file_path = (
         path_supply_svod
         / f"{date_report_created}_Расчет_поставок_{client_name}_Ozon.xlsx"
     )
     wb = openpyxl.load_workbook(file_path)
     ws = wb[sheet_name]
-
     svod_len = svod_excel.shape[0]
     row_start = 2
     row_end = svod_len + 1
-
     mapping = _create_column_mapping(svod_excel)
     min_col = mapping["excel_column"].iloc[0]
     max_col = mapping["excel_column"].iloc[-1]
-
     cols = {
         "barcode": _get_excel_column(mapping, "Штрихкод"),
         "turnover": _get_excel_column(mapping, "Оборачиваемость"),
         "orders": _get_excel_column(mapping, "ЗАКАЗЫ", contains=True),
         "sales": _get_excel_column(mapping, "ПРОДАЖИ", contains=True),
         "stock": _get_excel_column(mapping, "ОСТАТОК", contains=True),
+        "stock_fbs": _get_excel_column(mapping, "ОСТАТОК FBS", contains=True),
         "supplies": _get_excel_column(mapping, "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"),
         "correction": _get_excel_column(
-            mapping, "Корректировка с учетом нулевых остатков"
+            mapping,
+            "Корректировка с учетом нулевых остатков",
         ),
         "box_multiplicity": _get_excel_column(mapping, "Кратность коробов"),
+        # Габариты товара (для логики КГТ у BIO/ARK)
+        "size_type": _get_excel_column(mapping, "Габариты товара"),
+        # Дни планирования (для RiverBoats и BIO/ARK)
+        "planning_days": _get_excel_column(mapping, "Дни планирования"),
+        # Потребность/дефициты без FBS (для общей логики)
     }
-
     cols.update(
         {
             f"demand_{demand_period_1}": _get_excel_column(
@@ -655,134 +793,249 @@ def format_sheet_clusters(
                 mapping,
                 f"Потребность на {demand_period_2} дней (округл.)",
             ),
+            # Для RiverBoats и BIO/ARK — колонки с потребностью по дням планирования
+            "demand_custom": _get_excel_column(mapping, "Потребность"),
+            "deficit_custom": _get_excel_column(mapping, "Дефицит/Избыток"),
+            "deficit_custom_fbs": _get_excel_column(
+                mapping, "Дефицит/Избыток с учетом FBS"
+            ),
+            "demand_custom_rounded": _get_excel_column(
+                mapping, "Потребность (округл.)"
+            ),
+            "demand_custom_rounded_fbs": _get_excel_column(
+                mapping, "Потребность с учетом FBS (округл.)"
+            ),
         }
     )
-
     thin = Side(border_style="thin", color="000000")
     header_cells = ws[f"{min_col}{row_start - 1}:{max_col}{row_start - 1}"]
     all_cells = ws[f"{min_col}{row_start}:{max_col}{row_end}"]
-
     _apply_header_formatting(header_cells, thin)
     ws.auto_filter.ref = ws.dimensions
     _apply_cell_borders(all_cells, thin)
     _auto_adjust_column_width(ws, cols["barcode"])
-
     # Формулы
     for i in range(row_start, row_end + 1):
-        if cols["turnover"] and cols["orders"] and cols["sales"]:
-            ws[f"{cols['turnover']}{i}"] = (
-                f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
-            )
-
-        if cols[f"demand_{demand_period_1}"]:
-            ws[f"{cols[f'demand_{demand_period_1}']}{i}"] = (
-                f"= {cols['turnover']}{i} * {demand_period_1}"
-            )
-
-        if cols[f"demand_{demand_period_2}"]:
-            ws[f"{cols[f'demand_{demand_period_2}']}{i}"] = (
-                f"= {cols['turnover']}{i} * {demand_period_2}"
-            )
-
-        if (
-            cols[f"deficit_{demand_period_1}"]
-            and cols["stock"]
-            and cols["supplies"]
-        ):
-            ws[f"{cols[f'deficit_{demand_period_1}']}{i}"] = (
-                f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
-            )
-
-        if (
-            cols[f"deficit_{demand_period_2}"]
-            and cols["stock"]
-            and cols["supplies"]
-        ):
-            ws[f"{cols[f'deficit_{demand_period_2}']}{i}"] = (
-                f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_2}']}{i}"
-            )
-
-        if (
-            cols[f"demand_{demand_period_1}_rounded"]
-            and cols[f"deficit_{demand_period_1}"]
-        ):
-            ws[f"{cols[f'demand_{demand_period_1}_rounded']}{i}"] = (
-                _create_demand_rounded_formula(
-                    f"{cols[f'deficit_{demand_period_1}']}{i}",
-                    f"{cols['box_multiplicity']}{i}"
-                    if cols["box_multiplicity"]
-                    else None,
-                    apply_rounding=apply_box_rounding,
+        # ----------------- Оборачиваемость -----------------
+        if cols["turnover"] and cols["orders"]:
+            # RiverBoats: только заказы
+            if client_name == "RiverBoats":
+                ws[f"{cols['turnover']}{i}"] = (
+                    f"= {cols['orders']}{i} / {days_in_period}"
                 )
-            )
-
-        if (
-            cols[f"demand_{demand_period_2}_rounded"]
-            and cols[f"deficit_{demand_period_2}"]
-        ):
-            ws[f"{cols[f'demand_{demand_period_2}_rounded']}{i}"] = (
-                _create_demand_rounded_formula(
-                    f"{cols[f'deficit_{demand_period_2}']}{i}",
-                    f"{cols['box_multiplicity']}{i}"
-                    if cols["box_multiplicity"]
-                    else None,
-                    apply_rounding=apply_box_rounding,
+            # BIO и ARK: КГТ — только заказы, иначе среднее по заказам и продажам
+            elif client_name in ("BIO", "ARK"):
+                if cols["size_type"] and cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        "=IF("
+                        f'{cols["size_type"]}{i}="КГТ", '
+                        f"{cols['orders']}{i} / {days_in_period}, "
+                        f"({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                        ")"
+                    )
+                elif cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                    )
+                else:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= {cols['orders']}{i} / {days_in_period}"
+                    )
+            # Остальные клиенты: общая формула
+            else:
+                if cols["sales"]:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= ({cols['orders']}{i} + {cols['sales']}{i}) / 2 / {days_in_period}"
+                    )
+                else:
+                    ws[f"{cols['turnover']}{i}"] = (
+                        f"= {cols['orders']}{i} / {days_in_period}"
+                    )
+        # ----------------- Логика для RiverBoats и BIO/ARK (через Дни планирования) -----------------
+        if client_name in ("RiverBoats", "BIO", "ARK") and cols["planning_days"]:
+            # Потребность = Оборачиваемость * Дни планирования
+            if cols["demand_custom"] and cols["turnover"]:
+                ws[f"{cols['demand_custom']}{i}"] = (
+                    f"= {cols['turnover']}{i} * {cols['planning_days']}{i}"
                 )
-            )
-
-        if (
-            cols["correction"]
-            and cols[f"demand_{demand_period_for_total}_rounded"]
-        ):
-            ws[f"{cols['correction']}{i}"] = (
-                f"= {cols[f'demand_{demand_period_for_total}_rounded']}{i}"
-            )
-
+            # Дефицит / избыток (без FBS)
+            if (
+                cols["deficit_custom"]
+                and cols["stock"]
+                and cols["supplies"]
+                and cols["demand_custom"]
+            ):
+                ws[f"{cols['deficit_custom']}{i}"] = (
+                    f"= {cols['stock']}{i} + {cols['supplies']}{i} "
+                    f"- {cols['demand_custom']}{i}"
+                )
+            # Дефицит / избыток с учетом FBS
+            if (
+                cols["deficit_custom_fbs"]
+                and cols["stock"]
+                and cols["stock_fbs"]
+                and cols["supplies"]
+                and cols["demand_custom"]
+            ):
+                ws[f"{cols['deficit_custom_fbs']}{i}"] = (
+                    f"= {cols['stock']}{i} + {cols['stock_fbs']}{i} + {cols['supplies']}{i} "
+                    f"- {cols['demand_custom']}{i}"
+                )
+            # Округлённая потребность (без FBS)
+            if cols["demand_custom_rounded"] and cols["deficit_custom"]:
+                ws[f"{cols['demand_custom_rounded']}{i}"] = (
+                    _create_demand_rounded_formula(
+                        f"{cols['deficit_custom']}{i}",
+                        f"{cols['box_multiplicity']}{i}"
+                        if cols["box_multiplicity"]
+                        else None,
+                        apply_rounding=apply_box_rounding,
+                    )
+                )
+            # Округлённая потребность с учетом FBS
+            if (
+                cols["demand_custom_rounded_fbs"]
+                and cols["deficit_custom_fbs"]
+            ):
+                ws[f"{cols['demand_custom_rounded_fbs']}{i}"] = (
+                    _create_demand_rounded_formula(
+                        f"{cols['deficit_custom_fbs']}{i}",
+                        f"{cols['box_multiplicity']}{i}"
+                        if cols["box_multiplicity"]
+                        else None,
+                        apply_rounding=apply_box_rounding,
+                    )
+                )
+            # Корректировка = Потребность (округл.)
+            if cols["correction"] and cols["demand_custom_rounded"]:
+                ws[f"{cols['correction']}{i}"] = (
+                    f"= {cols['demand_custom_rounded']}{i}"
+                )
+        # ----------------- Общая логика для остальных клиентов -----------------
+        else:
+            # Потребности на фиксированные периоды
+            if cols.get(f"demand_{demand_period_1}"):
+                ws[f"{cols[f'demand_{demand_period_1}']}{i}"] = (
+                    f"= {cols['turnover']}{i} * {demand_period_1}"
+                )
+            if cols.get(f"demand_{demand_period_2}"):
+                ws[f"{cols[f'demand_{demand_period_2}']}{i}"] = (
+                    f"= {cols['turnover']}{i} * {demand_period_2}"
+                )
+            # Дефицит / избыток
+            if (
+                cols.get(f"deficit_{demand_period_1}")
+                and cols["stock"]
+                and cols["supplies"]
+                and cols.get(f"demand_{demand_period_1}")
+            ):
+                ws[f"{cols[f'deficit_{demand_period_1}']}{i}"] = (
+                    f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_1}']}{i}"
+                )
+            if (
+                cols.get(f"deficit_{demand_period_2}")
+                and cols["stock"]
+                and cols["supplies"]
+                and cols.get(f"demand_{demand_period_2}")
+            ):
+                ws[f"{cols[f'deficit_{demand_period_2}']}{i}"] = (
+                    f"= {cols['stock']}{i} + {cols['supplies']}{i} - {cols[f'demand_{demand_period_2}']}{i}"
+                )
+            # Округлённые потребности
+            if (
+                cols.get(f"demand_{demand_period_1}_rounded")
+                and cols.get(f"deficit_{demand_period_1}")
+            ):
+                ws[f"{cols[f'demand_{demand_period_1}_rounded']}{i}"] = (
+                    _create_demand_rounded_formula(
+                        f"{cols[f'deficit_{demand_period_1}']}{i}",
+                        f"{cols['box_multiplicity']}{i}"
+                        if cols["box_multiplicity"]
+                        else None,
+                        apply_rounding=apply_box_rounding,
+                    )
+                )
+            if (
+                cols.get(f"demand_{demand_period_2}_rounded")
+                and cols.get(f"deficit_{demand_period_2}")
+            ):
+                ws[f"{cols[f'demand_{demand_period_2}_rounded']}{i}"] = (
+                    _create_demand_rounded_formula(
+                        f"{cols[f'deficit_{demand_period_2}']}{i}",
+                        f"{cols['box_multiplicity']}{i}"
+                        if cols["box_multiplicity"]
+                        else None,
+                        apply_rounding=apply_box_rounding,
+                    )
+                )
+            # Корректировка = Потребность на demand_period_for_total (округл.)
+            if (
+                cols["correction"]
+                and cols.get(f"demand_{demand_period_for_total}_rounded")
+            ):
+                ws[f"{cols['correction']}{i}"] = (
+                    f"= {cols[f'demand_{demand_period_for_total}_rounded']}{i}"
+                )
     # Условное форматирование
-    deficit_columns = [
-        cols.get(f"deficit_{demand_period_1}"),
-        cols.get(f"deficit_{demand_period_2}"),
-    ]
-    deficit_columns = [c for c in deficit_columns if c]
+    # Для RiverBoats/BIO/ARK дефициты в custom-колонке,
+    # для остальных — в дефолтных по периодам.
+    if client_name in ("RiverBoats", "BIO", "ARK") and cols["deficit_custom"]:
+        deficit_columns = [cols["deficit_custom"]]
+        if cols.get("deficit_custom_fbs"):
+            deficit_columns.append(cols["deficit_custom_fbs"])
+    else:
+        deficit_columns = [
+            cols.get(f"deficit_{demand_period_1}"),
+            cols.get(f"deficit_{demand_period_2}"),
+        ]
+        deficit_columns = [c for c in deficit_columns if c]
     if deficit_columns:
         _apply_conditional_formatting(ws, deficit_columns, row_start, row_end)
-
     # Формат чисел
     two_decimal_cols = [
         cols.get("turnover"),
         cols.get(f"demand_{demand_period_1}"),
         cols.get(f"demand_{demand_period_2}"),
+        cols.get("demand_custom"),
     ]
     two_decimal_cols = [c for c in two_decimal_cols if c]
     if two_decimal_cols:
         _apply_number_format(ws, two_decimal_cols, row_start, row_end, 2)
-
     one_decimal_cols = deficit_columns
     if one_decimal_cols:
         _apply_number_format(ws, one_decimal_cols, row_start, row_end, 1)
-
     zero_decimal_cols = [
         cols.get("barcode"),
         cols.get(f"demand_{demand_period_1}_rounded"),
         cols.get(f"demand_{demand_period_2}_rounded"),
+        cols.get("demand_custom_rounded"),
+        cols.get("demand_custom_rounded_fbs"),
         cols.get("correction"),
     ]
     zero_decimal_cols = [c for c in zero_decimal_cols if c]
     if zero_decimal_cols:
         _apply_number_format(ws, zero_decimal_cols, row_start, row_end, 0)
-
     # Выравнивание
+    center_cols = [
+        "Сезон",
+        "Статус",
+        "Статус товара",
+        "Статус продажи FBO/FBS",
+        "Основной артикул",
+        "Категория",
+        "Предмет",
+        "Цвет",
+    ]
+    center_string = "|".join(center_cols)
     text_mask = mapping["column"].str.contains(
-        "Сезон|Статус|Основной артикул|Артикул|Штрихкод|Наименование|Категория|Кластер|Цвет",
+        center_string,
         na=False,
     )
     left_cols = mapping.loc[text_mask, "excel_column"].tolist()
     center_cols = mapping.loc[~text_mask, "excel_column"].tolist()
-
     if center_cols:
         _apply_alignment(ws, center_cols, row_start, row_end, "center")
     if left_cols:
         _apply_alignment(ws, left_cols, row_start, row_end, "left")
-
     wb.save(file_path)
     logger.info(f'Завершено форматирование листа "{sheet_name}"')

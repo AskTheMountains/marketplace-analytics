@@ -16,9 +16,11 @@ import ozon.scripts.format_supply_svod_RiverBoats as format_supply_svod
 from ozon.scripts.command_args_parser import cli_reference_date
 from ozon.scripts.constants import (
     client_name,
-    clusters_mapping,
+    default_clusters_mapping,
+    client_clusters_overrides,
+    default_cluster_planning_days,
+    client_cluster_planning_overrides,
     clusters_mapping_jewelry,
-    cluster_planning_days,
     marketplace_dir_path,
     shop_type,
     catalog_supply_columns,
@@ -54,7 +56,7 @@ UPLOAD_DIR = MARKETPLACE_PATH / "Clients" / client_name / "UploadFiles"
 METRICS_DIR = MARKETPLACE_PATH / "Clients" / client_name / "Metrics"
 CATALOG_DIR = MARKETPLACE_PATH / "Clients" / client_name / "catalog"
 SUPPLY_SVOD_DIR = MARKETPLACE_PATH / "Clients" / client_name / "SupplySvod"
-special_clusters_mapping = {
+special_clusters_mapping_ = {
     # --- по таблице ---
     # СПб и СЗО (ключ из таблицы) → кластер из исходного словаря
     'СПб и СЗО': ['Санкт-Петербург и СЗО'],
@@ -323,6 +325,30 @@ def read_catalog() -> pd.DataFrame:
 # ============================================================================
 # РАБОТА С КЛАСТЕРАМИ
 # ============================================================================
+def get_clusters_mapping_for_client(client_name: str) -> dict:
+    """
+    Возвращает полный маппинг кластеров для клиента:
+    - берёт default_clusters_mapping как базу;
+    - поверх накладывает client_clusters_overrides[client_name], если есть.
+    """
+    mapping = default_clusters_mapping.copy()
+    overrides = client_clusters_overrides.get(client_name)
+    if overrides:
+        mapping.update(overrides)
+    return mapping
+
+
+def get_cluster_planning_days_for_client(client_name: str) -> dict:
+    """
+    Возвращает словарь 'кластер → дни планирования' для клиента:
+    - берёт default_cluster_planning_days как базу;
+    - поверх накладывает client_cluster_planning_overrides[client_name], если есть.
+    """
+    planning = default_cluster_planning_days.copy()
+    overrides = client_cluster_planning_overrides.get(client_name)
+    if overrides:
+        planning.update(overrides)
+    return planning
 
 
 def add_clusters(date_metrics: str) -> pd.DataFrame:
@@ -435,7 +461,7 @@ def add_demand_columns(
     return df
 
 
-def calc_svod_for_clusters(metrics_df_all_clusters: pd.DataFrame) -> pd.DataFrame:
+def calc_svod_for_clusters(metrics_df_all_clusters: pd.DataFrame, cluster_planning_days: dict) -> pd.DataFrame:
     """
     Специфический расчет для листа 'По кластерам':
     - Оборачиваемость считается только по заказам: Заказы / DAYS_IN_PERIOD
@@ -963,6 +989,10 @@ def create_supply_svod_report(date_metrics: str) -> None:
     logger.info(
         f"Периоды потребности: {DEMAND_PERIOD_1} дней и {DEMAND_PERIOD_2} дней"
     )
+    # Получаем маппинг кластеров для клиента и дни планирования на кластеры
+    clusters_mapping = get_clusters_mapping_for_client(client_name)
+    cluster_planning_days = get_cluster_planning_days_for_client(client_name)
+
 
     # Список товаров
     df_products = read_products_file(date_metrics)
@@ -975,15 +1005,15 @@ def create_supply_svod_report(date_metrics: str) -> None:
     metrics_df_all_clusters = add_clusters(date_metrics)
 
     # Отчет "По кластерам" без объединения кластеров
-    svod_for_clusters = calc_svod_for_clusters(metrics_df_all_clusters)
+    svod_for_clusters = calc_svod_for_clusters(metrics_df_all_clusters, cluster_planning_days)
     df_pivot_by_clusters = create_pivot_clusters(svod_for_clusters)
 
     # Объединение кластеров по общему маппингу
     metrics_df_union_clusters = replace_clusters(
-        special_clusters_mapping,
+        clusters_mapping,
         metrics_df_all_clusters,
     )
-    svod_for_union_clusters = calc_svod_for_clusters(metrics_df_union_clusters)
+    svod_for_union_clusters = calc_svod_for_clusters(metrics_df_union_clusters, cluster_planning_days)
     df_pivot_by_union_clusters = create_pivot_clusters(
         svod_for_union_clusters
     )
@@ -1020,7 +1050,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
 
     # Даты отчета
     report_dates = read_dates_file(date_metrics)
-    cluster_list = list(special_clusters_mapping.keys())
+    cluster_list = list(clusters_mapping.keys())
 
     # Лист "Всего"
     svod_excel_for_sku = add_columns_for_excel(
@@ -1066,7 +1096,7 @@ def create_supply_svod_report(date_metrics: str) -> None:
         svod_excel_for_sku,
         svod_excel_for_sku_jewelry,
         svod_excel_for_clusters,
-        special_clusters_mapping,
+        clusters_mapping,
         clusters_mapping_jewelry,
     )
 

@@ -52,6 +52,13 @@ def calcMetrics(date_upload_files: str = str(date.today())):
     Продажи (шт) считаются из файла _Транзакции.csv по типам начислений:
         - "Продажи шт"
         - "Возвраты шт" (вычитаются из продаж).
+
+    Дополнительно:
+      - для каждого SKU считаются:
+          * 'Продажи'              — чистые продажи в штуках за основной период
+                                    (date_start..date_end) = Продажи шт - Возвраты шт
+          * 'Продажи (факт) за 2 месяца' — чистые продажи в штуках за последние 2 месяца
+                                    (последние 61 день до date_end включительно).
     """
 
     # --------------------- 1. Пути и даты ---------------------
@@ -67,11 +74,20 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         uploaddir / f"{date_upload_files}_dates_from_to.csv",
         sep=';'
     )
-    date_start = dates_from_to['date_start'][0]
-    date_end = dates_from_to['date_end'][0]
+
+    date_start_raw = dates_from_to['date_start'][0]
+    date_end_raw = dates_from_to['date_end'][0]
+
+    # Преобразуем в date без времени
+    period_start = pd.to_datetime(date_start_raw).date()
+    period_end = pd.to_datetime(date_end_raw).date()
+    # Хвост 2 месяцев (61 день до конца)
+    tail_start = period_end - pd.Timedelta(days=61)
+
     logger.info(
         f"Calculation metrics for client {client_name} "
-        f"for dates {date_start} - {date_end}"
+        f"for dates {period_start} - {period_end} "
+        f"(2-month tail from {tail_start})"
     )
 
     # --------------------- 2. Загрузка каталога и его обработка ---------------------
@@ -83,6 +99,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
     catalog = catalog.rename(columns={
         'Название товара': 'Наименование товара',
         'Barcode': 'Штрихкод',
+        'Штрихкод (Серийный номер / EAN)': 'Штрихкод'
     })
 
     if 'Объемный вес, кг' in catalog.columns:
@@ -91,6 +108,9 @@ def calcMetrics(date_upload_files: str = str(date.today())):
 
     if 'Артикул' in catalog.columns:
         catalog["Артикул"] = catalog["Артикул"].map(clean_ozon_article)
+
+    # Удаляем дубликаты колонок, оставляем первую
+    catalog = catalog.loc[:, ~catalog.columns.duplicated()]
 
     catalog = catalog[[
         'Артикул',
@@ -159,7 +179,6 @@ def calcMetrics(date_upload_files: str = str(date.today())):
     # --------------------- 4. Заказы (FBO/FBS) ---------------------
     if 'Объемный вес товаров, кг' in order_fbo.columns:
         order_fbo = order_fbo.drop(columns=['Объемный вес товаров, кг'])
-
     order_fbo['Схема доставки'] = 'FBO'
     order_fbs['Схема доставки'] = 'FBS'
 
@@ -182,7 +201,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
     # --------------------- 5. Продажи из _Транзакции.csv ---------------------
     if transactions is None or transactions.empty:
         logger.warning("Файл _Транзакции.csv пуст или не найден, продажи будут нулевыми.")
-        sales = pd.DataFrame(columns=['Артикул', 'Кластер', 'Продажи'])
+        sales = pd.DataFrame(columns=['Артикул', 'Кластер', 'Продажи', 'Продажи (факт) за 2 месяца'])
     else:
         tr = transactions.copy()
 
@@ -196,8 +215,16 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         if "SKU" in tr.columns:
             tr["SKU"] = pd.to_numeric(tr["SKU"], errors="coerce").astype("Int64")
 
-        mask_sales_qty = tr["Тип начисления"] == "Продажи шт"
-        mask_returns_qty = tr["Тип начисления"] == "Возвраты шт"
+        # Дата транзакции
+        date_col_tr = "Дата" if "Дата" in tr.columns else "operation_date"
+        tr[date_col_tr] = pd.to_datetime(tr[date_col_tr], errors="coerce")
+        tr["Дата"] = tr[date_col_tr].dt.tz_localize(None).dt.date
+
+        type_col = "Тип начисления"
+        value_col = "Итого"
+
+        mask_sales_qty = tr[type_col] == "Продажи шт"
+        mask_returns_qty = tr[type_col] == "Возвраты шт"
 
         tr_qty = tr.loc[mask_sales_qty | mask_returns_qty, :].copy()
 
@@ -205,42 +232,66 @@ def calcMetrics(date_upload_files: str = str(date.today())):
             logger.warning(
                 "В _Транзакции.csv нет строк с типами 'Продажи шт' / 'Возвраты шт'."
             )
-            sales = pd.DataFrame(columns=['Артикул', 'Кластер', 'Продажи'])
+            sales = pd.DataFrame(columns=['Артикул', 'Кластер', 'Продажи', 'Продажи (факт) за 2 месяца'])
         else:
+            # Продажи шт (плюс) и Возвраты шт (плюс — нужно вычесть)
             tr_qty["Продажи_шт"] = np.where(
-                tr_qty["Тип начисления"] == "Продажи шт",
-                tr_qty["Итого"],
+                tr_qty[type_col] == "Продажи шт",
+                tr_qty[value_col],
                 0,
             )
             tr_qty["Возвраты_шт"] = np.where(
-                tr_qty["Тип начисления"] == "Возвраты шт",
-                tr_qty["Итого"],
+                tr_qty[type_col] == "Возвраты шт",
+                tr_qty[value_col],
                 0,
             )
 
+            # Чистые продажи шт по строке
+            tr_qty["Продажи_чистые_шт"] = tr_qty["Продажи_шт"] - tr_qty["Возвраты_шт"]
+
+            # Агрегация по SKU + Кластер + Дата
             qty_agg = (
                 tr_qty
-                .groupby(["SKU", "Кластер"], as_index=False)
+                .groupby(["SKU", "Кластер", "Дата"], as_index=False)
                 .agg(
-                    Продажи_шт=("Продажи_шт", "sum"),
-                    Возвраты_шт=("Возвраты_шт", "sum"),
+                    Продажи_чистые_шт=("Продажи_чистые_шт", "sum"),
                 )
             )
 
-            # считаем колонку продаж, которая используется в других модулях
-            qty_agg["Продажи"] = qty_agg["Продажи_шт"] # - qty_agg["Возвраты_шт"]
+            # Делим по периодам:
+            #  - Основной период: period_start <= Дата <= period_end
+            #  - Хвост 2 месяцев:  tail_start  <= Дата <= period_end
+            qty_agg["Продажи_шт_период"] = np.where(
+                (qty_agg["Дата"] >= period_start) & (qty_agg["Дата"] <= period_end),
+                qty_agg["Продажи_чистые_шт"],
+                0,
+            )
+            qty_agg["Продажи_шт_2м"] = np.where(
+                (qty_agg["Дата"] >= tail_start) & (qty_agg["Дата"] <= period_end),
+                qty_agg["Продажи_чистые_шт"],
+                0,
+            )
+
+            # Теперь суммируем по SKU + Кластеру за весь период и за 2 месяца
+            qty_agg_final = (
+                qty_agg
+                .groupby(["SKU", "Кластер"], as_index=False)
+                .agg(
+                    Продажи=('Продажи_шт_период', 'sum'),
+                    Продажи_факт_2м=('Продажи_шт_2м', 'sum'),
+                )
+            )
 
             # Привязываем к Артикулу через каталог
-            sales = qty_agg.merge(
+            sales = qty_agg_final.merge(
                 sku_to_article,
                 on="SKU",
                 how="left"
             )
-
-            sales = sales[['Артикул', 'Кластер', 'Продажи']]
-
-            # нормализуем артикул
             sales['Артикул'] = sales['Артикул'].map(clean_ozon_article)
+
+            sales = sales[['Артикул', 'Кластер', 'Продажи', 'Продажи_факт_2м']]
+            sales = sales.rename(columns={'Продажи_факт_2м': 'Продажи (факт) за 2 месяца'})
 
     # --------------------- 6. Остатки FBO ---------------------
     warehouses_fbo = warehouses_fbo.loc[
@@ -308,6 +359,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         .groupby(['Артикул', 'Кластер'], as_index=False)
         .agg(
             Продажи=('Продажи', 'sum'),
+            Продажи_факт_2м=('Продажи (факт) за 2 месяца', 'sum'),
             Заказы=('Заказы', 'sum'),
             Заказы_руб=('Заказы, руб.', 'sum'),
             ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
@@ -322,6 +374,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         .groupby(['Артикул'], as_index=False)
         .agg(
             Продажи=('Продажи', 'sum'),
+            Продажи_факт_2м=('Продажи (факт) за 2 месяца', 'sum'),
             Заказы=('Заказы', 'sum'),
             Заказы_руб=('Заказы, руб.', 'sum'),
             ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ=('ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ', 'sum'),
@@ -337,7 +390,6 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         on='Артикул',
         how='left'
     ).fillna(0)
-
     catalog_with_orderware = catalog_with_orderware.sort_values(
         by=['Артикул', 'Кластер'],
         ascending=True
@@ -348,7 +400,6 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         on='Артикул',
         how='left'
     ).fillna(0)
-
     catalog_with_summary = catalog_with_summary.sort_values(
         by=['Артикул'],
         ascending=True
@@ -366,7 +417,6 @@ def calcMetrics(date_upload_files: str = str(date.today())):
 
     logger.info(f"Metrics saved in: {metrics_file_name}")
     logger.info('Done')
-
 
 # %%
 if __name__ == '__main__':

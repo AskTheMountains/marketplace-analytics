@@ -33,6 +33,7 @@ from ozon.scripts.command_args_parser import cli_days_ago
 from ozon.scripts.constants import (
     client_name,
     headers,
+    session,
     marketplace_dir_path,
     ozon_seller_api_url,
     article_replacements,
@@ -43,6 +44,7 @@ from ozon.scripts.constants import (
 from ozon.scripts.update_clusters import update_cluster_list
 # Некоторые доп. функции
 from ozon.scripts.ozon_generic_functions import (
+    OzonRateLimiter,
     clean_ozon_article
 )
 from generic_functions import (
@@ -2288,43 +2290,50 @@ def getOrders_v2(
 def uploadAccrualTypes(headers):
     """
     Выгружает справочник типов начислений из Ozon API /v1/finance/accrual/types.
-
-    Параметры:
-        headers - заголовки с авторизацией для Ozon Seller API
-
-    Возвращает:
-        pandas.DataFrame с колонками: ['id', 'name', 'description'].
-        Если данных нет или произошла ошибка — пустой DataFrame.
+    Использует OzonRateLimiter (повторы при ошибках + паузы).
     """
     url = f"{ozon_seller_api_url}/v1/finance/accrual/types"
     logger.info("Выгрузка справочника типов начислений начата.")
 
+    session = requests.Session()
+    session.headers.update(headers)
+
+    # Используем твой OzonRateLimiter с прописанными дефолтами
+    limiter = OzonRateLimiter()  # interval / error_interval / max_retries заданы в __init__
+
+    resp, ok = limiter.call(
+        session.post,
+        url=url,
+        timeout=60,
+    )
+    if not ok or resp is None:
+        logger.error("Не удалось получить справочник типов начислений после всех попыток.")
+        return pd.DataFrame(columns=["type_id", "name", "description"])
+
+    # Здесь resp.status_code уже 2xx, т.к. OzonRateLimiter возвращает True только при успехе
     try:
-        resp = requests.post(url, headers=headers, timeout=60)
-        resp.raise_for_status()
         data = resp.json()
-    except requests.RequestException as ex:
-        logger.error(f"Ошибка запроса API при выгрузке справочника начислений: {ex}")
-        return pd.DataFrame(columns=["id", "name", "description"])
     except Exception as ex:
-        logger.error(f"Общая ошибка при выгрузке справочника начислений: {ex}")
-        return pd.DataFrame(columns=["id", "name", "description"])
+        logger.error(f"Ошибка парсинга JSON при выгрузке справочника начислений: {ex}")
+        return pd.DataFrame(columns=["type_id", "name", "description"])
 
     accrual_types = data.get("accrual_types", []) or []
-
     if not accrual_types:
         logger.info("Справочник типов начислений пуст или не возвращён.")
-        return pd.DataFrame(columns=["id", "name", "description"])
+        return pd.DataFrame(columns=["type_id", "name", "description"])
 
     df_accrual_types = pd.DataFrame(accrual_types)
-    # На всякий случай упорядочим и гарантируем наличие нужных колонок
+
+    # Гарантируем наличие нужных колонок
     for col in ("id", "name", "description"):
         if col not in df_accrual_types.columns:
             df_accrual_types[col] = None
+
     df_accrual_types = df_accrual_types[["id", "name", "description"]]
+
     # Переименовываем колонки
     df_accrual_types = df_accrual_types.rename(columns={
-        'id': 'type_id'
+        "id": "type_id"
     })
 
     logger.info(
@@ -2332,6 +2341,7 @@ def uploadAccrualTypes(headers):
         f"Найдено записей: {df_accrual_types.shape[0]}."
     )
     return df_accrual_types
+
 
 # Функция перевода даты в формат date
 def _parse_to_date_only(dt_value):
@@ -2374,16 +2384,13 @@ def uploadAccrualByDay(headers, date_start, date_end):
     """
     Выгружает данные начислений по Ozon API /v1/finance/accrual/by-day
     за каждый день в указанном диапазоне с пагинацией по last_id.
-
     Параметры:
         headers    - заголовки с авторизацией для Ozon Seller API
         date_start - начало периода (строка или datetime, разные форматы поддерживаются)
         date_end   - конец периода (строка или datetime, разные форматы поддерживаются)
-
     Возвращает:
         pandas.DataFrame с объединёнными начислениями за все дни периода.
     """
-
     # маленькая пауза между успешными запросами
     sleep_interval_success = 0.2
     # большая пауза между повторными попытками после ошибок
@@ -2393,15 +2400,29 @@ def uploadAccrualByDay(headers, date_start, date_end):
     # Приводим входные даты к типу date (без времени и таймзоны)
     start_date = _parse_to_date_only(date_start)
     end_date = _parse_to_date_only(date_end)
-
     if start_date > end_date:
         raise ValueError("date_start не может быть больше date_end")
 
     logger.info(f"Выгрузка начислений по дням с {start_date} по {end_date} начата.")
 
-    all_accruals = []
+    # Создаём session и лимитер Ozon
+    session = requests.Session()
+    session.headers.update(headers)
 
+    # Ты прописал дефолты в OzonRateLimiter, поэтому просто создаём без параметров.
+    # Но чтобы сохранить исходную логику интервалов, можно (если захочешь) задать явно:
+    # limiter = OzonRateLimiter(interval=sleep_interval_success,
+    #                           error_interval=sleep_interval_error,
+    #                           max_retries=max_retries)
+    limiter = OzonRateLimiter(
+        interval=sleep_interval_success,
+        error_interval=sleep_interval_error,
+        max_retries=max_retries,
+    )
+
+    all_accruals = []
     current_date = start_date
+
     while current_date <= end_date:
         date_str = current_date.strftime("%Y-%m-%d")
         logger.info(f"Обработка даты начислений: {date_str}")
@@ -2415,65 +2436,30 @@ def uploadAccrualByDay(headers, date_start, date_end):
                 "last_id": last_id
             }
 
-            attempt = 1
-            success = False
-            response_data = None
+            # ======= НОВАЯ ЧАСТЬ: вызов через OzonRateLimiter =======
+            resp, ok = limiter.call(
+                session.post,
+                url=f"{ozon_seller_api_url}/v1/finance/accrual/by-day",
+                json=payload,
+                timeout=60,
+            )
+            # ========================================================
 
-            while attempt <= max_retries and not success:
-                try:
-                    resp = requests.post(
-                        f"{ozon_seller_api_url}/v1/finance/accrual/by-day",
-                        headers=headers,
-                        data=json.dumps(payload),
-                        timeout=60
-                    )
-                    resp.raise_for_status()
-                    response_data = resp.json()
-                    success = True
+            if not ok or resp is None:
+                logger.error(
+                    f"Не удалось получить данные по начислениям "
+                    f"для даты {date_str}, страницы {page_idx} после {max_retries} попыток. "
+                    "Переходим к следующей дате."
+                )
+                break
 
-                    # небольшая пауза только ПОСЛЕ успешного запроса
-                    if sleep_interval_success > 0:
-                        logger.info(
-                            f"Пауза {sleep_interval_success} секунд перед следующим запросом..."
-                        )
-                        time.sleep(sleep_interval_success)
-
-                except requests.RequestException as ex:
-                    logger.error(
-                        f"Ошибка запроса API по начислениям "
-                        f"(дата {date_str}, страница {page_idx}, попытка {attempt}/{max_retries}): {ex}"
-                    )
-                    if attempt == max_retries:
-                        logger.error(
-                            f"Достигнуто максимальное число попыток для "
-                            f"даты {date_str}, страницы {page_idx}. Переходим к следующей дате."
-                        )
-                        break
-                    logger.info(
-                        f"Пауза {sleep_interval_error} секунд перед повторной попыткой..."
-                    )
-                    time.sleep(sleep_interval_error)
-                    attempt += 1
-
-                except Exception as ex:
-                    logger.error(
-                        f"Общая ошибка по начислениям "
-                        f"(дата {date_str}, страница {page_idx}, попытка {attempt}/{max_retries}): {ex}"
-                    )
-                    if attempt == max_retries:
-                        logger.error(
-                            f"Достигнуто максимальное число попыток (общая ошибка) для "
-                            f"даты {date_str}, страницы {page_idx}. Переходим к следующей дате."
-                        )
-                        break
-                    logger.info(
-                        f"Пауза {sleep_interval_error} секунд перед повторной попыткой..."
-                    )
-                    time.sleep(sleep_interval_error)
-                    attempt += 1
-
-            if not success or response_data is None:
-                # Переходим к следующей дате
+            try:
+                response_data = resp.json()
+            except Exception as ex:
+                logger.error(
+                    f"Ошибка парсинга JSON по начислениям "
+                    f"(дата {date_str}, страница {page_idx}): {ex}"
+                )
                 break
 
             accruals = response_data.get("accruals", [])
@@ -2515,8 +2501,8 @@ def uploadAccrualByDay(headers, date_start, date_end):
         f"Выгрузка начислений по дням завершена. "
         f"Найдено {df_accruals.shape[0]} записей."
     )
-
     return df_accruals
+
 
 # Функция обработки начислений по отправлениям
 def process_posting_accruals(
@@ -3345,46 +3331,98 @@ def get_transactions(
         headers,
         date_start,
         date_end,
-        upload_additional_postings_info=False,
-        to_save=True
+        upload_additional_postings_info: bool = False,
+        to_save: bool = True,
+        min_days: int | None = None,
 ):
-    # Выгружаем список транзакций
+    """
+    Выгружает и обрабатывает транзакции Ozon.
+
+    **Параметры:**
+    * `headers` — заголовки для API Ozon Seller.
+    * `date_start`, `date_end` — границы периода (строки вида `'YYYY-MM-DDTHH:MM:SSZ'`).
+    * `upload_additional_postings_info` — выгружать ли доп. информацию по отправлениям.
+    * `to_save` — сохранять ли результат локально.
+    * `min_days` — минимальная длина периода в днях (включительно).
+
+          Если задано и исходный период КОРОЧЕ, то date_start
+          сдвигается назад так, чтобы длина была ровно min_days.
+          Если исходный период уже длиннее или равен min_days – ничего не меняем.
+
+    **Возвращает:**
+    * `DataFrame` с обработанными транзакциями.
+    """
+
+    # --- 0. Корректировка периода, если задан min_days ---
+    if min_days is not None:
+        # Берём только даты, отбрасывая время и Z
+        end_date = pd.to_datetime(date_end).date()
+        start_date = pd.to_datetime(date_start).date()
+
+        orig_days = (end_date - start_date).days  # длина исходного периода
+
+        if orig_days < min_days:
+            # Сдвигаем начало так, чтобы длина была min_days
+            new_start_date = end_date - pd.Timedelta(days=min_days)
+            logger.info(
+                f"Период {start_date}–{end_date} короче min_days={min_days} "
+                f"({orig_days} дней). Смещаем date_start на {new_start_date}."
+            )
+            # Собираем обратно строки в том же формате: YYYY-MM-DDT00:00:00Z / ...23:59:59Z
+            date_start = f"{new_start_date.strftime('%Y-%m-%d')}T00:00:00Z"
+            date_end = f"{end_date.strftime('%Y-%m-%d')}T23:59:59Z"
+        else:
+            logger.info(
+                f"Исходный период {start_date}–{end_date} ({orig_days} дней) "
+                f"не короче min_days={min_days}, оставляем как есть."
+            )
+
+    # --- 1. Выгружаем список транзакций ---
     df_accruals = uploadAccrualByDay(headers, date_start, date_end)
-    # Выгружаем справочник типов начислений
+
+    if df_accruals is None or df_accruals.empty:
+        logger.info("get_transactions: df_accruals пустой, возвращаем пустой DF.")
+        return pd.DataFrame()
+
+    # --- 2. Выгружаем справочник типов начислений ---
     df_accrual_types = uploadAccrualTypes(headers)
-    # Обрабатываем транзакции по отправлениям
+
+    # --- 3. Обрабатываем транзакции по отправлениям ---
     df_postings_transactions_processed = process_posting_accruals(
         df_accruals,
         df_accrual_types
     )
+
     # Если стоит флаг - выгружаем доп. информацию по отправлениям
-    if upload_additional_postings_info:
+    if upload_additional_postings_info and not df_postings_transactions_processed.empty:
         df_postings_transactions_processed = upload_additional_postings_transactions_info(
             df_postings_transactions_processed,
             headers,
             date_start,
             date_end
         )
-    # Обрабатываем прочие начисления по товарам
+
+    # --- 4. Обрабатываем прочие начисления по товарам ---
     df_item_transactions = process_item_accruals(
         df_accruals,
         df_accrual_types,
     )
 
-    # Обрабатываем начисления без товаров
+    # --- 5. Обрабатываем начисления без товаров ---
     df_non_item_transactions = process_non_item_accruals(
         df_accruals,
         df_accrual_types
     )
-    # Объединяем все транзакции в один df, убираем 0, делаем небольшую обработку
+
+    # --- 6. Объединяем все транзакции в один df ---
     df_all_transactions = union_all_transactions({
         "postings": df_postings_transactions_processed,
         "items": df_item_transactions,
         "non_items": df_non_item_transactions,
     })
-    # Если стоит флаг сохранения - сохраняем
+
+    # --- 7. Сохраняем при необходимости ---
     if to_save:
-        # Задаем имя файла для транзакций
         file_name_transactions = (
             uploaddir_today /
             f"{str(date.today())}_Транзакции.csv"
@@ -3395,9 +3433,9 @@ def get_transactions(
             index=False,
             encoding='utf-8-sig'
         )
+        logger.info(f"Транзакции сохранены в файл: {file_name_transactions}")
 
     return df_all_transactions
-
 
 def generate_monthly_intervals(date_start: str, date_end: str):
     """Генерирует месячные интервалы, если период больше месяца"""
@@ -5677,7 +5715,8 @@ if __name__ == '__main__':
         headers,
         date_start,
         date_end,
-        upload_additional_postings_info=True
+        upload_additional_postings_info=True,
+        min_days=61
     )
     # Возвраты (FBO + FBS)
     df_returns = getReturns_v2(headers, date_start, date_end)
