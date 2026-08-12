@@ -9,6 +9,8 @@ from datetime import date, datetime
 from itertools import product
 from pathlib import Path
 from typing import List, Optional, Tuple
+from functools import lru_cache
+
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,7 @@ from wb.scripts.constants import (
     cargo_type,
     catalog_supply_columns,
     cargo_multiplicity,
+    only_reference_table_products_flag,
     default_warehouse_planning_days,
     client_warehouse_planning_overrides,
     warehouse_days_default,
@@ -71,6 +74,80 @@ UPLOAD_DIR_TODAY = UPLOAD_DIR / f"UploadFiles_{date.today()}"
 METRICS_DIR = marketplace_dir_path / "Clients" / client_name / "Metrics"
 CATALOG_DIR = marketplace_dir_path / "Clients" / client_name / "catalog"
 SUPPLY_SVOD_DIR = marketplace_dir_path / "Clients" / client_name / "SupplySvod"
+WB_WAREHOUSES_MAPPING_FILE = marketplace_dir_path / "scripts" / "wb_warehouses_mapping.xlsx"
+
+
+# ============================================================================
+# ФУНКЦИИ НАХОЖДЕНИЯ ПОХОЖИХ СКЛАДОВ
+# ============================================================================
+
+def _find_similar_warehouses_single_source(
+    warehouse: str,
+    df_source: pd.DataFrame,
+    max_matches: int = 5,
+    cutoff: float = 0.6,
+) -> list[str]:
+    """
+    Ищет похожие склады в одном DataFrame с колонкой 'Склад'.
+    Возвращает список строк вида '<склад> (строки: 5, 7, ...)'.
+    Если ничего не найдено — возвращает пустой список.
+    """
+    if df_source is None or df_source.empty or "Склад" not in df_source.columns:
+        return []
+
+    known = df_source["Склад"].astype(str)
+    known_list = known.tolist()
+
+    similar = difflib.get_close_matches(
+        warehouse,
+        known_list,
+        n=max_matches,
+        cutoff=cutoff,
+    )
+    if not similar:
+        return []
+
+    parts: list[str] = []
+    for sim in similar:
+        idx_list = df_source.index[known == sim].tolist()
+        excel_rows = [i + 2 for i in idx_list]  # +2: индекс с 0, + заголовок
+        parts.append(f"{sim} (строки: {', '.join(map(str, excel_rows))})")
+
+    return parts
+
+@lru_cache(maxsize=None)
+def load_wb_warehouses_mapping() -> dict[str, pd.DataFrame]:
+    """
+    Читает wb_warehouses_mapping.xlsx и возвращает словарь {sheet_name: df},
+    где в df есть колонка 'Склад'.
+    """
+    sheets: dict[str, pd.DataFrame] = {}
+    try:
+        xls = pd.ExcelFile(WB_WAREHOUSES_MAPPING_FILE)
+    except FileNotFoundError:
+        logger.warning(
+            f"Файл маппинга складов WB не найден: {WB_WAREHOUSES_MAPPING_FILE}"
+        )
+        return sheets
+
+    for sheet_name in xls.sheet_names:
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+        except Exception as e:
+            logger.warning(
+                f"Не удалось прочитать лист '{sheet_name}' "
+                f"из {WB_WAREHOUSES_MAPPING_FILE}: {e}"
+            )
+            continue
+        if "Склад" not in df.columns:
+            continue
+        df = df.copy()
+        df["Склад"] = df["Склад"].astype(str).str.strip()
+        sheets[sheet_name] = df
+
+    return sheets
+
+
 
 # ============================================================================
 # ФУНКЦИИ ЧТЕНИЯ ДАННЫХ
@@ -208,7 +285,6 @@ def read_clusters_mapping(cargo_type_param: str) -> pd.DataFrame:
 
     return clusters_mapping
 
-
 def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
     """
     Читает файл с загруженностью складов WB за указанную дату выгрузки
@@ -216,12 +292,14 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
       warehouseName -> Склад
       boxAcceptanceType -> Ограничения
 
+    Дополнительно:
+      - если название склада заканчивается на 'СГТ' (с пробелом или без),
+        оно переименовывается в 'СГТ <имя_склада_без_СГТ>',
+        чтобы совпасть с маппингом, где 'СГТ' стоит в начале строки.
+
     Ожидаемый путь:
       <marketplace_dir_path>/Clients/<client_name>/UploadFiles/UploadFiles_<date_metrics>/
         <date_metrics>_Склады_WB.csv
-
-    :param date_metrics: дата выгрузки в формате 'YYYY-MM-DD'
-    :return: DataFrame c данными по складам или пустой DF, если файл не найден.
     """
     uploaddir = (
         Path(marketplace_dir_path)
@@ -253,6 +331,24 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
     }
     if existing_rename:
         df_warehouses = df_warehouses.rename(columns=existing_rename)
+
+    # Переименование самих складов: '... СГТ' / '...СГТ' -> 'СГТ ...'
+    if "Склад" in df_warehouses.columns:
+        def _normalize_sgt(name: str) -> str:
+            if not isinstance(name, str):
+                return name
+            s = name.strip()
+            # убираем мышиные пробелы перед СГТ
+            if s.endswith("СГТ"):
+                base = s[:-3].rstrip()  # отрезаем 'СГТ' и возможный пробел перед ним
+                if base:
+                    return f"СГТ {base}"
+                else:
+                    # если было просто "СГТ" — оставляем как есть
+                    return "СГТ"
+            return s
+
+        df_warehouses["Склад"] = df_warehouses["Склад"].astype(str).map(_normalize_sgt)
 
     logger.info(
         "Считан файл с загруженностью складов WB: {}, строк: {}, колонок: {}",
@@ -541,6 +637,7 @@ def replace_clusters(
     df_merged["Склад для группировки"] = np.where(is_sgt, target_sgt, target_norm)
 
     # ---- Логирование складов без группировки (опционально) ----
+    # ---- Логирование складов без группировки (опционально) ----
     if log_unmapped:
         mask_no_group = (
             df_merged["Группировка"].isna()
@@ -553,31 +650,76 @@ def replace_clusters(
             .unique()
             .tolist()
         )
+
         if unmapped_warehouses:
-            known_warehouses = clusters_mapping_norm["Склад"].astype(str)
-            known_list = known_warehouses.tolist()
-            lines_for_log: list[str] = []
-            for wh in sorted(unmapped_warehouses):
-                similar = difflib.get_close_matches(
-                    wh, known_list, n=5, cutoff=0.6
-                )
-                if not similar:
-                    lines_for_log.append(f"{wh}: похожие склады не найдены")
-                    continue
-                similar_parts: list[str] = []
-                for sim in similar:
-                    idx_list = clusters_mapping_norm.index[
-                        known_warehouses == sim
-                    ].tolist()
-                    # excel-строки = индекс + 2 (заголовок + 1)
-                    excel_rows = [i + 2 for i in idx_list]
-                    similar_parts.append(
-                        f"{sim} (строки: {', '.join(map(str, excel_rows))})"
-                    )
-                lines_for_log.append(f"{wh}: " + ", ".join(similar_parts))
+            unmapped_sorted = sorted(unmapped_warehouses)
+
+            # Короткий warning — список складов без группировки (для копирования в Excel)
             logger.warning(
-                "Похожие склады для складов без группировки:\n  "
-                + "\n  ".join(lines_for_log)
+                "Склады без группировки (можно скопировать в Excel):\n"
+                + "\n".join(unmapped_sorted)
+            )
+
+            # Загружаем внешние листы маппинга (кэшируются)
+            mapping_sheets = load_wb_warehouses_mapping()
+            df_boxes = mapping_sheets.get("Короба")
+            df_pallets = mapping_sheets.get("Монопалеты")
+
+            # Подробные списки по каждому источнику
+            # 1) клиентский маппинг (clusters_mapping_norm)
+            client_lines: list[str] = []
+            for wh in unmapped_sorted:
+                sim_client = _find_similar_warehouses_single_source(
+                    warehouse=wh,
+                    df_source=clusters_mapping_norm,
+                    max_matches=5,
+                    cutoff=0.6,
+                )
+                if sim_client:
+                    client_lines.append(f"{wh}: " + "; ".join(sim_client))
+                else:
+                    client_lines.append(f"{wh}: похожие склады не найдены")
+
+            # 2) Короба
+            boxes_lines: list[str] = []
+            for wh in unmapped_sorted:
+                sim_boxes = _find_similar_warehouses_single_source(
+                    warehouse=wh,
+                    df_source=df_boxes,
+                    max_matches=5,
+                    cutoff=0.6,
+                )
+                if sim_boxes:
+                    boxes_lines.append(f"{wh}: " + "; ".join(sim_boxes))
+                else:
+                    boxes_lines.append(f"{wh}: похожие склады не найдены")
+
+            # 3) Монопаллеты
+            pallets_lines: list[str] = []
+            for wh in unmapped_sorted:
+                sim_pallets = _find_similar_warehouses_single_source(
+                    warehouse=wh,
+                    df_source=df_pallets,
+                    max_matches=5,
+                    cutoff=0.6,
+                )
+                if sim_pallets:
+                    pallets_lines.append(f"{wh}: " + "; ".join(sim_pallets))
+                else:
+                    pallets_lines.append(f"{wh}: похожие склады не найдены")
+
+            # Выводим отдельно по клиенту, коробам и монопаллетам (debug, чтобы не засорять обычные логи)
+            logger.debug(
+                "Похожие склады по КЛИЕНТСКОМУ маппингу:\n  "
+                + "\n  ".join(client_lines)
+            )
+            logger.debug(
+                "Похожие склады по листу 'Короба':\n  "
+                + "\n  ".join(boxes_lines)
+            )
+            logger.debug(
+                "Похожие склады по листу 'Монопаллеты':\n  "
+                + "\n  ".join(pallets_lines)
             )
 
     # ---- Если агрегация не нужна — возвращаем df_merged как есть ----
@@ -998,6 +1140,7 @@ def add_columns_from_catalog(
       1) 'Габариты товара (справочно)' из справочника,
       2) если пусто — 'Габариты товара (расчет)' из метрик/списка товаров,
       3) если всё ещё пусто — 'Стандарт'.
+    Если стоит флаг, то фильтрует только товары, которые есть в справочнике.
 
     Также заполняет 'Кратность коробов' дефолтным значением, если оно отсутствует.
     """
@@ -1008,7 +1151,8 @@ def add_columns_from_catalog(
         catalog_processed[catalog_supply_columns],
         how="left",
         on=WB_MERGE_KEY,
-        suffixes=("", "_catalog_reference")
+        suffixes=("", "_catalog_reference"),
+        indicator='Наличие товара в справочнике',
     )
 
     # Заполнение кратности коробов дефолтом
@@ -1036,6 +1180,12 @@ def add_columns_from_catalog(
         )
     else:
         df_merged["Габариты товара"] = "Стандарт"
+
+        # Если стотит флаг "Включить товары только из справочника", фильтруем по индикатору merge
+    if only_reference_table_products_flag:
+        df_merged = df_merged[df_merged['Наличие товара в справочнике'] == 'both'].reset_index(drop=True).copy()
+        df_merged.drop(columns=['Наличие товара в справочнике'], inplace=True)
+
 
     return df_merged
 
@@ -1164,6 +1314,7 @@ def save_sheets_to_excel(
     """
     Сохраняет данные в Excel-файл (сырые данные, без форматирования).
     """
+    logger.info(f"Начало сохранения расчета поставок в Excel-файл для клиента {client_name} на дату {date_metrics}")
     SUPPLY_SVOD_DIR.mkdir(parents=True, exist_ok=True)
 
     filepath = (
@@ -1194,7 +1345,7 @@ def save_sheets_to_excel(
             index=False,
         )
 
-    logger.info(f"Данные сохранены в: {filepath}")
+    logger.success(f"Данные сохранены в: {filepath}")
 
 
 def format_excel_file(
@@ -1259,7 +1410,7 @@ def format_excel_file(
         SUPPLY_SVOD_DIR
         / f"{date_metrics}_Расчет_поставок_{client_name}_WB_formatted.xlsx"
     )
-    logger.info(f"Отформатированный отчет сохранен: {filename}")
+    logger.success(f"Отформатированный отчет сохранен: {filename}")
 
 
 # ============================================================================
@@ -1383,10 +1534,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
 
     # ---------- 7. Подготовка таблиц для Excel ----------
     # 7.1. "По кластерам" — обогащаем справочником (если нужны поля каталога)
-    svod_clusters_final = add_columns_from_catalog(
-        svod_clusters_initial,
-        catalog_processed,
-    )
+    svod_clusters_final = svod_clusters_initial.copy()
 
     report_dates_df = read_dates_file(date_metrics)
     date_start_period = report_dates_df["date_start_file"][0]
@@ -1438,7 +1586,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
         svod_excel_clusters,
     )
 
-    logger.info(
+    logger.success(
         f"Отчет успешно создан для {client_name} на дату {date_metrics}"
     )
 
@@ -1449,6 +1597,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
 # %%
 if __name__ == "__main__":
     date_metrics = cli_reference_date(parser)
+    # date_metrics = '2026-07-03'
     create_supply_svod_report(date_metrics)
 
 # %%

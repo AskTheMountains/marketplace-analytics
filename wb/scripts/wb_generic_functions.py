@@ -1182,6 +1182,159 @@ def get_sales_funnel(
 
     return df
 
+# Функция получения остатков с опциональной группировкой
+def get_reminders_by_product(
+    df_products: pd.DataFrame,
+    headers: dict,
+    agg_col: list[str] | None = ['Артикул продавца', 'Артикул WB', 'Размер'],
+    split_stocks: bool = False,
+    date_start: str = "2000-01-01",  # для совместимости с сигнатурой getStockRemindersWB
+    date_end: str = "2000-01-01",    # для совместимости
+) -> pd.DataFrame:
+    """
+    Выгружает и обрабатывает остатки товаров Wildberries (FBO и FBS),
+    маппя их на товары строго по chrtId.
+
+    Ожидается, что df_products содержит как минимум колонки:
+    - 'Артикул продавца'
+    - 'Артикул WB'
+    - 'Размер'
+    - 'chrtId' или 'chrtID'
+
+    Логика:
+    1. Получаем FBO-остатки через getStockRemindersWB, берём поле quantity.
+    2. Получаем FBS-остатки через getStockReminders_fbs, берём поле amount.
+    3. Оба набора остатков агрегируем по chrtId.
+    4. Мерджим остатки к df_products ТОЛЬКО по chrtId.
+       Вся информация о товаре (Артикул продавца, Артикул WB, Размер)
+       берётся исключительно из df_products.
+    5. Если agg_col не None и не пустой — агрегируем по этим колонкам.
+
+    Итоговый DataFrame (после возможной агрегации) содержит колонки:
+    - 'Артикул продавца'
+    - 'Артикул WB'
+    - 'Размер'
+    - 'Остатки FBO'
+    - 'Остатки FBS'
+    (+ 'Остаток', если split_stocks == False)
+    """
+    # Импорт WB-функций
+    from wb.scripts.uploadDataFromWB import getStockRemindersWB, getStockReminders_fbs
+
+    df_products = df_products.copy()
+
+    # ---------- 0. Подготовка df_products ----------
+    # Приводим chrtId/chrtID к единому имени
+    if "chrtId" not in df_products.columns and "chrtID" in df_products.columns:
+        df_products = df_products.rename(columns={"chrtID": "chrtId"})
+
+    required_cols = ["Артикул продавца", "Артикул WB", "Размер", "chrtId"]
+    missing = [c for c in required_cols if c not in df_products.columns]
+    if missing:
+        raise ValueError(
+            f"В df_products отсутствуют необходимые колонки: {missing}. "
+            "Ожидаются: 'Артикул продавца', 'Артикул WB', 'Размер', 'chrtId' (или 'chrtID')."
+        )
+
+    df_products["chrtId"] = df_products["chrtId"].astype(str)
+
+    # ---------- 1. Остатки FBO ----------
+    df_fbo = getStockRemindersWB(
+        headers=headers,
+        date_start=date_start,
+        date_end=date_end,
+        to_save=False,
+    )
+
+    if df_fbo.empty:
+        df_fbo = pd.DataFrame(columns=["chrtId", "Остатки FBO"])
+    else:
+        # Нормализуем chrtId
+        if "chrtID" in df_fbo.columns and "chrtId" not in df_fbo.columns:
+            df_fbo = df_fbo.rename(columns={"chrtID": "chrtId"})
+        if "chrtId" in df_fbo.columns:
+            df_fbo["chrtId"] = df_fbo["chrtId"].astype(str)
+        # quantity → Остатки FBO
+        if "quantity" in df_fbo.columns:
+            df_fbo = df_fbo.rename(columns={"quantity": "Остатки FBO"})
+        else:
+            df_fbo["Остатки FBO"] = 0
+        # Оставляем только chrtId + остаток и агрегируем по chrtId
+        df_fbo = (
+            df_fbo.loc[:, ["chrtId", "Остатки FBO"]]
+            .groupby("chrtId", as_index=False)["Остатки FBO"]
+            .sum()
+        )
+
+    # ---------- 2. Остатки FBS ----------
+    df_fbs = getStockReminders_fbs(headers=headers, df_products=df_products, to_save=False)
+
+    if df_fbs.empty:
+        df_fbs = pd.DataFrame(columns=["chrtId", "Остатки FBS"])
+    else:
+        # Нормализуем chrtId
+        if "chrtID" in df_fbs.columns and "chrtId" not in df_fbs.columns:
+            df_fbs = df_fbs.rename(columns={"chrtID": "chrtId"})
+        if "chrtId" in df_fbs.columns:
+            df_fbs["chrtId"] = df_fbs["chrtId"].astype(str)
+        # amount → Остатки FBS
+        if "amount" in df_fbs.columns:
+            df_fbs = df_fbs.rename(columns={"amount": "Остатки FBS"})
+        else:
+            df_fbs["Остатки FBS"] = 0
+        df_fbs = (
+            df_fbs.loc[:, ["chrtId", "Остатки FBS"]]
+            .groupby("chrtId", as_index=False)["Остатки FBS"]
+            .sum()
+        )
+
+    # ---------- 3. Мердж остатков с df_products по chrtId ----------
+    df_with_stocks = (
+        df_products
+        .merge(df_fbo, on="chrtId", how="left")
+        .merge(df_fbs, on="chrtId", how="left")
+    )
+
+    # Оставляем только нужные поля
+    result_cols = ["Артикул продавца", "Артикул WB", "Размер", "Остатки FBO", "Остатки FBS"]
+    for col in ["Остатки FBO", "Остатки FBS"]:
+        if col not in df_with_stocks.columns:
+            df_with_stocks[col] = 0
+
+    df_result = df_with_stocks[result_cols].copy()
+
+    # Приводим остатки к числам
+    for col in ["Остатки FBO", "Остатки FBS"]:
+        df_result[col] = pd.to_numeric(df_result[col], errors="coerce").fillna(0)
+
+    # ---------- 4. Агрегация (если указан agg_col) ----------
+    # Если agg_col не передан (None или пустой список) — НЕ агрегируем
+    if agg_col:
+        # Разрешаем агрегировать только по этим трём полям
+        allowed_group_cols = ["Артикул продавца", "Артикул WB", "Размер"]
+        group_cols = [c for c in agg_col if c in allowed_group_cols]
+        if not group_cols:
+            group_cols = allowed_group_cols  # запасной вариант, если передали что-то не то
+
+        df_agg = (
+            df_result
+            .groupby(group_cols, as_index=False)[["Остатки FBO", "Остатки FBS"]]
+            .sum()
+        )
+
+        if not split_stocks:
+            df_agg = df_agg.assign(
+                Остаток=lambda d: d[["Остатки FBO", "Остатки FBS"]].sum(axis=1)
+            )
+        return df_agg
+
+    # Без агрегации — по строкам df_products
+    if not split_stocks:
+        df_result = df_result.assign(
+            Остаток=lambda d: d[["Остатки FBO", "Остатки FBS"]].sum(axis=1)
+        )
+
+    return df_result
 
 class WbRateLimiterMoreLimit:
     """

@@ -15,7 +15,7 @@ import requests
 # from loguru import logger
 from wb.scripts.wb_logger import wb_client_logger as logger
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.formatting.rule import ColorScaleRule, FormulaRule, CellIsRule
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
 from rich_argparse.contrib import ParagraphRichHelpFormatter
@@ -35,7 +35,8 @@ from wb.scripts.uploadDataFromWB import getOrdersWB, getWBProduct
 # Доп. функции
 from wb.scripts.wb_generic_functions import (
     WbRateLimiter,
-    get_sales_funnel
+    get_sales_funnel,
+    get_reminders_by_product
 )
 
 parser = argparse.ArgumentParser(
@@ -1472,84 +1473,224 @@ def calc_orders_for_companies(
     return df_companies_stats_with_orders, df_associated_orders
 
 
-# Функция добавления данных из воронки продаж
-def add_data_from_sales_funnel(df_companies_stats_with_orders):
-    # Из статистики кампаний формируем список уникальных артикулов и дат
+# Функция создания отчета по моделяем
+def create_model_report(df_products_processed, df_companies_stats_with_orders, df_reminders):
+    # Создаем копию для избежания изменений в оригинальном df
+    df_models = df_products_processed.copy()
+    # Переименовываем колонки
+    df_models = df_models.rename(columns={
+        'imtID': 'ID модели'
+    })
+    # Выбираем нужные колонки
+    df_models = df_models.loc[:, ['ID модели', 'Артикул WB', 'Артикул продавца', 'Наименование товара']]
+    # Объединяем данные
+    df_models = (
+        df_models
+        # Добавляем данные из отчета РК
+        .merge(
+            df_companies_stats_with_orders[['Артикул продавца']],
+            how='left',
+            on='Артикул продавца',
+            indicator='Тип товара'
+        )
+        # Добавляем данные по остаткам
+        .merge(
+            df_reminders[['Артикул WB', 'Остатки FBO', 'Остатки FBS']],
+            how='left',
+            on='Артикул WB',
+        )
+    )
+    # Делаем сортировку по ID модели
+    df_models = df_models.sort_values(by=['ID модели'], ignore_index=True)
+    # Заменяем колонку тип товара на наличие товара в РК
+    df_models['Тип товара'] = df_models['Тип товара'].astype(str).replace({
+        'both': 'Товар из РК',
+        'left_only': np.nan,
+    })
+    # Переименовываем некоторые колонки
+    df_models = df_models.rename(columns={
+        'Остатки FBO': f'Остаток FBO {str(date.today().strftime("%d.%m"))}',
+        'Остатки FBS': f'Остаток FBS {str(date.today().strftime("%d.%m"))}',
+    })
+
+    return df_models
+
+# Функция выгрузки воронки продаж WB с агрегацией
+def get_sales_funnel_aggregated_wb(
+    df_companies_stats_with_orders: pd.DataFrame,
+    headers: dict,
+    chunk_size: int = 1000,
+) -> pd.DataFrame:
+    """
+    Выгружает данные воронки продаж WB по Артикулу WB и диапазонам дат,
+    указанным в df_companies_stats_with_orders, и возвращает агрегированный
+    DataFrame по ('Артикул WB', 'Начальная дата запроса статистики РК',
+    'Конечная дата запроса статистики РК').
+
+    Ожидается, что df_companies_stats_with_orders содержит колонки:
+    - 'Артикул WB'
+    - 'Начальная дата запроса статистики РК'
+    - 'Конечная дата запроса статистики РК'
+    """
+
     results = []
+
     groups = (
         df_companies_stats_with_orders
         .groupby([
             'Начальная дата запроса статистики РК',
-            'Конечная дата запроса статистики РК'
+            'Конечная дата запроса статистики РК',
         ])
     )
-    # Цикл по каждой группе
+
     for (date_from, date_to), group in groups:
-        # Выбираем артикулы в группе
-        nm_ids = group['Артикул WB'].tolist()
-        # Разбиваем список артикулов на чанки по 1000
-        for i in range(0, len(nm_ids), 1000):
-            nm_ids_chunk = nm_ids[i:i+1000]
-            # Выгружаем данные воронки продаж
+        nm_ids = group['Артикул WB'].dropna().unique().tolist()
+        if not nm_ids:
+            continue
+
+        # Разбиваем список артикулов на чанки
+        for i in range(0, len(nm_ids), chunk_size):
+            nm_ids_chunk = nm_ids[i:i + chunk_size]
+
             tmp_df_sales_funnel = get_sales_funnel(
                 headers=headers,
                 nm_ids=nm_ids_chunk,
                 date_from=date_from,
                 date_to=date_to,
-                limit=50
+                limit=50,
             )
+
+            if tmp_df_sales_funnel is None or tmp_df_sales_funnel.empty:
+                continue
+
             # Добавляем даты из группы к воронке продаж
             tmp_df_sales_funnel['Начальная дата запроса статистики РК'] = date_from
             tmp_df_sales_funnel['Конечная дата запроса статистики РК'] = date_to
-            # Добавляем результаты в общий список
+
             results.append(tmp_df_sales_funnel)
 
-    # Объединяем результаты в один DataFrame
-    df_sales_funnel = pd.concat(results, ignore_index=True)
-    # Выбираем нужные колонки из воронки продаж
+    if not results:
+        return pd.DataFrame(
+            columns=[
+                'Артикул WB',
+                'Клики (общие)',
+                'Корзина (общая)',
+                'Начальная дата запроса статистики РК',
+                'Конечная дата запроса статистики РК',
+            ]
+        )
+
+    df_sales_funnel_raw = pd.concat(results, ignore_index=True)
+
+    # Переименуем колонки и оставим нужные поля
     df_sales_funnel = (
-        df_sales_funnel
+        df_sales_funnel_raw
         .rename(columns={
             'Количество переходов в карточку товара': 'Клики (общие)',
-            'Положили в корзину, шт.': 'Корзина (общая)'
+            'Положили в корзину, шт.': 'Корзина (общая)',
         })
-        .loc[:, [
-            'Артикул WB',
-            'Клики (общие)',
-            'Корзина (общая)',
-            'Начальная дата запроса статистики РК',
-            'Конечная дата запроса статистики РК',
-        ]]
+        .loc[
+            :,
+            [
+                'Артикул WB',
+                'Клики (общие)',
+                'Корзина (общая)',
+                'Начальная дата запроса статистики РК',
+                'Конечная дата запроса статистики РК',
+            ]
+        ]
     )
 
-    # Объединяем данные со статистикой РК
-    df_companies_stats_with_sales_funnel = df_companies_stats_with_orders.merge(
-        df_sales_funnel,
+    # На всякий случай агрегируем по ключам (если по одному артикулу/периоду было несколько строк)
+    df_sales_funnel_agg = (
+        df_sales_funnel
+        .groupby(
+            [
+                'Артикул WB',
+                'Начальная дата запроса статистики РК',
+                'Конечная дата запроса статистики РК',
+            ],
+            as_index=False,
+        )
+        .agg({
+            'Клики (общие)': 'sum',
+            'Корзина (общая)': 'sum',
+        })
+    )
+
+    return df_sales_funnel_agg
+
+# Функция объединения данных
+def add_data_to_companies_stats_wb(
+    df_companies_stats_with_orders: pd.DataFrame,
+    df_sales_funnel_agg: pd.DataFrame,
+    df_reminders: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Объединяет статистику кампаний WB с данными воронки продаж и остатками.
+
+    Вход:
+    - df_companies_stats_with_orders:
+        статистика кампаний с колонками:
+        'Артикул WB',
+        'Начальная дата запроса статистики РК',
+        'Конечная дата запроса статистики РК',
+        а также 'Клики (РК)', 'Корзина (РК)' и прочее.
+
+    - df_sales_funnel_agg:
+        результат get_sales_funnel_aggregated_wb:
+        'Артикул WB',
+        'Клики (общие)',
+        'Корзина (общая)',
+        'Начальная дата запроса статистики РК',
+        'Конечная дата запроса статистики РК'.
+
+    - df_reminders:
+        остатки по товарам с колонками:
+        как минимум 'Артикул WB', 'Остатки FBO', 'Остатки FBS'.
+
+    Возвращает:
+    - DataFrame с добавленными колонками:
+        'Клики (общие)', 'Корзина (общая)', 'Остатки FBO', 'Остатки FBS'
+    """
+
+    # 1. Добавляем воронку продаж
+    df_with_funnel = df_companies_stats_with_orders.merge(
+        df_sales_funnel_agg,
         on=[
             'Артикул WB',
             'Начальная дата запроса статистики РК',
             'Конечная дата запроса статистики РК',
         ],
-        how='left'
+        how='left',
     )
-    # Перемещаем колонки
-    df_companies_stats_with_sales_funnel = move_columns(
-        df_companies_stats_with_sales_funnel,
+
+    # При необходимости двигаем колонки к рядом с 'Клики (РК)' / 'Корзина (РК)'
+    # (если используешь move_columns, оставляю как у тебя)
+    df_with_funnel = move_columns(
+        df_with_funnel,
         'Клики (общие)',
         'Клики (РК)',
     )
-    df_companies_stats_with_sales_funnel = move_columns(
-        df_companies_stats_with_sales_funnel,
+    df_with_funnel = move_columns(
+        df_with_funnel,
         'Корзина (общая)',
         'Корзина (РК)',
     )
 
-    return df_companies_stats_with_sales_funnel
+    # 2. Добавляем остатки (по Артикулу WB)
+    df_with_reminders = df_with_funnel.merge(
+        df_reminders,
+        on=['Артикул WB'],
+        how='left',
+    )
+
+    return df_with_reminders
 
 # Функция расчета итоговых колонок в статистике РК
-def calc_final_orders(df_companies_stats_with_sales_funnel):
+def calc_final_orders(df_rk_svod):
     # Достаем df со статистикой РК из словаря
-    df_companies_stats_final_orders = df_companies_stats_with_sales_funnel.copy()
+    df_companies_stats_final_orders = df_rk_svod.copy()
     # Считаем затраты артикула РК
     df_companies_stats_final_orders['Затраты артикула, руб.'] = (
         df_companies_stats_final_orders
@@ -1587,7 +1728,13 @@ def create_final_df_for_excel(df_final_orders):
     # Переименовываем колонки
     df_excel_companies_report = df_excel_companies_report.rename(columns={
         'Наименование товара': 'Название товара',
+        'Название кампании': 'Название РК',
+        'Статус кампании': 'Статус РК',
+        'Остатки FBO': f'Остаток FBO {str(date.today().strftime("%d.%m"))}',
+        'Остатки FBS': f'Остаток FBS {str(date.today().strftime("%d.%m"))}',
     })
+    # Создаем колонку с комментарием
+    df_excel_companies_report['Комментарий'] = np.nan
     # Формируем список колонок для итогового df
     columns_for_excel = [
         'ID кампании',
@@ -1596,7 +1743,8 @@ def create_final_df_for_excel(df_final_orders):
         'Тип ставки',
         'Ставка в рекомендациях (руб.)',
         'Ставка в поиске (руб.)',
-        'Название товара',
+        'Название РК',
+        'Статус РК',
         'Показы',
         'Клики (РК)',
         'Клики (общие)',
@@ -1613,7 +1761,10 @@ def create_final_df_for_excel(df_final_orders):
         'Заказы артикула, шт. (Заказы)',
         'Заказы артикула, руб. (Заказы)',
         'ДРР',
-        'ДРР артикула'
+        'ДРР артикула',
+        f'Остаток FBO {str(date.today().strftime("%d.%m"))}',
+        f'Остаток FBS {str(date.today().strftime("%d.%m"))}',
+        'Комментарий',
     ]
     missing_columns = [col for col in columns_for_excel if col not in df_excel_companies_report.columns]
     if missing_columns:
@@ -1666,6 +1817,7 @@ def calc_keyword_stats(df_companies_keywords_stats):
 def create_result_dictionary(
         df_date_range,
         df_final_orders,
+        df_models,
         df_associated_orders,
         df_companies_keywords_stats,
         df_keywords_stats,
@@ -1693,6 +1845,7 @@ def create_result_dictionary(
     # Добавляем статистику по ключевым словам в словарь с кампаниями
     result_companies_report = {
         f'{client_name} {date_start_excel}-{date_end_excel}': df_final_orders,
+        'Модели товаров': df_models,
         'Ассоциированные заказы': df_associated_orders,
         'Ключевые слова (свод)': df_keywords_stats,
         # 'Ключевые слова': df_companies_keywords_stats
@@ -1703,6 +1856,123 @@ def create_result_dictionary(
 
     return result_companies_report
 
+# Функция форматирования столбца с номером РК
+def format_campaigns_columns(ws, df=None, column_names=None):
+    """
+    Форматирование столбцов с номером кампании:
+    - каждой кампании назначается цвет из палитры (циклично)
+    - строки, где заканчивается блок кампании, получают жирную нижнюю границу
+
+    Параметры
+    ---------
+    ws : openpyxl.worksheet.worksheet.Worksheet
+        Лист Excel, на котором нужно применить форматирование.
+    df : pandas.DataFrame | None
+        Если передан, имена колонок берём из df.columns.
+        Если None — имена колонок берём из заголовков листа (первая строка).
+    column_names : list[str] | None
+        Список возможных названий колонок кампании (точное совпадение, без учёта регистра).
+        По умолчанию ['Номер кампании', 'ID Кампании'].
+    """
+    if column_names is None:
+        column_names = ['Номер кампании', 'ID Кампании']
+
+    # 1. Палитра из 15 неярких расцветок
+    color_palette = [
+        "FFB3C6", "FFE6E6", "B6E2D3", "B7D3DF", "DEEAF6",
+        "F7E1D7", "F5F8C4", "D4E6A5", "A2D5AB", "F9D6C1",
+        "F5B5FC", "D9D9D9", "ABC4FF", "C6F1E7", "EEE3CB"
+    ]
+
+    # 2. Определяем имена колонок кампании
+    if df is not None:
+        # берём названия колонок из df
+        df_campaign_cols = [
+            col for col in df.columns
+            if any(col.strip().lower() == name.strip().lower() for name in column_names)
+        ]
+    else:
+        # df не передан — берём заголовки с первой строки листа
+        header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        df_campaign_cols = [
+            header for header in header_cells if isinstance(header, str) and
+            any(header.strip().lower() == name.strip().lower() for name in column_names)
+        ]
+
+    if not df_campaign_cols:
+        return  # Нет нужных колонок — ничего не делаем
+
+    # 3. Получаем все уникальные значения кампании
+    unique_campaigns = []
+
+    if df is not None:
+        # Используем данные из df
+        for col in df_campaign_cols:
+            unique_campaigns.extend(df[col].dropna().unique())
+    else:
+        # Берём данные с листа Excel (по колонкам, найденным по имени)
+        header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        # Индексы столбцов кампании на листе
+        campaign_col_idxs_for_values = [
+            idx for idx, header in enumerate(header_cells)
+            if header in df_campaign_cols
+        ]
+        for idx in campaign_col_idxs_for_values:
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
+                                    min_col=1, max_col=ws.max_column):
+                cell = row[idx]
+                if cell.value is not None:
+                    unique_campaigns.append(cell.value)
+
+    # Сохраняем порядок появления
+    unique_campaigns = list(dict.fromkeys(unique_campaigns))
+    if not unique_campaigns:
+        return
+
+    # 4. Цвета кампаниям (циклично)
+    campaign_to_color = {
+        val: color_palette[i % len(color_palette)]
+        for i, val in enumerate(unique_campaigns)
+    }
+
+    # 5. Индексы колонок кампании в Excel (по строке заголовков листа)
+    header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    campaign_col_idxs = [
+        idx for idx, header in enumerate(header_cells) if header in df_campaign_cols
+    ]
+    if not campaign_col_idxs:
+        return
+
+    # 6. Форматируем ячейки
+    for idx in campaign_col_idxs:
+        for excel_row_idx, row in enumerate(
+            ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column),
+            start=2
+        ):
+            cell = row[idx]
+            camp = cell.value
+
+            # Заливаем цвет по кампании
+            if camp in campaign_to_color:
+                cell.fill = PatternFill(
+                    start_color=campaign_to_color[camp],
+                    end_color=campaign_to_color[camp],
+                    fill_type='solid'
+                )
+
+            # Проверяем переход к новой кампании
+            is_last_row = (excel_row_idx == ws.max_row)
+            next_camp = ws[excel_row_idx + 1][idx].value if not is_last_row else None
+
+            if camp != next_camp:
+                # Последняя строка блока — нижняя граница жирная у всей строки
+                for c in row:
+                    c.border = Border(
+                        left=c.border.left,
+                        right=c.border.right,
+                        top=c.border.top,
+                        bottom=Side(style='medium')
+                    )
 
 def format_all_sheets_common_wb(wb, exclude_columns=None):
     """
@@ -1724,6 +1994,7 @@ def format_all_sheets_common_wb(wb, exclude_columns=None):
             "Артикул",
             "Артикул WB",
             "Артикул продавца",
+            "ID модели",
             "ID кампании",
             "Ассоциированный артикул",
             "Артикул РК"
@@ -1768,6 +2039,9 @@ def format_all_sheets_common_wb(wb, exclude_columns=None):
         max_row = ws.max_row
         min_col = ws.min_column
         max_col = ws.max_column
+
+        # Закрепляем первую строку
+        ws.freeze_panes = 'A2'
 
         # Заголовки
         header_row = next(ws.iter_rows(min_row=1, max_row=1))
@@ -1817,6 +2091,26 @@ def format_all_sheets_common_wb(wb, exclude_columns=None):
         # Автофильтр по всей таблице
         ws.auto_filter.ref = ws.dimensions
 
+        # Условное форматирование по "Тип товара"
+        if "Тип товара" in headers:
+            type_col_idx = headers.index("Тип товара") + 1
+            type_col_letter = get_column_letter(type_col_idx)
+            cell_range = f"{type_col_letter}2:{type_col_letter}{ws.max_row}"
+            rule = CellIsRule(
+                operator='equal',
+                formula=['"Товар из РК"'],
+                stopIfTrue=False,
+                fill=PatternFill(
+                    start_color="F2E422",  # жёлтая
+                    end_color="F2E422",
+                    fill_type="solid",
+                ),
+            )
+            ws.conditional_formatting.add(cell_range, rule)
+
+        # Форматирование столбцов с номерами кампаний
+        format_campaigns_columns(ws)
+
         # Дополнительное форматирование по COMPANY_STATS_COL_FORMAT
         # Для каждой колонки листа ищем первый key, который является префиксом заголовка
         for col_idx, header in enumerate(headers, start=1):
@@ -1859,6 +2153,8 @@ def format_wb_client_sheet(
     - делим значения ДРР на 100
     - задаём формат процентов
     - условное форматирование (градиент) по % столбцам
+    - условное форматирование по столбцу 'Статус РК'
+    - закрепление области до столбца 'Название РК' (включительно)
     """
     if sheet_name not in wb.sheetnames:
         return
@@ -1868,11 +2164,20 @@ def format_wb_client_sheet(
 
     ws = wb[sheet_name]
 
+    # --- 0. Закрепление области до столбца "Название РК" (включительно) ---
+    if "Название РК" in df_client.columns:
+        name_idx = list(df_client.columns).index("Название РК") + 1  # 1-based индекс "Название РК"
+        # нужно зафиксировать всё, что левее следующей колонки → +1
+        freeze_col_idx = name_idx + 1
+        freeze_col_letter = get_column_letter(freeze_col_idx)
+        # Закрепляем область выше 2-й строки и левее freeze_col_idx:
+        # строка 1 + все столбцы до и включая "Название РК"
+        ws.freeze_panes = f"{freeze_col_letter}2"
+
     # --- 1. Процентный формат ---
     for col_name in percent_cols:
         if col_name not in df_client.columns:
             continue
-
         col_idx = list(df_client.columns).index(col_name) + 1  # Excel: 1-based
         for row in range(2, ws.max_row + 1):  # пропускаем заголовок
             cell = ws.cell(row=row, column=col_idx)
@@ -1885,18 +2190,42 @@ def format_wb_client_sheet(
     for col_name in percent_cols:
         if col_name not in df_client.columns:
             continue
-
         col_idx = list(df_client.columns).index(col_name) + 1
         col_letter = ws.cell(row=1, column=col_idx).column_letter
         cell_range = f"{col_letter}2:{col_letter}{ws.max_row}"
-
         rule = ColorScaleRule(
-            start_type='min', start_color='63BE7B',           # зелёный
+            start_type='min', start_color='63BE7B',                 # зелёный
             mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
-            end_type='max', end_color='E06967',               # красный
+            end_type='max', end_color='E06967',                     # красный
         )
         ws.conditional_formatting.add(cell_range, rule)
 
+    # --- 3. Условное форматирование по столбцу "Статус РК" ---
+    if "Статус РК" in df_client.columns:
+        status_col_idx = list(df_client.columns).index("Статус РК") + 1
+        status_col_letter = get_column_letter(status_col_idx)
+        status_range = f"{status_col_letter}2:{status_col_letter}{ws.max_row}"
+
+        # Активна → зелёная заливка и зелёный шрифт
+        rule_active = FormulaRule(
+            formula=[f'${status_col_letter}2="Активна"'],
+            stopIfTrue=False,
+            font=Font(color="006100"),
+            fill=PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
+        )
+
+        # Завершена или Приостановлена → красная заливка и красный шрифт
+        rule_inactive = FormulaRule(
+            formula=[
+                f'OR(${status_col_letter}2="Завершена", ${status_col_letter}2="Приостановлена")'
+            ],
+            stopIfTrue=False,
+            font=Font(color="9C0006"),
+            fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+        )
+
+        ws.conditional_formatting.add(status_range, rule_active)
+        ws.conditional_formatting.add(status_range, rule_inactive)
 
 def save_and_format_excel(
         report_path: Path,
@@ -1945,6 +2274,14 @@ def save_and_format_excel(
         df_client=result_companies_report.get(sheet_name_client, pd.DataFrame()),
         percent_cols=['ДРР', 'ДРР артикула']
     )
+
+    # 3) Форматирование листа по моделям товаров
+    sheet_models = 'Модели товаров'
+    df_models = result_companies_report.get(sheet_models, None)
+    if sheet_models:
+        ws_models = wb[sheet_models]
+        format_campaigns_columns(ws_models, df_models, column_names=['ID модели', 'model_id'])
+
 
     wb.save(file_name)
     return file_name
@@ -2025,27 +2362,47 @@ if __name__ == '__main__':
         df_orders,
         df_companies_stats_with_products
     )
-    # Добавляем данные из воронки продаж
-    df_companies_stats_with_sales_funnel = add_data_from_sales_funnel(
-        df_companies_stats_with_orders
+    # Выгружаем воронку продаж
+    df_sales_funnel_agg = get_sales_funnel_aggregated_wb(
+        df_companies_stats_with_orders,
+        headers,
     )
+
     # Получаем историю затрат (для корректных расходов на кампании)
     # df_costs_history_stats = get_costs_history(headers, date_start, date_end)
     # Считаем расходы на номенклатуры в кампании
     # df_companies_sku_stats = calc_costs_by_sku(result_companies_info, df_costs_history_stats)
 
+    # Получаем остатки
+    df_reminders = get_reminders_by_product(df_products_processed, headers, agg_col=['Артикул WB'])
+
+    # Объединяем данные
+    df_rk_svod = add_data_to_companies_stats_wb(
+        df_companies_stats_with_orders,
+        df_sales_funnel_agg,
+        df_reminders
+    )
+
     # Считаем ДРР и итоговые заказы
-    df_final_orders = calc_final_orders(df_companies_stats_with_sales_funnel)
+    df_final_orders = calc_final_orders(df_rk_svod)
     # Создаем df для записи в Excel
     df_final_orders_for_excel = create_final_df_for_excel(df_final_orders)
 
      # Считаем статистику по ключевым словам с группировкой
     df_keywords_stats = calc_keyword_stats(df_companies_keywords_stats)
 
+    # Создаем отчет по моделяем
+    df_models = create_model_report(
+        df_products_processed,
+        df_companies_stats_with_orders,
+        df_reminders
+    )
+
     # Создаем итоговый словарь с результатами
     result_companies_report = create_result_dictionary(
         df_date_range,
         df_final_orders_for_excel,
+        df_models,
         df_associated_orders,
         df_companies_keywords_stats,
         df_keywords_stats,

@@ -76,20 +76,22 @@ def read_clusters_mapping(cargo_type_param: str) -> pd.DataFrame:
 def calcMetrics(date_upload_files: str = str(date.today())):
     """
     Расчёт метрик по выгруженным файлам Wildberries.
-
-    Заказы считаются из файла _Заказы.csv.
-    Продажи (шт) считаются из файла _Продажи.csv:
-        - базовая метрика 'Продажи' — количество продаж за основной период
-          (date_start..date_end);
-        - 'Продажи (факт) за 2 месяца' — количество продаж за последние 2 месяца
-          (хвост 61 день до date_end включительно).
-
-    Агрегация:
-      - по складам (лист 'claster_report');
-      - по Артикул_Размер (лист 'summary').
-
-    Структура выходных файлов максимально сохраняет текущий формат WB‑отчёта.
     """
+
+    # --------------------- 0. Жёсткий словарь переименований WB-ID ---------------------
+    # Используется и для каталога, и для остатков
+    rename_wb_ids = {
+        # артикул WB
+        "nmID": "Артикул WB",
+        "nmId": "Артикул WB",
+        "nmid": "Артикул WB",
+        "Артикул WB": "Артикул WB",  # если уже так называется
+        # размер WB
+        "chrtID": "chrtId",
+        "chrtId": "chrtId",
+        "chrtid": "chrtId",
+    }
+
     # --------------------- 1. Пути и даты ---------------------
     uploaddir = (
         marketplace_dir_path
@@ -98,19 +100,15 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         / "UploadFiles"
         / f"UploadFiles_{date_upload_files}"
     )
-
     dates_from_to = pd.read_csv(
         uploaddir / f"{date_upload_files}_dates_from_to.csv",
         sep=";",
     )
-
     date_start_raw = dates_from_to["date_start"][0]
     date_end_raw = dates_from_to["date_end"][0]
 
-    # Преобразуем в date без времени
     period_start = pd.to_datetime(date_start_raw).date()
     period_end = pd.to_datetime(date_end_raw).date()
-    # Хвост 2 месяцев (61 день до конца)
     tail_start = period_end - pd.Timedelta(days=61)
 
     logger.info(
@@ -136,11 +134,9 @@ def calcMetrics(date_upload_files: str = str(date.today())):
 
     # --------------------- 3. Общая предварительная обработка ---------------------
     df_list = [catalog, order, sales, reminders, reminders_fbs, supply_orders]
-
     for i, df in enumerate(df_list):
         tmp_df = df_list[i]
 
-        # Для некоторых клиентов: замена запятой на точку в размере и перевод в число
         if client_name in ["KU_And_KU", "Soyuz"]:
             if "Размер" in tmp_df.columns:
                 tmp_df["Размер"] = (
@@ -148,60 +144,103 @@ def calcMetrics(date_upload_files: str = str(date.today())):
                     .astype(str)
                     .str.replace(",", ".", regex=False)
                 )
-                tmp_df["Размер"] = tmp_df["Размер"].apply(
-                    lambda x: pd.to_numeric(x, errors="coerce")
-                )
-                tmp_df["Размер"] = tmp_df["Размер"].fillna(0)
+                tmp_df["Размер"] = pd.to_numeric(tmp_df["Размер"], errors="coerce").fillna(0)
 
-        # barcode как строка (длинные штрихкоды)
         if "barcode" in tmp_df.columns:
             tmp_df["barcode"] = tmp_df["barcode"].astype(str)
 
-        # Удаляем ненужную колонку
         if "Unnamed: 0" in tmp_df.columns:
             tmp_df.drop(columns="Unnamed: 0", inplace=True)
 
-        # Замена артикулов по словарю, если есть
         if article_replacement and "Артикул продавца" in tmp_df.columns:
             tmp_df["Артикул продавца"] = tmp_df["Артикул продавца"].replace(
                 article_replacement
             )
 
-        # Создаем колонку Артикул_Размер
         if {"Артикул продавца", "Размер"}.issubset(tmp_df.columns):
             tmp_df["Артикул_Размер"] = tmp_df[
                 ["Артикул продавца", "Размер"]
-            ].apply(
-                lambda row: "_size_".join(row.values.astype(str)), axis=1
-            )
+            ].apply(lambda row: "_size_".join(row.values.astype(str)), axis=1)
 
-    # --------------------- 4. Каталог ---------------------
+    # --------------------- 4. Каталог: переименования ID и служебные поля ---------------------
+    # Сначала только ID по общему словарю
+    catalog = catalog.rename(columns={c: rename_wb_ids[c] for c in catalog.columns if c in rename_wb_ids})
+
+    # Удаляем возможные дубликаты имён колонок после rename (оставляем первое)
+    _, idx = np.unique(catalog.columns, return_index=True)
+    catalog = catalog.iloc[:, np.sort(idx)]
+
+    if "Артикул WB" not in catalog.columns:
+        logger.error("В catalog нет 'Артикул WB' (nmID/nmId не найдены).")
+        catalog["Артикул WB"] = None
+    if "chrtId" not in catalog.columns:
+        logger.error("В catalog нет 'chrtId' (chrtID/chrtId не найдены).")
+        catalog["chrtId"] = None
+
+    # Остальные переименования
     catalog = catalog.rename(
         columns={
-            "nmID": "Артикул WB",
             "barcode": "barcode_list",
             "last_barcode": "Штрихкод",
             "discount_price": "РРЦ",
         }
     )
-    # Удаляем дубликаты по Артикул_Размер
+
     catalog = catalog.drop_duplicates(subset=["Артикул_Размер"])
-    # Удаляем Артикул продавца и Размер (мерджим по Артикул_Размер)
     catalog = catalog.drop(columns=["Артикул продавца", "Размер"])
-    # Нумерация товаров
     catalog["№ товара"] = np.arange(1, catalog.shape[0] + 1)
 
-    # --------------------- 5. Заказы ---------------------
+    # --------------------- 5. Остатки: переименования ID по тому же словарю + мердж с каталогом ---------------------
+    reminders = reminders.rename(columns={c: rename_wb_ids[c] for c in reminders.columns if c in rename_wb_ids})
+
+    _, idx = np.unique(reminders.columns, return_index=True)
+    reminders = reminders.iloc[:, np.sort(idx)]
+
+    if "Артикул WB" not in reminders.columns:
+        logger.error("В reminders нет 'Артикул WB' (nmID/nmId не найдены). Сопоставление остатков будет неполным.")
+        reminders["Артикул WB"] = None
+    if "chrtId" not in reminders.columns:
+        logger.error("В reminders нет 'chrtId' (chrtID/chrtId не найдены). Сопоставление остатков будет неполным.")
+        reminders["chrtId"] = None
+
+    # Подтягиваем Артикул_Размер по ('Артикул WB', 'chrtId')
+    if {"Артикул WB", "chrtId"}.issubset(catalog.columns) and {"Артикул WB", "chrtId"}.issubset(reminders.columns):
+        cat_short = (
+            catalog.loc[:, ["Артикул WB", "chrtId", "Артикул_Размер"]]
+            .drop_duplicates()
+        )
+        rem_merged = reminders.merge(
+            cat_short,
+            on=["Артикул WB", "chrtId"],
+            how="left",
+            validate="m:1",
+        )
+        not_matched = rem_merged["Артикул_Размер"].isna().sum()
+        if not_matched > 0:
+            logger.warning(
+                f"Для {not_matched} строк остатков не удалось сопоставить 'Артикул_Размер' "
+                f"по ('Артикул WB', 'chrtId'). Эти строки будут отброшены."
+            )
+            rem_merged = rem_merged.dropna(subset=["Артикул_Размер"])
+        reminders = rem_merged
+        logger.info(
+            f"Остатки обогащены данными каталога: строк {reminders.shape[0]}, "
+            f"уникальных Артикул_Размер: {reminders['Артикул_Размер'].nunique()}."
+        )
+    else:
+        logger.warning(
+            "Не удалось обогатить остатки: нет пары колонок ('Артикул WB', 'chrtId') "
+            "и в catalog, и в reminders. Используем исходные reminders без обогащения."
+        )
+
+    # --------------------- 6. Заказы ---------------------
     order["Заказы"] = 1
     order["Заказы_руб"] = np.where(order["Заказы"] == 1, order["priceWithDisc"], 0)
 
-    # --------------------- 6. Продажи и Продажи (факт) за 2 месяца ---------------------
-    # Базовая логика WB: Продажи = 1, если finishedPrice > 0
+    # --------------------- 7. Продажи и Продажи (факт) за 2 месяца ---------------------
     sales["Продажи"] = np.where(sales["finishedPrice"] > 0, 1, 0)
     sales["Продажи_руб"] = sales["finishedPrice"]
 
-    # Пытаемся определить дату продажи для деления по периодам
-    # Приоритет полей даты: saleDate -> date -> lastChangeDate (как fallback)
     date_cols_priority = ["saleDate", "date", "lastChangeDate"]
     sales_date_col = None
     for col in date_cols_priority:
@@ -213,25 +252,18 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         sales["_ДатаПродажи"] = pd.to_datetime(
             sales[sales_date_col], errors="coerce"
         ).dt.date
-
-        # Флаг продаж в основном периоде
         mask_period = (
             (sales["_ДатаПродажи"] >= period_start)
             & (sales["_ДатаПродажи"] <= period_end)
         )
-        # Флаг продаж в 2-месячном хвосте
         mask_tail = (
             (sales["_ДатаПродажи"] >= tail_start)
             & (sales["_ДатаПродажи"] <= period_end)
         )
-
-        # На всякий случай, если _ДатаПродажи пустая — считаем такие строки только в основном периоде
         mask_period = mask_period | sales["_ДатаПродажи"].isna()
         mask_tail = mask_tail | sales["_ДатаПродажи"].isna()
 
-        # Продажи за период (сохраняем твою старую логику: 1 продажа = 1 шт)
         sales["Продажи_период"] = np.where(mask_period, sales["Продажи"], 0)
-        # Продажи за 2 месяца
         sales["Продажи_факт_2м"] = np.where(mask_tail, sales["Продажи"], 0)
     else:
         logger.warning(
@@ -242,9 +274,18 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         sales["Продажи_период"] = sales["Продажи"]
         sales["Продажи_факт_2м"] = 0
 
-    # --------------------- 7. Остатки и поставки ---------------------
-    reminders["Остатки"] = reminders["quantityFull"]
-    reminders_fbs["Остатки_fbs"] = reminders_fbs["amount"]
+    # --------------------- 8. Остатки и поставки ---------------------
+    if "quantity" in reminders.columns:
+        reminders["Остатки"] = reminders["quantity"]
+    else:
+        logger.warning("В reminders нет колонки 'quantity'. 'Остатки' будут нулевыми.")
+        reminders["Остатки"] = 0
+
+    if "amount" in reminders_fbs.columns:
+        reminders_fbs["Остатки_fbs"] = reminders_fbs["amount"]
+    else:
+        logger.warning("В reminders_fbs нет колонки 'amount'. 'Остатки_fbs' будут нулевыми.")
+        reminders_fbs["Остатки_fbs"] = 0
 
     supply_orders = supply_orders.rename(
         columns={
@@ -253,10 +294,9 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         }
     )
 
-    # --------------------- 8. Выбор нужных колонок ---------------------
+    # --------------------- 9. Выбор нужных колонок ---------------------
     order = order.loc[:, ["Артикул_Размер", "warehouseName", "Заказы", "Заказы_руб"]]
 
-    # в sales оставляем и Продажи (за период), и Продажи_факт_2м
     sales = sales.loc[
         :,
         [
@@ -274,20 +314,19 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         :, ["Артикул_Размер", "warehouseName", "Ожидаемое поступление"]
     ]
 
-    # --------------------- 9. Объединение всего в одну таблицу ---------------------
+    # --------------------- 10. Объединение всего в одну таблицу ---------------------
     orderware = pd.concat(
         [order, sales, reminders, reminders_fbs, supply_orders],
         axis=0,
         ignore_index=True,
     )
 
-    # TODO: Убираем виртуальные склады из списка складов
     if ignore_virtual_warehouses:
         orderware = orderware.loc[
             ~orderware["warehouseName"].str.contains("Виртуальный", na=False), :
         ]
 
-    # --------------------- 10. Агрегация по складам ---------------------
+    # --------------------- 11. Агрегация по складам ---------------------
     orderware_by_warehouses = (
         orderware.groupby(["Артикул_Размер", "warehouseName"])
         .agg(**{
@@ -303,7 +342,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         .reset_index()
     )
 
-    # --------------------- 11. Агрегация по Артикул_Размер ---------------------
+    # --------------------- 12. Агрегация по Артикул_Размер ---------------------
     orderware_by_sku = (
         orderware.groupby(["Артикул_Размер"])
         .agg(**{
@@ -319,12 +358,11 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         .reset_index()
     )
 
-    # --------------------- 12. claster_report (по складам) ---------------------
+    # --------------------- 13. claster_report (по складам) ---------------------
     claster_report = catalog.merge(
         orderware_by_warehouses, on=["Артикул_Размер"], how="left"
     )
 
-    # Достаем артикул и размер из Артикул_Размер
     claster_report = claster_report.assign(
         **{
             "Артикул продавца": claster_report["Артикул_Размер"]
@@ -334,13 +372,9 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         }
     )
 
-    # Удаляем те товары, которые не были ни на одном складе
     claster_report = claster_report.dropna(subset=["warehouseName"])
-
-    # Заполнение NA
     claster_report = claster_report.fillna(0)
 
-    # Переименование
     claster_report = claster_report.rename(
         columns={
             "warehouseName": "Склад",
@@ -351,7 +385,6 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         by=["Артикул продавца", "Размер", "Склад"], ignore_index=True
     )
 
-    # Выборка нужных колонок
     claster_report = claster_report.loc[
         :,
         [
@@ -376,9 +409,8 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         ],
     ]
 
-    # --------------------- 13. summary (по Артикул_Размер) ---------------------
+    # --------------------- 14. summary (по Артикул_Размер) ---------------------
     summary = catalog.merge(orderware_by_sku, on=["Артикул_Размер"], how="left")
-
     summary = summary.assign(
         **{
             "Артикул продавца": summary["Артикул_Размер"]
@@ -387,9 +419,7 @@ def calcMetrics(date_upload_files: str = str(date.today())):
             .str.split("_size_", expand=True)[1],
         }
     )
-
     summary = summary.fillna(0)
-
     summary = summary.loc[
         :,
         [
@@ -413,9 +443,8 @@ def calcMetrics(date_upload_files: str = str(date.today())):
         ],
     ]
 
-    # --------------------- 14. Сохранение в Excel ---------------------
+    # --------------------- 15. Сохранение в Excel ---------------------
     metrics_file_name = metricsdir / f"{date_upload_files}_МетрикиИтоги.xlsx"
-
     with pd.ExcelWriter(metrics_file_name) as w:
         summary.to_excel(w, sheet_name="summary", index=False)
         claster_report.to_excel(w, sheet_name="claster_report", index=False)
@@ -425,9 +454,10 @@ def calcMetrics(date_upload_files: str = str(date.today())):
 
 # %%
 if __name__ == '__main__':
+
     metricsdir = marketplace_dir_path / "Clients" / client_name / "Metrics"
-    if not metricsdir.exists():
-        metricsdir.mkdir(parents=True, exist_ok=True)
+    metricsdir.mkdir(parents=True, exist_ok=True)
+
     date_upload_files = cli_reference_date(parser)
     calcMetrics(date_upload_files)
 

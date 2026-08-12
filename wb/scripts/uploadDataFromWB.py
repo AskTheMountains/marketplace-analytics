@@ -694,106 +694,128 @@ def getSalesWB(
 
     return df_sales
 
-# Остатки
+# Остатки FBO
 def getStockRemindersWB(
     headers: dict,
-    date_start: str,  # оставлены для сов��естимости с сигнатурой
-    date_end: str,    # API остатков их всё равно игнорирует
+    date_start: str,  # для совместимости, не используется
+    date_end: str,    # для совместимости, не используется
     to_save: bool = True,
-    max_retries: int = 2,
-    retry_delay: int = 65,
+    max_retries: int = 3,
+    limit: int = 250000,
 ):
     """
-    Загрузка остатков Wildberries.
-
-    В текущем API WB для эндпоинта /stocks дата не используется, поэтому
-    выгружаются актуальные остатки на момент запроса.
-
-    :param headers: Заголовки запроса (должен содержать токен авторизации).
-    :param date_start: Не используется (оставлено для совместимости).
-    :param date_end: Не используется (оставлено для совместимости).
-    :param to_save: Сохранять ли результат в CSV.
-    :param max_retries: Кол-во попыток при ошибке 429 или сетевых ошибках.
-    :param retry_delay: Пауза между попытками (сек).
-    :return: DataFrame с остатками.
-    :raises: RequestException, ValueError, RuntimeError при неуспехе.
+    Загрузка остатков Wildberries через POST с пагинацией по offset, начиная с 0.
+    nmIds/chrtIds не передаём — получаем остатки по всем товарам.
     """
-    stock_rem_endpoint = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
-    params = {
-        "dateFrom": "2010-01-01T00:00:00Z",  # как в оригинальном коде
-    }
+
+    stock_rem_endpoint = "https://seller-analytics-api.wildberries.ru/api/analytics/v1/stocks-report/wb-warehouses"
 
     logger.info(
-        "Загрузка остатков WB (max_retries={}, retry_delay={})",
-        max_retries, retry_delay
+        f"Загрузка остатков WB (POST, пагинация от offset=0), limit={limit}, max_retries={max_retries}"
     )
 
-    attempt = 0
-    response = None
+    session = requests.Session()
+    session.headers.update(headers)
 
-    while attempt < max_retries:
-        attempt += 1
-        try:
-            logger.debug("Отправка запроса к WB (остатки), попытка {} из {}", attempt, max_retries)
-            response = requests.get(
-                stock_rem_endpoint,
-                headers=headers,
-                params=params,
-                timeout=30,
-            )
-        except RequestException as exc:
+    # Лимиты: 1 мин / 3 запроса / 20 сек / burst=1
+    limiter = WbRateLimiter(
+        period_seconds=60,
+        period_limit=3,
+        max_burst=1,
+    )
+
+    all_items = []
+
+    # offset задаём явно с 0 и инкрементируем каждым шагом
+    offset = 0
+    page_idx = 1
+
+    while True:
+        payload = {
+            "nmIds": [],
+            "chrtIds": [],
+            "limit": limit,
+            "offset": offset,
+        }
+
+        logger.info(
+            f"Запрос остатков WB: страница {page_idx}, offset={offset}, limit={limit}"
+        )
+
+        resp, ok = limiter.call(
+            session.post,
+            url=stock_rem_endpoint,
+            json=payload,
+            max_retries=max_retries,
+        )
+        if not ok or resp is None:
             logger.error(
-                "Сетевая ошибка при запросе остатков WB (попытка {} из {}): {}",
-                attempt, max_retries, exc
+                f"Не удалось получить остатки WB на странице {page_idx} "
+                f"(offset={offset}) после {max_retries} попыток. Прерываем пагинацию."
             )
-            if attempt >= max_retries:
-                raise
-            logger.info("Ожидание {} секунд перед повторной попыткой...", retry_delay)
-            time.sleep(retry_delay)
-            continue
-
-        if response.status_code == 200:
-            logger.debug("Успешный ответ WB по остаткам (статус 200)")
             break
 
-        if response.status_code == 429 and attempt < max_retries:
-            logger.warning(
-                "Получен статус 429 Too Many Requests при запросе остатков "
-                "(попытка {} из {}). Ожидание {} секунд перед повтором...",
-                attempt, max_retries, retry_delay
+        if resp.status_code != 200:
+            try:
+                err_json = resp.json()
+            except Exception:
+                err_json = resp.text
+            logger.error(
+                f"Неожиданный статус ответа WB по остаткам (POST): {resp.status_code}. "
+                f"Тело ответа: {err_json}"
             )
-            time.sleep(retry_delay)
-            continue
+            break
 
-        logger.error(
-            "Неожиданный статус ответа WB по остаткам: {}. Тело ответа: {}",
-            response.status_code,
-            response.text[:1000],
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.error(
+                f"Ошибка парсинга JSON от WB (остатки, POST), страница {page_idx}, offset={offset}: {exc}"
+            )
+            break
+
+        # Формат {"data": {"items": [...]}}
+        if (
+            isinstance(data, dict)
+            and "data" in data
+            and isinstance(data["data"], dict)
+            and "items" in data["data"]
+        ):
+            items = data["data"]["items"] or []
+        else:
+            items = data if isinstance(data, list) else []
+
+        logger.info(
+            f"Страница {page_idx}: получено {len(items)} строк остатков."
         )
-        response.raise_for_status()
 
-    if response is None or response.status_code != 200:
-        raise RuntimeError(
-            f"Не удалось получить остатки WB после {max_retries} попыток. "
-            f"Последний статус: {getattr(response, 'status_code', 'нет ответа')}"
-        )
+        if not items:
+            # Пустая страница — дальше данных нет
+            logger.info(
+                f"Пустой результат на странице {page_idx} (offset={offset}). "
+                f"Пагинация завершена."
+            )
+            break
 
-    # Разбор JSON
-    try:
-        data = response.json()
-    except ValueError as exc:
-        logger.error(
-            "Ошибка парсинга JSON от WB (остатки): {}. Тело ответа: {}",
-            exc,
-            response.text[:1000],
-        )
-        raise
+        all_items.extend(items)
 
-    # Формирование DataFrame
-    df_reminders = pd.DataFrame(data)
-    if df_reminders.empty:
-        logger.warning("WB вернул пустой список остатков.")
+        # Если вернулось меньше, чем limit — это последняя страница
+        if len(items) < limit:
+            logger.info(
+                f"Страница {page_idx}: получено {len(items)} < limit={limit}. "
+                f"Пагинация завершена."
+            )
+            break
+
+        # Следующая страница: смещаем offset ровно на limit
+        offset += limit
+        page_idx += 1
+
+    if not all_items:
+        logger.warning("WB вернул пустой список остатков (по всем страницам).")
+        df_reminders = pd.DataFrame()
     else:
+        df_reminders = pd.DataFrame(all_items)
         rename_map = {
             "techSize": "Размер",
             "supplierArticle": "Артикул продавца",
@@ -801,14 +823,16 @@ def getStockRemindersWB(
         }
         df_reminders = df_reminders.rename(columns=rename_map)
 
-    # Сохранение в файл
     if to_save:
         reminders_file = uploaddir_today / f"{date.today()}_Остатки.csv"
         try:
             df_reminders.to_csv(reminders_file, sep=";", encoding="utf-8-sig", index=False)
-            logger.info("Файл с остатками сохранён: {}", reminders_file)
+            logger.info(
+                f"Файл с остатками сохранён: {reminders_file}. "
+                f"Всего строк: {df_reminders.shape[0]}"
+            )
         except Exception as exc:
-            logger.error("Не удалось сохранить файл с остатками {}: {}", reminders_file, exc)
+            logger.error(f"Не удалось сохранить файл с остатками {reminders_file}: {exc}")
             raise
 
     return df_reminders
@@ -820,17 +844,34 @@ def getStockReminders_fbs(
     chunk_size: int = 1000,
     max_retries: int = 3,
     retry_delay: int = 65,
+    df_products: pd.DataFrame | None = None,
 ):
     """
     Остатки FBS по складам WB.
 
     ОСОБЕННОСТИ:
     1. В запрос передаётся список chrtID (а не баркодов).
-    2. Объединение остатков с товарами происходит по колонке `chrtID`.
+    2. Объединение остатков с товарами происходит по колонке `chrtId`
+       (внутри функции все варианты chrtID/chrtId/chrtid приводятся к `chrtId`).
 
-    Ожидается, что в файле товаров есть колонка `chrtID`.
+    Параметры
+    ---------
+    headers : dict
+        Заголовки для запросов к API WB.
+    to_save : bool, по умолчанию True
+        Сохранять ли результат в CSV.
+    chunk_size : int
+        Размер чанка chrtId для одного запроса.
+    max_retries : int
+        Максимальное число повторов запроса при ошибках/429.
+    retry_delay : int
+        Пауза между повторами.
+    df_products : pandas.DataFrame | None
+        Если передан, используется как источник товаров и chrtId.
+        Ожидается колонка 'chrtId' или 'chrtID'.
+        Если None — список товаров читается из файла
+        `{uploaddir_today}/{date.today()}_Товары.csv`.
     """
-
     def _request_with_retry(method: str, url: str, **kwargs) -> requests.Response:
         """Вспомогательная функция для запросов с ретраями."""
         attempt = 0
@@ -862,10 +903,8 @@ def getStockReminders_fbs(
                 )
                 time.sleep(retry_delay)
                 continue
-
             if resp.status_code == 200:
                 return resp
-
             if resp.status_code == 429 and attempt < max_retries:
                 logger.warning(
                     "Получен статус 429 Too Many Requests при запросе {} {} "
@@ -878,7 +917,6 @@ def getStockReminders_fbs(
                 )
                 time.sleep(retry_delay)
                 continue
-
             logger.error(
                 "Неожиданный статус ответа {} {}: {}. Тело ответа: {}",
                 method.upper(),
@@ -887,7 +925,6 @@ def getStockReminders_fbs(
                 resp.text[:1000],
             )
             resp.raise_for_status()
-
         raise RuntimeError(
             "Не удалось выполнить запрос {} {} после {} попыток.".format(
                 method.upper(), url, max_retries
@@ -897,26 +934,42 @@ def getStockReminders_fbs(
     # URL для запросов
     WB_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
     WB_STOCKS_FBS_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks"
-    # 1. Читаем список товаров
-    products_file = uploaddir_today / f"{date.today()}_Товары.csv"
-    logger.info("Загрузка списка товаров из файла: {}", products_file)
-    try:
-        df_products = pd.read_csv(products_file, sep=";")
-    except Exception as exc:
-        logger.error("Не удалось прочитать файл товаров {}: {}", products_file, exc)
-        raise
 
-    if "chrtID" not in df_products.columns:
-        raise ValueError("В файле товаров отсутствует колонка 'chrtID'.")
+    # 1. Получаем список товаров
+    if df_products is None:
+        products_file = uploaddir_today / f"{date.today()}_Товары.csv"
+        logger.info("Загрузка списка товаров из файла: {}", products_file)
+        try:
+            df_products = pd.read_csv(products_file, sep=";")
+        except Exception as exc:
+            logger.error("Не удалось прочитать файл товаров {}: {}", products_file, exc)
+            raise
+    else:
+        logger.info(
+            "Используется переданный df_products для запроса остатков FBS. Строк: {}",
+            len(df_products),
+        )
 
-    df_products = df_products[df_products["chrtID"].notna()].copy()
+    # Приводим chrtID/chrtId/chrtid к единому названию chrtId
+    rename_wb_ids = {
+        "chrtID": "chrtId",
+        "chrtid": "chrtId",
+    }
+    df_products = df_products.rename(
+        columns={c: rename_wb_ids[c] for c in df_products.columns if c in rename_wb_ids}
+    )
+
+    if "chrtId" not in df_products.columns:
+        raise ValueError("В df_products отсутствует колонка 'chrtId' (или 'chrtID').")
+
+    df_products = df_products[df_products["chrtId"].notna()].copy()
     if df_products.empty:
         logger.warning(
-            "Список товаров пуст или не содержит chrtID. Возвращаю пустой DataFrame."
+            "Список товаров пуст или не содержит chrtId. Возвращаю пустой DataFrame."
         )
-        return pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+        return pd.DataFrame(columns=["chrtId", "amount", "warehouseId", "warehouseName"])
 
-    df_products["chrtID"] = df_products["chrtID"].astype(str)
+    df_products["chrtId"] = df_products["chrtId"].astype(str)
     df_products = df_products.reset_index(drop=True)
     df_products["chunk"] = df_products.index // chunk_size
 
@@ -943,7 +996,7 @@ def getStockReminders_fbs(
     df_seller_warehouses = pd.DataFrame(warehouses_data)
     if df_seller_warehouses.empty:
         logger.warning("Список складов продавца пуст. Возвращаю пустой DataFrame.")
-        return pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+        return pd.DataFrame(columns=["chrtId", "amount", "warehouseId", "warehouseName"])
 
     if "id" not in df_seller_warehouses.columns or "name" not in df_seller_warehouses.columns:
         raise ValueError(
@@ -957,23 +1010,21 @@ def getStockReminders_fbs(
         ", ".join(map(str, df_seller_warehouses["name"].tolist())),
     )
 
-    # 3. Запрашиваем остатки по всем складам и чанкам chrtID
-    logger.info("Загрузка FBS-остатков по chrtID...")
+    # 3. Запрашиваем остатки по всем складам и чанкам chrtId
+    logger.info("Загрузка FBS-остатков по chrtId...")
     all_stocks = []
-
     for _, wh_row in df_seller_warehouses.iterrows():
         warehouse_id = wh_row["id"]
         warehouse_name = wh_row["name"]
-
         logger.info("Обработка склада '{}' (id={})...", warehouse_name, warehouse_id)
 
         for chunk_id, chunk_df in df_products.groupby("chunk"):
-            chrt_list = chunk_df["chrtID"].tolist()
+            chrt_list = chunk_df["chrtId"].tolist()
             payload = {"skus": chrt_list}
-
             url = f"{WB_STOCKS_FBS_URL}/{warehouse_id}"
+
             logger.debug(
-                "Запрос остатков FBS: склад={}, chunk={}, кол-во chrtID={}",
+                "Запрос остатков FBS: склад={}, chunk={}, кол-во chrtId={}",
                 warehouse_name,
                 chunk_id,
                 len(chrt_list),
@@ -1010,39 +1061,50 @@ def getStockReminders_fbs(
 
     if not all_stocks:
         logger.warning("WB вернул пустые остатки FBS по всем складам.")
-        df_reminders_fbs = pd.DataFrame(columns=["chrtID", "amount", "warehouseId", "warehouseName"])
+        df_reminders_fbs = pd.DataFrame(columns=["chrtId", "amount", "warehouseId", "warehouseName"])
     else:
         df_reminders_fbs = pd.concat(all_stocks, ignore_index=True)
 
-    # 4. Приведение типов и объединение с товарами по chrtID
+    # 4. Приведение типов и объединение с товарами по chrtId
     if "sku" not in df_reminders_fbs.columns:
         logger.warning(
             "В ответе по остаткам FBS нет колонки 'sku'. Колонки: {}",
             list(df_reminders_fbs.columns),
         )
     else:
-        df_reminders_fbs = df_reminders_fbs.rename(columns={"sku": "chrtID"})
+        df_reminders_fbs = df_reminders_fbs.rename(columns={"sku": "chrtId"})
 
-    for col in ["amount", "chrtID"]:
-        if col in df_reminders_fbs.columns:
-            df_reminders_fbs[col] = pd.to_numeric(df_reminders_fbs[col], errors="coerce").fillna(0)
+    # Приводим chrtId и amount к числам/строкам
+    if "chrtId" in df_reminders_fbs.columns:
+        df_reminders_fbs["chrtId"] = df_reminders_fbs["chrtId"].astype(str)
 
-    if "chrtID" in df_reminders_fbs.columns:
+    if "amount" in df_reminders_fbs.columns:
+        df_reminders_fbs["amount"] = pd.to_numeric(
+            df_reminders_fbs["amount"],
+            errors="coerce",
+        ).fillna(0)
+
+    if "chrtId" in df_reminders_fbs.columns:
         df_reminders_fbs = df_reminders_fbs.merge(
-            df_products[["Артикул продавца", "Размер", "chrtID"]],
+            df_products[["Артикул продавца", "Размер", "chrtId"]],
             how="left",
-            on="chrtID",
+            on="chrtId",
         )
     else:
         logger.warning(
-            "В остатках отсутствует колонка 'chrtID', объединение с товарами не выполнено."
+            "В остатках отсутствует колонка 'chrtId', объединение с товарами не выполнено."
         )
 
     # 5. Сохранение
     reminders_fbs_file = uploaddir_today / f"{date.today()}_Остатки_fbs.csv"
     if to_save:
         try:
-            df_reminders_fbs.to_csv(reminders_fbs_file, sep=";", encoding="utf-8-sig", index=False)
+            df_reminders_fbs.to_csv(
+                reminders_fbs_file,
+                sep=";",
+                encoding="utf-8-sig",
+                index=False,
+            )
             logger.info("Файл с остатками FBS сохранён: {}", reminders_fbs_file)
         except Exception as exc:
             logger.error(
@@ -1053,7 +1115,6 @@ def getStockReminders_fbs(
             raise
 
     return df_reminders_fbs
-
 
 # 1. Чистая выгрузка данных из API
 def get_warehouses_load_raw(

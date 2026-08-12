@@ -304,7 +304,7 @@ def format_sheet_total(
     Все связи с листом 'По кластерам' выполняются по колонке merge-key (WB_MERGE_KEY),
     а не жёстко по 'Артикул_Размер'.
     """
-    logger.info(f'Форматирование листа "{sheet_name}"')
+    logger.info(f'Начало форматирование листа "{sheet_name}"')
 
     file_path = (
         path_supply_svod
@@ -695,7 +695,7 @@ def format_sheet_total(
         _apply_alignment(ws, left_cols, row_start, row_end, horizontal="left")
 
     wb.save(file_path)
-    logger.info(f'Завершено форматирование листа "{sheet_name}"')
+    logger.success(f'Завершено форматирование листа "{sheet_name}"')
 
 def format_sheet_clusters(
     path_supply_svod,
@@ -722,7 +722,7 @@ def format_sheet_clusters(
           * 'Корректировка с учетом нулевых остатков' =
               'Потребность на {demand_period_for_total} дней (округл.)'.
     """
-    logger.info(f'Форматирование листа "{sheet_name}"')
+    logger.info(f'Начало форматирования листа "{sheet_name}"')
 
     file_path = (
         path_supply_svod
@@ -1031,4 +1031,4 @@ def format_sheet_clusters(
         _apply_alignment(ws, left_cols, row_start, row_end, "left")
 
     wb.save(file_path)
-    logger.info(f'Завершено форматирование листа "{sheet_name}"')
+    logger.success(f'Завершено форматирование листа "{sheet_name}"')

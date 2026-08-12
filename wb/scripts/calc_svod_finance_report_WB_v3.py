@@ -2506,12 +2506,13 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     ]
 
     # 2. regex для колонок "Оказание услуг ... Продвижение, документ №..."
-    promo_regex_list = ['jopa']
-    # promo_regex_list = [
-    #     r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',
-    #     r'^витрина\s+магазина(?:, документ №\d+)?$',
-    #     r'^предоставление\s+услуг\s+по\s+подписке\s+«джем»(?:, документ №\d+)?$',
-    # ]
+    # promo_regex_list = ['jopa']
+    promo_regex_list = [
+        # r'^оказание услуг\s+«(?:вб\.?\s*|wb\s*)продвижение»(?:, документ №\d+)?$',   # продвижение
+        r'^витрина\s+магазина(?:, документ №\d+)?$',                                # витрина магазина
+        r'^предоставление\s+услуг\s+по\s+подписке\s+«джем»(?:, документ №\d+)?$',   # Джем
+        r'^оказание\s+услуг\s+«(?:вб\.?\s*|wb\s*)медиа»(?:, документ №\d+)?$',      # WB Медиа
+    ]
 
     promo_regex = re.compile('|'.join(promo_regex_list), flags=re.IGNORECASE)
 
@@ -2522,8 +2523,8 @@ def calc_final_costs(df_all_costs_stats_with_catalog):
     ]
 
     # 3. Объединяем: явные + найденные по regex
-    all_promotion_columns = base_promotion_columns + regex_promo_columns
-
+    all_promotion_columns = list(dict.fromkeys(base_promotion_columns + regex_promo_columns))
+    # dict.fromkeys сохраняет порядок и выбрасывает дубликаты
     # 4. Фильтруем по фактически существующим колонкам
     existing_promotion_columns = [
         col for col in df_final_costs.columns
