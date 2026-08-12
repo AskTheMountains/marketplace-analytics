@@ -124,8 +124,74 @@ def get_orders(headers, date_start, date_end):
 
 
 # Функция выгрузки остатков потоварно
-def get_reminders_by_product(df_products, headers, to_agg=True, agg_col=['Артикул']):
+def get_reminders_by_product(
+    df_products,
+    headers,
+    to_agg=True,
+    agg_col=['Артикул'],
+    split_stocks=False  # новый флаг
+):
+    """
+    Выгружает и обрабатывает остатки товаров по данным из Ozon (FBO и FBS).
 
+    Параметры
+    ----------
+    df_products : pandas.DataFrame
+        DataFrame со списком товаров, по которым нужно получить остатки.
+        Обычно содержит колонку 'Артикул' (и, при необходимости, другие
+        колонки, по которым далее будет происходить агрегация).
+
+    headers : dict
+        Словарь с HTTP-заголовками (токен, client_id и т.п.), необходимый
+        для обращения к API Ozon в функциях:
+        - getStockReminders_fbo_v2
+        - getStockReminders_fbs
+
+    to_agg : bool, по умолчанию True
+        Флаг агрегации остатков.
+        - Если True — данные агрегируются по колонкам из `agg_col`.
+        - Если False — возвращаются «сырые» данные по каждому товару без
+          дополнительной агрегации.
+
+    agg_col : list[str], по умолчанию ['Артикул']
+        Список колонок, по которым выполняется группировка при агрегации.
+        Пример: ['Артикул'] или ['Бренд', 'Артикул'] и т.п.
+
+    split_stocks : bool, по умолчанию False
+        Флаг способа представления остатков при агрегации.
+        Работает только если `to_agg=True`.
+
+        - Если False:
+            Возвращается колонка 'Остаток', где значение —
+            сумма 'Остатки FBO' + 'Остатки FBS'.
+            При этом также остаются колонки 'Остатки FBO' и 'Остатки FBS'.
+
+        - Если True:
+            Возвращаются раздельные колонки 'Остатки FBO' и 'Остатки FBS'
+            без дополнительной суммарной колонки 'Остаток'.
+
+    Возвращаемое значение
+    ---------------------
+    pandas.DataFrame
+        Если to_agg=False:
+            DataFrame с неагрегированными остатками и колонками:
+            - 'Артикул'
+            - 'Остатки FBO'
+            - 'Остатки FBS'
+
+        Если to_agg=True и split_stocks=False:
+            Агрегированный DataFrame с колонками:
+            - колонки из `agg_col` (например, 'Артикул')
+            - 'Остатки FBO'
+            - 'Остатки FBS'
+            - 'Остаток' (сумма FBO + FBS)
+
+        Если to_agg=True и split_stocks=True:
+            Агрегированный DataFrame с колонками:
+            - колонки из `agg_col`
+            - 'Остатки FBO'
+            - 'Остатки FBS'
+    """
     from ozon.scripts.uploadDataFromOzon import (
         getStockReminders_fbo_v2,
         getStockReminders_fbs
@@ -134,6 +200,7 @@ def get_reminders_by_product(df_products, headers, to_agg=True, agg_col=['Арт
     # Выгружаем остатки FBO и FBS
     df_reminders_fbo = getStockReminders_fbo_v2(headers, df_products, to_save=False)
     df_reminders_fbs = getStockReminders_fbs(headers, df_products, to_save=False)
+
     # Переименовываем колонки для удобства
     df_reminders_fbo = df_reminders_fbo.rename(columns={
         'Доступный к продаже товар': 'Остатки FBO',
@@ -141,31 +208,39 @@ def get_reminders_by_product(df_products, headers, to_agg=True, agg_col=['Арт
     df_reminders_fbs = df_reminders_fbs.rename(columns={
         'Доступно на моем складе, шт': 'Остатки FBS',
     })
-    # Объединяем остатки FBO и FBS в один df
-    df_reminders_all = pd.concat([
-        df_reminders_fbo.loc[:, ['Артикул', 'Остатки FBO']],
-        df_reminders_fbs.loc[:, ['Артикул', 'Остатки FBS']],
-    ])
+
+    # Объединяем остатки FBO и FBS по артикулу (outer, чтобы не потерять данные)
+    df_reminders_all = pd.merge(
+        df_reminders_fbo[['Артикул', 'Остатки FBO']],
+        df_reminders_fbs[['Артикул', 'Остатки FBS']],
+        on='Артикул',
+        how='outer'
+    )
 
     # Переводим колонку с артикулом в строку
     df_reminders_all['Артикул'] = df_reminders_all['Артикул'].astype(str)
 
-    # Если стоит флаг агрегации, то считаем сумму остатков
+    # Если стоит флаг агрегации
     if to_agg:
-        # Считаем остатки FBO + FBS
-        df_reminders_total = (
+        df_agg = (
             df_reminders_all
-            .groupby(agg_col, as_index=False)
+            .groupby(agg_col, as_index=False)[['Остатки FBO', 'Остатки FBS']]
             .sum()
-            .assign(**{
-                'Остаток': lambda df:df[['Остатки FBO', 'Остатки FBS']].sum(axis=1)
-            })
-            # .reset_index()
         )
-        return df_reminders_total
-    # Если флаг не стоит, то возвращаем просто остатки
-    else:
-        return df_reminders_all
+
+        # По умолчанию одна колонка "Остаток" (сумма FBO+FBS)
+        if not split_stocks:
+            df_agg = df_agg.assign(
+                Остаток=lambda df: df[['Остатки FBO', 'Остатки FBS']].sum(axis=1)
+            )
+            # Если нужно только общую колонку — можно раскомментировать:
+            # df_agg = df_agg.drop(columns=['Остатки FBO', 'Остатки FBS'])
+
+        # Если split_stocks=True, просто возвращаем две отдельные колонки
+        return df_agg
+
+    # Если флаг агрегации не стоит – возвращаем неагрегированные остатки
+    return df_reminders_all
 
 
 # Функция выгрузки отчета реализации товаров

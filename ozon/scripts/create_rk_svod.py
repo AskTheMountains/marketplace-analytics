@@ -445,7 +445,7 @@ def process_product_list(df_products):
     return df_products_processed
 
 # Функция получения списка моделей товаров
-def get_model_list(df_products, df_campaigns_report):
+def get_model_list(df_products, df_campaigns_report, df_reminders):
     # Создаем копию для избежания изменений в оригинальном df
     df_models = df_products.copy()
     # Выбираем нужные колонки
@@ -470,13 +470,23 @@ def get_model_list(df_products, df_campaigns_report):
         .drop_duplicates(subset=['Артикул', 'Тип товара'])
         .loc[
             df_campaigns_report['Тип товара'].isin(['Товар из РК', 'Товар из заказов']),
-            ['Артикул', 'Тип товара', 'Остаток']
+            ['Артикул', 'Тип товара']
         ]
     )
-    df_models = df_models.merge(
-        df_campaigns_products,
-        how='left',
-        on='Артикул',
+    df_models = (
+        df_models
+        # Добавляем данные из отчета РК
+        .merge(
+            df_campaigns_products,
+            how='left',
+            on='Артикул',
+        )
+        # Добавляем данные по остаткам
+        .merge(
+            df_reminders[['Артикул', 'Остатки FBO', 'Остатки FBS']],
+            how='left',
+            on='Артикул',
+        )
     )
     # Делаем сортировку по ID модели
     df_models = df_models.sort_values(by=['ID модели'], ignore_index=True)
@@ -527,7 +537,7 @@ def add_data_to_product_list(
     ):
     # Создаем список датафреймов, которые объединяем
     merge_params = [
-        {"df": df_reminders, "columns": ["Остаток",], "on": "Артикул"},
+        {"df": df_reminders, "columns": ["Остатки FBO", "Остатки FBS"], "on": "Артикул"},
         {"df": df_campaigns_report_by_article, "columns": ["РК"], "on": "Артикул"},
         {"df": df_orders_by_products, "columns": ["Сумма заказов", "Кол-во заказов"], "on": "Артикул"},
         {"df": df_payment_orders_report_processed, "columns": ["Заказы ОЗЗ 5%, шт.", "Расход ОЗЗ 5%, руб.", "Заказы ОЗЗ ст., шт.", "Расход ОЗЗ ст., руб."], "on": "Артикул"},
@@ -550,18 +560,22 @@ def calc_additional_columns(df_products_svod):
     # Создаем копию для избежания изменений в оригинальном df
     df_client_svod = df_products_svod.copy()
     # Заполняем пропуски
-    columns_to_fillna = ['Остаток', 'Сумма заказов', 'Кол-во заказов']
+    columns_to_fillna = ['Остатки FBO', 'Остатки FBS', 'Сумма заказов', 'Кол-во заказов']
     df_client_svod[columns_to_fillna] = (
         df_client_svod[columns_to_fillna]
         .fillna(0)
         .infer_objects(copy=False)
     )
     # Переводим некоторые колонки в integer
-    columns_to_int = ['Остаток', 'Кол-во заказов']
+    columns_to_int = ['Остатки FBO', 'Остатки FBS', 'Кол-во заказов']
     df_client_svod[columns_to_int] = (
         df_client_svod[columns_to_int]
         .astype(int)
     )
+    # Суммируем остатки в один столбец
+    df_client_svod['Остаток'] = df_client_svod['Остатки FBO'] + df_client_svod['Остатки FBS']
+    # Удаляем колонки с остатками FBO и FBS
+    df_client_svod = df_client_svod.drop(columns=['Остатки FBO', 'Остатки FBS'], errors='ignore')
     # Средняя цена продажи
     df_client_svod['Средняя цена продажи'] = np.where(
         df_client_svod['Кол-во заказов'] > 0,
@@ -574,6 +588,10 @@ def calc_additional_columns(df_products_svod):
         / df_client_svod['Сумма заказов'].replace(0, np.nan) * 100
     )
     df_client_svod['ДРР'] = df_client_svod['ДРР'].replace([-np.inf, np.inf], np.nan)
+
+    # Добавляем столбец с комментарием
+    df_client_svod['Комментарий'] = ''
+
     return df_client_svod
 
 # Функция создания df для записи в excel
@@ -595,6 +613,7 @@ def create_client_svod_excel(df_client_svod, date_report):
         'Кол-во заказов', 'Сумма заказов',
         'ДРР',
         f'Остаток {date_report_formatted}',
+        'Комментарий',
         # 'Тип кампании',
         # 'Отзывы',
         # 'Текущая цена с учетом скидки (из отчета по товарам)',
@@ -613,7 +632,25 @@ def create_client_svod_excel(df_client_svod, date_report):
 
 
 # Функция форматирования столбца с номером РК
-def format_campaigns_columns(ws, df, column_names=['Номер кампании', 'ID Кампании']):
+def format_campaigns_columns(ws, df=None, column_names=None):
+    """
+    Форматирование столбцов с номером кампании:
+    - каждой кампании назначается цвет из палитры (циклично)
+    - строки, где заканчивается блок кампании, получают жирную нижнюю границу
+
+    Параметры
+    ---------
+    ws : openpyxl.worksheet.worksheet.Worksheet
+        Лист Excel, на котором нужно применить форматирование.
+    df : pandas.DataFrame | None
+        Если передан, имена колонок берём из df.columns.
+        Если None — имена колонок берём из заголовков листа (первая строка).
+    column_names : list[str] | None
+        Список возможных названий колонок кампании (точное совпадение, без учёта регистра).
+        По умолчанию ['Номер кампании', 'ID Кампании'].
+    """
+    if column_names is None:
+        column_names = ['Номер кампании', 'ID Кампании']
 
     # 1. Палитра из 15 неярких расцветок
     color_palette = [
@@ -622,26 +659,58 @@ def format_campaigns_columns(ws, df, column_names=['Номер кампании'
         "F5B5FC", "D9D9D9", "ABC4FF", "C6F1E7", "EEE3CB"
     ]
 
-    # 3. Находим имена колонок кампании в df
-    df_campaign_cols = [
-        col for col in df.columns if any(col.strip().lower() == name.strip().lower() for name in column_names)
-    ]
+    # 2. Определяем имена колонок кампании
+    if df is not None:
+        # берём названия колонок из df
+        df_campaign_cols = [
+            col for col in df.columns
+            if any(col.strip().lower() == name.strip().lower() for name in column_names)
+        ]
+    else:
+        # df не передан — берём заголовки с первой строки листа
+        header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        df_campaign_cols = [
+            header for header in header_cells if isinstance(header, str) and
+            any(header.strip().lower() == name.strip().lower() for name in column_names)
+        ]
+
     if not df_campaign_cols:
-        return  # Нет нужных колонок — ничего делать не надо
+        return  # Нет нужных колонок — ничего не делаем
 
-    # 4. Получаем все уникальные значения кампании
+    # 3. Получаем все уникальные значения кампании
     unique_campaigns = []
-    for col in df_campaign_cols:
-        unique_campaigns.extend(df[col].dropna().unique())
-    unique_campaigns = list(dict.fromkeys(unique_campaigns))
 
-    # 5. Цвета кампаниям (циклично)
+    if df is not None:
+        # Используем данные из df
+        for col in df_campaign_cols:
+            unique_campaigns.extend(df[col].dropna().unique())
+    else:
+        # Берём данные с листа Excel (по колонкам, найденным по имени)
+        header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        # Индексы столбцов кампании на листе
+        campaign_col_idxs_for_values = [
+            idx for idx, header in enumerate(header_cells)
+            if header in df_campaign_cols
+        ]
+        for idx in campaign_col_idxs_for_values:
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row,
+                                    min_col=1, max_col=ws.max_column):
+                cell = row[idx]
+                if cell.value is not None:
+                    unique_campaigns.append(cell.value)
+
+    # Сохраняем порядок появления
+    unique_campaigns = list(dict.fromkeys(unique_campaigns))
+    if not unique_campaigns:
+        return
+
+    # 4. Цвета кампаниям (циклично)
     campaign_to_color = {
         val: color_palette[i % len(color_palette)]
         for i, val in enumerate(unique_campaigns)
     }
 
-    # 6. Индексы колонок кампании в Excel (по строке заголовков листа)
+    # 5. Индексы колонок кампании в Excel (по строке заголовков листа)
     header_cells = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     campaign_col_idxs = [
         idx for idx, header in enumerate(header_cells) if header in df_campaign_cols
@@ -649,25 +718,27 @@ def format_campaigns_columns(ws, df, column_names=['Номер кампании'
     if not campaign_col_idxs:
         return
 
-    # 7. Форматируем ячейки
+    # 6. Форматируем ячейки
     for idx in campaign_col_idxs:
-        prev_camp = None
         for excel_row_idx, row in enumerate(
-            ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column), start=2
+            ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column),
+            start=2
         ):
             cell = row[idx]
             camp = cell.value
-            # Заливаем цвет
+
+            # Заливаем цвет по кампании
             if camp in campaign_to_color:
                 cell.fill = PatternFill(
                     start_color=campaign_to_color[camp],
                     end_color=campaign_to_color[camp],
                     fill_type='solid'
                 )
+
             # Проверяем переход к новой кампании
             is_last_row = (excel_row_idx == ws.max_row)
-            # Доступ к значению кампании в следующей строке (если есть)
             next_camp = ws[excel_row_idx + 1][idx].value if not is_last_row else None
+
             if camp != next_camp:
                 # Последняя строка блока — нижняя граница жирная у всей строки
                 for c in row:
@@ -1287,13 +1358,11 @@ if __name__ == '__main__':
     df_products = get_ozon_product(headers, to_save=False)
     # Обрабатываем список товаров
     df_products_processed = process_product_list(df_products)
-    # Получаем список моделей товаров
-    df_models = get_model_list(df_products, df_campaigns_report)
 
     # Получаем заказы
     df_orders = get_orders_for_svod(df_dates, headers)
     # Получаем остатки
-    df_reminders = get_reminders_by_product(df_products, headers)
+    df_reminders = get_reminders_by_product(df_products, headers, to_agg=True, split_stocks=True)
 
     # Считаем заказы по артикулу
     df_orders_by_products = calc_orders(df_orders)
@@ -1307,6 +1376,10 @@ if __name__ == '__main__':
     )
     # Расчитываем доп. колонки
     df_client_svod = calc_additional_columns(df_products_svod)
+
+    # Формируем лист с моделями товаров
+    df_models = get_model_list(df_products, df_campaigns_report, df_reminders)
+
     # Формируем таблицу для записи в excel
     df_client_excel_svod = create_client_svod_excel(
         df_client_svod,

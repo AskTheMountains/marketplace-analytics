@@ -24,6 +24,7 @@ from ozon.scripts.constants import (
     client_clusters_overrides,
     default_cluster_planning_days,
     client_cluster_planning_overrides,
+    DEFAULT_PLANNING_DAYS,
     clusters_mapping_jewelry,
     marketplace_dir_path,
     shop_type,
@@ -33,6 +34,7 @@ from ozon.scripts.constants import (
     DEMAND_PERIOD_2,
     demand_period_for_total,
     include_previous_supplies_flag,
+    only_reference_table_products_flag,
     supply_svod_clusters_columns,
     supply_svod_total_columns,
 )
@@ -170,7 +172,7 @@ def process_product_list(df_products: pd.DataFrame) -> pd.DataFrame:
     ]
     choices = ["Сортируемый товар", "Несортируемый товар"]
 
-    df["Сортируемость товара"] = np.select(
+    df["Сортируемость товара (расчет)"] = np.select(
         conditions,
         choices,
         default="Не определена",
@@ -255,13 +257,14 @@ def process_catalog(catalog_df: pd.DataFrame) -> pd.DataFrame:
     # Делаем первую букву в названиях столбцов заглавной, остальные - строчными
     catalog_processed.columns = [col.capitalize() for col in catalog_processed.columns]
 
-    # Переименовываем ещё некоторые колонки
+    # Переименовываем некоторые колонки
     catalog_processed = catalog_processed.rename(columns={
         "Артикул продавца": "Артикул",
         "Артикул 1с": "Артикул 1С",
         'Sku': 'SKU',
         "Артикул озон": "Артикул",
-        "Сортируемость товара": "Сортируемость",
+        # "Сортируемость товара": "Сортируемость",
+        'Сортируемость': 'Сортируемость товара',
         "Статус товара - переносим в отчет": "Статус",
         'Статус продажи fbo/fbs': 'Статус продажи FBO/FBS',
         'Габариты товара': 'Габариты товара (справочно)',
@@ -307,34 +310,120 @@ def process_catalog(catalog_df: pd.DataFrame) -> pd.DataFrame:
 # РАБОТА С КЛАСТЕРАМИ
 # ============================================================================
 
-def get_clusters_mapping_for_client(client_name: str) -> dict:
+
+def get_all_clusters_from_ozon_and_report(
+    date_metrics: str,
+    verbose: bool = False,
+) -> List[str]:
+    """
+    Возвращает объединённый список кластеров:
+      - из файла clusters_and_warehouses.csv (столбец 'cluster_name');
+      - из отчёта claster_report (столбец 'Кластер').
+    Используется для того, чтобы не потерять кластеры, которые есть в старых
+    отчётах, но уже отсутствуют в актуальном справочнике Ozon.
+    """
+    # --- 1. Кластеры из справочника Ozon ---
+    clusters_path = MARKETPLACE_PATH / "scripts" / "clusters_and_warehouses.csv"
+    ozon_clusters: set[str] = set()
+    try:
+        df_clusters = pd.read_csv(clusters_path, sep=";")
+        if "cluster_name" in df_clusters.columns:
+            ozon_clusters = set(
+                df_clusters["cluster_name"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+            )
+        else:
+            logger.warning(
+                f"В файле {clusters_path} нет колонки 'cluster_name'. "
+                f"Кластеры из справочника Ozon не будут учтены."
+            )
+    except FileNotFoundError:
+        logger.warning(
+            f"Файл с кластерами Ozon не найден: {clusters_path}. "
+            f"Кластеры из справочника Ozon не будут ��чтены."
+        )
+
+    # --- 2. Кластеры из отчёта claster_report ---
+    report_clusters: set[str] = set()
+    try:
+        metrics_clusters = read_metrics_file(date_metrics, sheet_name="claster_report")
+        if "Кластер" in metrics_clusters.columns:
+            report_clusters = set(
+                metrics_clusters["Кластер"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+            )
+        else:
+            logger.warning(
+                f"В claster_report за {date_metrics} нет колонки 'Кластер'. "
+                f"Кластеры из отчёта не будут учтены."
+            )
+    except Exception as e:
+        logger.warning(
+            f"Не удалось прочитать кластеры из claster_report на дату {date_metrics}: {e}"
+        )
+
+    # --- 3. Объединяем ---
+    all_clusters = sorted(ozon_clusters | report_clusters)
+
+    if verbose:
+        logger.info(
+            f"Собран объединённый список кластеров Ozon и отчёта за {date_metrics}: "
+            f"{all_clusters}"
+        )
+    else:
+        logger.info(
+            f"Собран объединённый список кластеров за {date_metrics}: "
+            f"{len(all_clusters)} кластеров "
+            f"(Ozon: {len(ozon_clusters)}, report: {len(report_clusters)})"
+        )
+
+    return all_clusters
+
+def get_clusters_mapping_for_client(
+    client_name: str,
+    use_all_clusters: bool = False,
+    date_metrics: str | None = None,
+    verbose: bool = False,
+) -> dict:
     """
     Возвращает полный маппинг кластеров для клиента:
     - берёт default_clusters_mapping как базу;
     - удаляет из базы те ключи, которые клиент явно использует как подкластер;
-    - поверх накладывает client_clusters_overrides[client_name], если есть.
+    - поверх накладывает client_clusters_overrides[client_name], если есть (приоритет клиента);
+    - при use_all_clusters=True дополнительно может добавить кластеры
+      из справочника/отчёта (get_all_clusters_from_ozon_and_report), которых нет
+      в словаре и которые не используются как подкластер.
     """
-    logger.info(f"[clusters] Формирование маппинга кластеров для клиента '{client_name}'")
+    logger.info(f"Формирование маппинга кластеров для клиента '{client_name}'")
 
-    # 1. Базовый маппинг
+    # 1. Базовый маппинг (дефолт)
     mapping = default_clusters_mapping.copy()
 
-    # 2. Оверрайды клиента (могут отсутствовать)
+    # 2. Оверрайды клиента
     overrides = client_clusters_overrides.get(client_name) or {}
 
     # 3. Подкластеры, которые клиент ЯВНО использует в overrides
-    subs_in_overrides = set()
+    subs_in_overrides: set[str] = set()
     for subs in overrides.values():
         subs_in_overrides.update(subs)
 
-    if subs_in_overrides:
+    if subs_in_overrides and verbose:
         logger.info(
-            f"[clusters] Для клиента '{client_name}' в overrides используются подкластеры: "
+            f"Для клиента '{client_name}' в overrides используются подкластеры: "
             f"{sorted(subs_in_overrides)}"
         )
     else:
         logger.info(
-            f"[clusters] Для клиента '{client_name}' overrides не используют ни одного подкластера"
+            f"Для клиента '{client_name}' overrides используют "
+            f"{len(subs_in_overrides)} различных подкластеров"
         )
 
     # 4. Удаляем из базового маппинга те ключи, которые клиент использует как подкластер
@@ -345,61 +434,163 @@ def get_clusters_mapping_for_client(client_name: str) -> dict:
     keys_after = set(mapping.keys())
     removed_keys = sorted(keys_before - keys_after)
 
-    if removed_keys:
+    if removed_keys and verbose:
         logger.info(
-            f"[clusters] Для клиента '{client_name}' из default_clusters_mapping удалены ключи, "
+            f"Для клиента '{client_name}' из default_clusters_mapping удалены ключи, "
             f"используемые как подкластеры: {removed_keys}"
         )
     else:
         logger.info(
-            f"[clusters] Для клиента '{client_name}' из default_clusters_mapping ничего не удалено"
+            f"Для клиента '{client_name}' из default_clusters_mapping удалено ключей: "
+            f"{len(removed_keys)}"
         )
 
-    # 5. Накладываем overrides поверх очищенного дефолта
+    # 5. Накладываем overrides поверх очищенного дефолта (приоритет клиента)
     mapping.update(overrides)
 
+    # 6. Собираем множество ПОДКЛАСТЕРОВ в итоговом маппинге (после overrides)
+    subs_in_final_mapping: set[str] = set()
+    for subs in mapping.values():
+        subs_in_final_mapping.update(subs)
+
+    # 7. Опционально дополняем маппинг кластерами из справочника/отчёта
+    if use_all_clusters and date_metrics is not None:
+        all_clusters = get_all_clusters_from_ozon_and_report(
+            date_metrics,
+            verbose=verbose,
+        )
+        if all_clusters:
+            to_add = []
+            for cl in all_clusters:
+                # Не добавляем, если:
+                #  - кластер уже есть как ключ в маппинге,
+                #  - или уже используется как подкластер в каком‑то агрегате.
+                if cl in mapping or cl in subs_in_final_mapping:
+                    continue
+                mapping[cl] = [cl]
+                to_add.append(cl)
+            if to_add:
+                if verbose:
+                    logger.info(
+                        f"Для клиента '{client_name}' в маппинг добавлены отсутствующие кластеры "
+                        f"(сам-на-себя) из справочника/отчёта, не используемые как подкластеры: "
+                        f"{sorted(to_add)}"
+                    )
+                else:
+                    logger.info(
+                        f"Для клиента '{client_name}' в маппинг добавлены кластеры "
+                        f"{to_add} из справочника/отчёта"
+                    )
+
+    # Итоговые логи
+    keys_sorted = sorted(mapping.keys())
     logger.info(
-        f"[clusters] Итоговый маппинг кластеров для клиента '{client_name}' "
-        f"(ключи): {sorted(mapping.keys())}"
+        f"Итоговый маппинг кластеров для клиента '{client_name}': "
+        f"{len(keys_sorted)} агрегирующих кластеров"
     )
-    logger.debug(f"[clusters] Полный итоговый маппинг для '{client_name}': {mapping}")
+    if verbose:
+        logger.debug(
+            f"Ключи итогового маппинга для '{client_name}': {keys_sorted}"
+        )
+        logger.debug(
+            f"Полный итоговый маппинг для '{client_name}': {mapping}"
+        )
 
     return mapping
 
-
-def get_cluster_planning_days_for_client(client_name: str) -> dict:
+def get_cluster_planning_days_for_client(
+    client_name: str,
+    use_all_clusters: bool = False,
+    date_metrics: str | None = None,
+    verbose: bool = False,
+) -> dict:
     """
     Возвращает словарь 'кластер → дни планирования' для клиента:
     - берёт default_cluster_planning_days как базу;
-    - поверх накладывает client_cluster_planning_overrides[client_name], если есть.
+    - поверх накладывает client_cluster_planning_overrides[client_name], если есть
+      (приоритет клиента);
+    - при use_all_clusters=True дополняет словарь днями планирования для всех
+      кластеров (из справочника/отчёта), которых нет в словаре
+      (берётся DEFAULT_PLANNING_DAYS).
     """
+    logger.info(
+        f"Формирование планирования дней по кластерам для клиента '{client_name}'"
+    )
+
+    # 1. Базовое планирование (дефолт)
     planning = default_cluster_planning_days.copy()
-    overrides = client_cluster_planning_overrides.get(client_name)
+
+    # 2. Оверрайды клиента (приоритет)
+    overrides = client_cluster_planning_overrides.get(client_name) or {}
     if overrides:
         planning.update(overrides)
+        if verbose:
+            logger.info(
+                f"Для клиента '{client_name}' применены overrides по планированию дней: "
+                f"{overrides}"
+            )
+        else:
+            logger.info(
+                f"Для клиента '{client_name}' применены overrides по планированию дней, "
+                f"кол-во кластеров: {len(overrides)}"
+            )
+
+    # 3. Дополняем днями кластеры (из справочника/отчёта), если включено
+    if use_all_clusters and date_metrics is not None:
+        all_clusters = get_all_clusters_from_ozon_and_report(
+            date_metrics,
+            verbose=verbose,
+        )
+        if all_clusters:
+            planning_keys = set(planning.keys())
+            missing_clusters = sorted(set(all_clusters) - planning_keys)
+            for cl in missing_clusters:
+                planning[cl] = DEFAULT_PLANNING_DAYS
+            if missing_clusters:
+                if verbose:
+                    logger.info(
+                        f"Для клиента '{client_name}' в планировании дней добавлены кластеры "
+                        f"из справочника/отчёта с дефолтом {DEFAULT_PLANNING_DAYS} дней: "
+                        f"{missing_clusters}"
+                    )
+                else:
+                    logger.info(
+                        f"Для клиента '{client_name}' в планировании дней добавлены кластеры "
+                        f"{missing_clusters}с дефолтом {DEFAULT_PLANNING_DAYS} дней"
+                    )
+
+    if verbose:
+        logger.debug(
+            f"Итоговый словарь планирования дней для клиента '{client_name}': {planning}"
+        )
+    else:
+        logger.info(
+            f"Итоговый словарь планирования дней для клиента '{client_name}': "
+            f"{len(planning)} кластеров"
+        )
+
     return planning
-
-
 
 def add_clusters(date_metrics: str) -> pd.DataFrame:
     """
     Добавление недостающих комбинаций SKU–Кластер:
-    - берем все SKU из summary
-    - берем все кластеры из справочника clusters_and_warehouses.csv
+    - берём все SKU из summary;
+    - берём все кластеры из справочника + отчёта
+      (get_all_clusters_from_ozon_and_report);
     - формируем декартово произведение и мержим метрики.
     """
+    # Метрики по кластерам и по SKU
     metrics_clusters = read_metrics_file(date_metrics, sheet_name="claster_report")
     metrics_summary = read_metrics_file(date_metrics, sheet_name="summary")
 
-    clusters = pd.read_csv(
-        MARKETPLACE_PATH / "scripts" / "clusters_and_warehouses.csv",
-        sep=";",
-    )
+    # Все кластеры (справочник + claster_report)
+    all_clusters = get_all_clusters_from_ozon_and_report(date_metrics)
 
+    # Декартово произведение SKU × Кластер
     sku_clusters = list(
         product(
             metrics_summary["SKU"].unique(),
-            clusters["cluster_name"].unique(),
+            all_clusters,
         )
     )
     sku_clusters_df = pd.DataFrame(
@@ -417,24 +608,70 @@ def add_clusters(date_metrics: str) -> pd.DataFrame:
         "Остатки_fbs",
     ]
     if INCLUDE_PREVIOUS_SUPPLIES:
-        sales_columns = add_element_to_list(sales_columns, "ПРОШЛЫЕ_ПОСТАВКИ", "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ")
+        sales_columns = add_element_to_list(
+            sales_columns,
+            "ПРОШЛЫЕ_ПОСТАВКИ",
+            "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ",
+        )
 
+    # Мержим метрики по кластерам
     metrics_df_all_clusters = sku_clusters_df.merge(
         metrics_clusters[["SKU", "Кластер"] + sales_columns],
         on=["SKU", "Кластер"],
         how="left",
     )
 
+    # Заполняем NaN нулями по продажам/остаткам/поставкам
     for col in sales_columns:
-        metrics_df_all_clusters[col] = metrics_df_all_clusters[col].fillna(0)
+        if col in metrics_df_all_clusters.columns:
+            metrics_df_all_clusters[col] = metrics_df_all_clusters[col].fillna(0)
 
+    # Подтягиваем общие поля по SKU из summary
     metrics_df_all_clusters = metrics_df_all_clusters.merge(
-        metrics_summary.drop(columns=sales_columns),
+        metrics_summary.drop(columns=sales_columns, errors="ignore"),
+        on="SKU",
+        how="left",
+    )
+
+    return metrics_df_all_clusters
+
+def add_clusters_light(date_metrics: str) -> pd.DataFrame:
+    """
+    Вариант без декартова произведения.
+    Просто возвращаем claster_report, обогащённый summary.
+    """
+    metrics_clusters = read_metrics_file(date_metrics, sheet_name="claster_report")
+    metrics_summary = read_metrics_file(date_metrics, sheet_name="summary")
+    return metrics_clusters
+
+    sales_columns = [
+        "Заказы",
+        "Заказы_руб",
+        "Продажи",
+        "Продажи_факт_2м",
+        "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ",
+        "Остатки",
+        "Остатки_fbs",
+    ]
+    if INCLUDE_PREVIOUS_SUPPLIES:
+        sales_columns = add_element_to_list(
+            sales_columns,
+            "ПРОШЛЫЕ_ПОСТАВКИ",
+            "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ",
+        )
+
+    # Заполняем NaN нулями в метриках по кластерам
+    for col in sales_columns:
+        if col in metrics_clusters.columns:
+            metrics_clusters[col] = metrics_clusters[col].fillna(0)
+
+    # Добавляем общие поля по SKU из summary
+    metrics_df_all_clusters = metrics_clusters.merge(
+        metrics_summary.drop(columns=sales_columns, errors="ignore"),
         on="SKU",
         how="left",
     )
     return metrics_df_all_clusters
-
 
 def replace_clusters(
     clusters_mapping_dict: dict,
@@ -547,31 +784,31 @@ def calc_svod_for_clusters(
     """
     Расчет потребности и оборачиваемости по кластерам (лист 'По кластерам').
 
-    Для RiverBoats:
+    RiverBoats:
       - Оборачиваемость = Заказы / DAYS_IN_PERIOD
-      - Дни планирования берутся из cluster_planning_days (если кластера нет — 40)
-      - Считаются колонки:
-          'Дни планирования',
-          'Потребность',
-          'Дефицит/Избыток',
-          'Дефицит/Избыток с учетом FBS',
-          'Потребность (округл.)',
-          'Потребность с учетом FBS (округл.)',
-          'Корректировка с учетом нулевых остатков' = 'Потребность (округл.)'
-
-    Для клиентов BIO и ARK:
-      - Оборачиваемость:
-          * для КГТ: Заказы / DAYS_IN_PERIOD
-          * для остальных: (Заказы + Продажи) / 2 / DAYS_IN_PERIOD
-      - Дни планирования по кластерам (cluster_planning_days, по умолчанию 40)
+      - Дни планирования из cluster_planning_days (если нет — 40)
       - Потребность = Оборачиваемость * Дни планирования
-      - Далее те же колонки, что и для RiverBoats.
+      - Дефицит/Избыток, с учетом FBS, округления
+      - 'Корректировка с учетом нулевых остатков' = 'Потребность (округл.)'
 
-    Для остальных клиентов:
+    BIO, ARK:
+      - Для КГТ: Оборачиваемость = Заказы / DAYS_IN_PERIOD
+      - Для остальных: (Заказы + Продажи) / 2 / DAYS_IN_PERIOD
+      - Дни планирования по кластерам (cluster_planning_days, если нет — 40)
+      - Потребность = Оборачиваемость * Дни планирования
+      - Далее как у RiverBoats.
+
+    Neva_Metall:
+      - Оборачиваемость = (Заказы + Продажи) / 2 / DAYS_IN_PERIOD (как общий случай)
+      - Дни планирования по кластерам (cluster_planning_days, если нет — 40)
+      - Потребность = Оборачиваемость * Дни планирования
+      - Далее как у RiverBoats/BIO/ARK.
+
+    Остальные клиенты:
       - Оборачиваемость = (Заказы + Продажи) / 2 / DAYS_IN_PERIOD
       - Потребность на DEMAND_PERIOD_1/2 через add_demand_columns
       - 'Корректировка с учетом нулевых остатков' =
-         'Потребность на {demand_period_for_total} дней (округл.)'
+        'Потребность на {demand_period_for_total} дней (округл.)'
     """
     df = metrics_df_all_clusters.copy()
 
@@ -579,27 +816,33 @@ def calc_svod_for_clusters(
     if client_name == "RiverBoats":
         # Оборачиваемость: только заказы
         df["Оборачиваемость"] = df["Заказы"] / DAYS_IN_PERIOD
+
         # Защита от NaN в остатках и поставках
         for col in ["Остатки", "Остатки_fbs", "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
             else:
                 df[col] = 0
+
         # Дни планирования по кластерам (если кластера нет в словаре — 40)
         clusters_norm = df["Кластер"].astype(str).str.strip()
         df["Дни планирования"] = (
-            clusters_norm.map(cluster_planning_days).fillna(40).astype(int)
+            clusters_norm.map(cluster_planning_days).fillna(DEFAULT_PLANNING_DAYS).astype(int)
         )
+
         days = df["Дни планирования"]
         turnover = df["Оборачиваемость"]
+
         # Потребность для каждого кластера по своим дням
         demand = turnover * days
         stock = df["Остатки"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
         stock_with_fbs = (
             df["Остатки"] + df["Остатки_fbs"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
         )
+
         deficit = stock - demand
         deficit_fbs = stock_with_fbs - demand
+
         df["Потребность"] = demand
         df["Дефицит/Избыток"] = deficit
         df["Дефицит/Избыток с учетом FBS"] = deficit_fbs
@@ -611,7 +854,7 @@ def calc_svod_for_clusters(
         )
         # Корректировка — по округленной потребности
         df["Корректировка с учетом нулевых остатков"] = df["Потребность (округл.)"]
-        # Нумерация строк
+
         df["№"] = np.arange(1, len(df) + 1)
         return df
 
@@ -628,9 +871,7 @@ def calc_svod_for_clusters(
         base_turnover = (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
         orders_turnover = df["Заказы"] / DAYS_IN_PERIOD
 
-        # Определяем КГТ:
-        # предполагаем, что после объединения с каталогом есть "Габариты товара",
-        # иначе можно подстраховаться статусом.
+        # Определяем КГТ
         if "Габариты товара" in df.columns:
             is_kgt = df["Габариты товара"].astype(str).str.strip() == "КГТ"
         else:
@@ -639,10 +880,10 @@ def calc_svod_for_clusters(
         # Оборачиваемость: КГТ — только заказы, остальное — базовая формула
         df["Оборачиваемость"] = np.where(is_kgt, orders_turnover, base_turnover)
 
-        # Дни планирования по кластерам (как у RiverBoats)
+        # Дни планирования по кластерам
         clusters_norm = df["Кластер"].astype(str).str.strip()
         df["Дни планирования"] = (
-            clusters_norm.map(cluster_planning_days).fillna(40).astype(int)
+            clusters_norm.map(cluster_planning_days).fillna(DEFAULT_PLANNING_DAYS).astype(int)
         )
         days = df["Дни планирования"]
         turnover = df["Оборачиваемость"]
@@ -653,6 +894,53 @@ def calc_svod_for_clusters(
         stock_with_fbs = (
             df["Остатки"] + df["Остатки_fbs"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
         )
+
+        deficit = stock - demand
+        deficit_fbs = stock_with_fbs - demand
+
+        df["Потребность"] = demand
+        df["Дефицит/Избыток"] = deficit
+        df["Дефицит/Избыток с учетом FBS"] = deficit_fbs
+        df["Потребность (округл.)"] = np.where(
+            deficit > 0, 0, np.ceil(np.abs(deficit))
+        )
+        df["Потребность с учетом FBS (округл.)"] = np.where(
+            deficit_fbs > 0, 0, np.ceil(np.abs(deficit_fbs))
+        )
+        df["Корректировка с учетом нулевых остатков"] = df["Потребность (округл.)"]
+
+        df["№"] = np.arange(1, len(df) + 1)
+        return df
+
+    # ----------------- Логика для клиента Neva_Metall -----------------
+    if client_name == "Neva_Metall":
+        # Приводим числовые колонки к числу и заполняем NaN нулями
+        for col in ["Заказы", "Продажи", "Остатки", "Остатки_fbs", "ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            else:
+                df[col] = 0
+
+        # Оборачиваемость как в общем случае
+        df["Оборачиваемость"] = (
+            (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
+        )
+
+        # Дни планирования по кластерам
+        clusters_norm = df["Кластер"].astype(str).str.strip()
+        df["Дни планирования"] = (
+            clusters_norm.map(cluster_planning_days).fillna(DEFAULT_PLANNING_DAYS).astype(int)
+        )
+        days = df["Дни планирования"]
+        turnover = df["Оборачиваемость"]
+
+        # Потребность и дефициты
+        demand = turnover * days
+        stock = df["Остатки"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
+        stock_with_fbs = (
+            df["Остатки"] + df["Остатки_fbs"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
+        )
+
         deficit = stock - demand
         deficit_fbs = stock_with_fbs - demand
 
@@ -671,23 +959,19 @@ def calc_svod_for_clusters(
         return df
 
     # ----------------- Общая логика для остальных клиентов -----------------
-    # Оборачиваемость по заказам и продажам
     df["Оборачиваемость"] = (
         (df["Заказы"] + df["Продажи"]) / 2 / DAYS_IN_PERIOD
     )
     stock = df["Остатки"] + df["ОЖИДАЕТСЯ_ПОСТУПЛЕНИЕ"]
 
-    # Потребность на DEMAND_PERIOD_1 / DEMAND_PERIOD_2
     df = add_demand_columns(df, stock, DEMAND_PERIOD_1)
     df = add_demand_columns(df, stock, DEMAND_PERIOD_2)
 
-    # Корректировка по demand_period_for_total (округл.)
     df["Корректировка с учетом нулевых остатков"] = df[
         f"Потребность на {demand_period_for_total} дней (округл.)"
     ]
     df["№"] = np.arange(1, len(df) + 1)
     return df
-
 
 def create_pivot_clusters(svod_for_clusters: pd.DataFrame) -> pd.DataFrame:
     """
@@ -923,6 +1207,27 @@ def add_demand_for_cluster_columns(
     new_cols = [c for c in df_pivot_by_clusters.columns if c != key_col]
     svod_for_sku[new_cols] = svod_for_sku[new_cols].fillna(0)
 
+    # Для некоторых клиентов добавляем доп. столбцы
+    if client_name in ['RiverBoats']:
+        # Находим все колонки с потребностью по кластерам:
+        # 'Потребность <Кластер>' (исключаем колонки типа 'Потребность на N дней'
+        # и саму итоговую колонку 'Потребность по кластерам всего', если она уже есть)
+        demand_cluster_cols = [
+            col
+            for col in svod_for_sku.columns
+            if col.startswith("Потребность ")
+            and not col.startswith("Потребность на ")
+            and col != "Потребность по кластерам всего"
+        ]
+
+        if demand_cluster_cols:
+            svod_for_sku["Потребность по кластерам всего"] = (
+                svod_for_sku[demand_cluster_cols].sum(axis=1)
+            )
+        else:
+            # На всякий случай, если по какой-то причине колонок нет
+            svod_for_sku["Потребность по кластерам всего"] = 0
+
     return svod_for_sku
 
 
@@ -951,6 +1256,8 @@ def add_columns_from_catalog(
       1) используем 'Габариты товара (справочно)' из справочника;
       2) если пусто — 'Габариты товара (расчет)' из списка товаров;
       3) если всё ещё пусто — 'Стандарт'.
+
+    Если стоит флаг, то фильтрует только товары, которые есть в справочнике.
     """
     df = df_with_stats.copy()
 
@@ -964,6 +1271,7 @@ def add_columns_from_catalog(
         catalog_use[catalog_supply_columns],
         how="left",
         on="Артикул",
+        indicator='Наличие товара в справочнике',
     )
 
     # Заполнение значений по умолчанию для кратности
@@ -988,6 +1296,11 @@ def add_columns_from_catalog(
     else:
         # На крайний случай, если ни одной колонки нет
         df["Габариты товара"] = "Стандарт"
+
+    # Если стотит флаг "Включить товары только из справочника", фильтруем по индикатору merge
+    if only_reference_table_products_flag:
+        df = df[df['Наличие товара в справочнике'] == 'both'].reset_index(drop=True).copy()
+        df.drop(columns=['Наличие товара в справочнике'], inplace=True)
 
     return df
 
@@ -1274,7 +1587,11 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
     )
 
     # ---------- 4. Расчет свода по кластерам (без объединения) ----------
-    cluster_planning_days = get_cluster_planning_days_for_client(client_name)
+    cluster_planning_days = get_cluster_planning_days_for_client(
+        client_name,
+        date_metrics=date_metrics,
+        use_all_clusters=True
+    )
     svod_clusters_initial = calc_svod_for_clusters(
         metrics_clusters_enriched,
         cluster_planning_days,
@@ -1284,7 +1601,11 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
     pivot_clusters_raw = create_pivot_clusters(svod_clusters_initial)
 
     # ---------- 5. Объединение кластеров и расчет по объединённым ----------
-    clusters_mapping = get_clusters_mapping_for_client(client_name)
+    clusters_mapping = get_clusters_mapping_for_client(
+        client_name,
+        date_metrics=date_metrics,
+        use_all_clusters=True
+    )
 
     # ДОБАВЛЯЕМ КОЛОНКУ "Кластер для группировки" В СВОД ПО КЛАСТЕРАМ
     # (это нужно, чтобы она попала на лист "По кластерам")
@@ -1373,7 +1694,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
         svod_excel_jewelry,
         date_metrics,
     )
-
+    # %%
     format_excel_file(
         client_name,
         date_metrics,
@@ -1383,6 +1704,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
         clusters_mapping,
         clusters_mapping_jewelry,
     )
+    # %%
 
     logger.success(
         f"Отчет поставок Ozon успешно создан для {client_name} на дату {date_metrics}"
@@ -1396,7 +1718,7 @@ def create_supply_svod_report(date_metrics: str = str(date.today())) -> None:
 if __name__ == "__main__":
 
     date_metrics = cli_reference_date(parser)
-
+    # date_metrics = '2026-07-03'
     create_supply_svod_report(date_metrics)
 
 # %%

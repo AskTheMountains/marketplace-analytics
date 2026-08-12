@@ -836,61 +836,260 @@ def get_ozon_product(headers, to_save=True):
 
 
 # Отчет по отправлениям (заказы)
-def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True):
+def getOrders(headers, date_start, date_end, delivery_schema="fbo", max_days=90, to_save=True):
+    """
+    Выгружает отчет по отправлениям Ozon /v1/report/postings/create + /v1/report/info
+    с учетом:
+      - парсинга дат в формат 'YYYY-MM-DDTHH:MM:SS.000Z';
+      - разбиения периода на чанки не длиннее 364 дней;
+      - использования OzonRateLimiter.
+    """
 
-    # забираем наименование отчета с заказами за установленный период
-    params = json.dumps({
-        "filter": {
-            "processed_at_from": date_start,
-            "processed_at_to": date_end,
-            "delivery_schema": [
-                delivery_schema
+    def _parse_to_datetime_ozon(val, is_start=True):
+        """
+        Преобразует вход (строка/дата/datetime) в строку вида 'YYYY-MM-DDTHH:MM:SS.000Z'.
+        Если время не указано → для начала 00:00:00, для конца 23:59:59.
+        """
+        if isinstance(val, datetime):
+            dt = val
+        elif isinstance(val, date):
+            # date без времени
+            dt = datetime(val.year, val.month, val.day, 0, 0, 0) if is_start else datetime(
+                val.year, val.month, val.day, 23, 59, 59
+            )
+        elif isinstance(val, str):
+            # пробуем разобрать строку
+            try:
+                dt_any = pd.to_datetime(val, utc=False)
+            except Exception as e:
+                raise ValueError(f"Не удалось распарсить дату '{val}': {e}")
 
-            ],
-            "sku": [],
-            "cancel_reason_id": [],
-            "offer_id": "",
-            "status_alias": [],
-            "statuses": [],
-            "title": ""
-        },
-        # "with": {
-        #     "customer_data": True
-        # },
-        "language": "DEFAULT"
-    })
+            if isinstance(dt_any, pd.Timestamp):
+                if dt_any.time() == datetime.min.time() and (" " not in val and "T" not in val):
+                    # строка без времени: 'YYYY-MM-DD'
+                    if is_start:
+                        dt = datetime(dt_any.year, dt_any.month, dt_any.day, 0, 0, 0)
+                    else:
+                        dt = datetime(dt_any.year, dt_any.month, dt_any.day, 23, 59, 59)
+                else:
+                    # есть время
+                    dt = dt_any.to_pydatetime().replace(tzinfo=None)
+            else:
+                raise ValueError(f"Неизвестный тип даты после парсинга: {type(dt_any)}")
+        else:
+            raise TypeError(f"Неподдерживаемый тип даты: {type(val)}")
 
-    logger.info(f'Запрос отчета по заказам: Даты: {date_start} - {date_end}, Схема доставки: {delivery_schema.upper()}')
+        # Формат для Ozon: 'YYYY-MM-DDTHH:MM:SS.000Z'
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-    result = requests.post(f"{ozon_seller_api_url}/v1/report/postings/create",headers=headers, data=params).json()
-    code_id = json.dumps({
-    "code": result["result"]["code"]
-    })
-    logger.info(f'Получен код отчета по заказам: {result["result"]["code"]}')
-    time.sleep(5)
+    def _split_date_range(dt_start_dt, dt_end_dt, max_days=max_days):
+        """
+        Разбивает интервал [dt_start_dt, dt_end_dt] на интервалы не длиннее max_days (включая границы),
+        возвращает список кортежей (start, end) в виде datetime.
+        """
+        intervals = []
+        cur_start = dt_start_dt
+        while cur_start <= dt_end_dt:
+            cur_end = min(cur_start + timedelta(days=max_days - 1), dt_end_dt)
+            intervals.append((cur_start, cur_end))
+            cur_start = cur_end + timedelta(days=1)
+        return intervals
 
-    # забираем ссылку на отчет с заказами
-    resp_data = {"result":{"file":""}}
-    while not resp_data["result"]["file"]:
-        resp_data = requests.post(f"{ozon_seller_api_url}/v1/report/info", headers=headers,data=code_id).json()
-        logger.info('Отчет по заказам еще не готов, ждем 5 секунд...')
-        time.sleep(5)
-    logger.info('Отчет по заказам готов, получаем ссылку на файл')
-    path_csv = resp_data["result"]["file"]
-
-    # Считываем отчет по заказам в датафрейм
-    r = requests.get(path_csv, stream=True)
-    if r.status_code == 200:
-        df_orders = pd.read_csv(path_csv, sep=';')
+    # ---- шаг 1: парсим входные даты в datetime без таймзоны ----
+    # сначала приведем к datetime, потом уже в строки формата Ozon
+    if isinstance(date_start, (str, date, datetime)):
+        dt_start = _parse_to_datetime_ozon(date_start, is_start=True)
+        dt_start_dt = datetime.strptime(dt_start, "%Y-%m-%dT%H:%M:%S.000Z")
     else:
-        logger.error(f'Ошибка при получении отчета по заказам, info: {r.text}')
+        raise TypeError("date_start должен быть строкой, date или datetime")
 
-    # Добавляем схему доставки в датафрейм
-    df_orders['Схема доставки'] = delivery_schema.upper()
+    if isinstance(date_end, (str, date, datetime)):
+        dt_end = _parse_to_datetime_ozon(date_end, is_start=False)
+        dt_end_dt = datetime.strptime(dt_end, "%Y-%m-%dT%H:%M:%S.000Z")
+    else:
+        raise TypeError("date_end должен быть строкой, date или datetime")
 
-    # Если стоит флаг сохранения, то сохраняем файл
+    if dt_start_dt > dt_end_dt:
+        raise ValueError("date_start не может быть больше date_end")
+
+    # ---- шаг 2: разбиваем период на интервалы по 364 дня при необходимости ----
+    intervals = _split_date_range(dt_start_dt, dt_end_dt)
+
+    if len(intervals) == 1:
+        logger.info(
+            f"Выгрузка отчета по заказам за период: "
+            f"{dt_start_dt.date()} - {dt_end_dt.date()} (без разбиения на интервалы)."
+        )
+    else:
+        logger.info(
+            f"Период {dt_start_dt.date()} - {dt_end_dt.date()} превышает {max_days} дней. "
+            f"Разбиваем на {len(intervals)} диапазонов:"
+        )
+        for i, (s, e) in enumerate(intervals, start=1):
+            logger.info(f"  Интервал {i}: {s.date()} - {e.date()}")
+
+    # ---- шаг 3: готовим session и лимитер ----
+    session = requests.Session()
+    session.headers.update(headers)
+
+    # Используем твой OzonRateLimiter с дефолтами (или задаём явно интервалы, если нужно)
+    limiter = OzonRateLimiter()
+
+    all_orders_dfs = []
+
+    # ---- шаг 4: цикл по интервалам ----
+    for idx, (chunk_start_dt, chunk_end_dt) in enumerate(intervals, start=1):
+        chunk_start_str = chunk_start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        chunk_end_str = chunk_end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        logger.info(
+            f"Запрос отчета по заказам для интервала {idx}/{len(intervals)}: "
+            f"{chunk_start_str} - {chunk_end_str}, схема доставки: {delivery_schema.upper()}"
+        )
+
+        # --- 4.1. создаём отчёт ---
+        params = {
+            "filter": {
+                "processed_at_from": chunk_start_str,
+                "processed_at_to": chunk_end_str,
+                "delivery_schema": [delivery_schema],
+                "sku": [],
+                "cancel_reason_id": [],
+                "offer_id": "",
+                "status_alias": [],
+                "statuses": [],
+                "title": ""
+            },
+            "language": "DEFAULT"
+        }
+
+        resp_create, ok = limiter.call(
+            session.post,
+            url=f"{ozon_seller_api_url}/v1/report/postings/create",
+            json=params,
+            timeout=60,
+        )
+        if not ok or resp_create is None:
+            logger.error(
+                f"Не удалось создать отчет по заказам для интервала "
+                f"{chunk_start_str} - {chunk_end_str} (после всех попыток). Пропускаем интервал."
+            )
+            continue
+
+        try:
+            result = resp_create.json()
+        except Exception as ex:
+            logger.error(
+                f"Ошибка парсинга JSON при создании отчета по заказам "
+                f"для интервала {chunk_start_str} - {chunk_end_str}: {ex}"
+            )
+            continue
+
+        try:
+            report_code = result["result"]["code"]
+        except Exception as ex:
+            logger.error(
+                f"Не удалось вытащить code из ответа /v1/report/postings/create "
+                f"для интервала {chunk_start_str} - {chunk_end_str}: {ex} | result={result}"
+            )
+            continue
+
+        logger.info(f"Получен код отчета по заказам: {report_code}")
+
+        code_payload = {"code": report_code}
+
+        # --- 4.2. ждём готовности отчёта и получаем ссылку на файл ---
+        logger.info("Ожидаем готовности отчета по заказам...")
+
+        report_file_url = ""
+        # Ожидание в цикле: OzonRateLimiter сам контролирует повторы и паузы
+        while not report_file_url:
+            resp_info, ok_info = limiter.call(
+                session.post,
+                url=f"{ozon_seller_api_url}/v1/report/info",
+                json=code_payload,
+                timeout=60,
+            )
+            if not ok_info or resp_info is None:
+                logger.error(
+                    f"Не удалось получить информацию об отчете по заказам для кода {report_code} "
+                    f"(интервал {chunk_start_str} - {chunk_end_str}). Прерываем ожидание."
+                )
+                break
+
+            try:
+                info_data = resp_info.json()
+            except Exception as ex:
+                logger.error(
+                    f"Ошибка парсинга JSON /v1/report/info для кода {report_code}: {ex}"
+                )
+                break
+
+            report_file_url = (info_data.get("result") or {}).get("file") or ""
+            if not report_file_url:
+                logger.info("Отчет по заказам еще не готов, ждем перед следующей проверкой...")
+                # Дополнительная небольшая пауза между циклами можно не делать,
+                # так как OzonRateLimiter уже вставляет паузы при ошибках/успехах.
+                time.sleep(5)
+
+        if not report_file_url:
+            logger.error(
+                f"Не удалось получить ссылку на файл отчета по заказам "
+                f"для кода {report_code}. Пропускаем интервал."
+            )
+            continue
+
+        logger.info(f"Отчет по заказам готов, получаем файл: {report_file_url}")
+
+        # --- 4.3. скачиваем CSV с заказами ---
+        try:
+            r = requests.get(report_file_url, stream=True, timeout=120)
+        except Exception as ex:
+            logger.error(
+                f"Ошибка при скачивании файла отчета по заказам "
+                f"({report_file_url}): {ex}"
+            )
+            continue
+
+        if r.status_code == 200:
+            try:
+                df_orders_chunk = pd.read_csv(report_file_url, sep=';')
+            except Exception as ex:
+                logger.error(
+                    f"Ошибка чтения CSV отчета по заказам по адресу {report_file_url}: {ex}"
+                )
+                continue
+        else:
+            logger.error(
+                f"Ошибка HTTP при получении отчета по заказам: "
+                f"HTTP {r.status_code} | {r.text}"
+            )
+            continue
+
+        # Добавляем схему доставки и период в датафрейм
+        df_orders_chunk['Схема доставки'] = delivery_schema.upper()
+        df_orders_chunk['_interval_start'] = chunk_start_str
+        df_orders_chunk['_interval_end'] = chunk_end_str
+
+        all_orders_dfs.append(df_orders_chunk)
+        logger.info(
+            f"Интервал {chunk_start_str} - {chunk_end_str}: "
+            f"получено {df_orders_chunk.shape[0]} строк."
+        )
+
+    # ---- шаг 5: объединение результатов и сохранение/возврат ----
+    if not all_orders_dfs:
+        logger.info("Заказы не найдены по указанному периоду.")
+        return pd.DataFrame()
+
+    df_orders = pd.concat(all_orders_dfs, ignore_index=True)
+
+    logger.info(
+        f"Выгрузка отчета по заказам завершена. Схема доставки: {delivery_schema.upper()}. "
+        f"Найдено {df_orders.shape[0]} строк по всем интервалам."
+    )
+
     if to_save:
-        # Задаем имя файла для заказов
         file_name_orders = (
             uploaddir_today /
             f"{str(date.today())}_Заказы_temp_{delivery_schema}.csv"
@@ -901,14 +1100,9 @@ def getOrders(headers, date_start, date_end, delivery_schema="fbo", to_save=True
             encoding='utf-8-sig',
             index=False
         )
-            # with open(f"{uploaddir_today}/{str(date.today())}_Заказы_temp_{delivery_schema}.csv", 'wb') as f:
-            #     r.raw.decode_content = True
-            #     shutil.copyfileobj(r.raw, f)
-            # f.close()
-    # Если флаг сохранения False, возвращаем df с заказами
+        logger.info(f"Файл с заказами сохранен в {file_name_orders}")
     else:
         return df_orders
-
 
 # Дополнительная информация по отправлениям
 def add_orders_info_fbo(
@@ -2299,7 +2493,7 @@ def uploadAccrualTypes(headers):
     session.headers.update(headers)
 
     # Используем твой OzonRateLimiter с прописанными дефолтами
-    limiter = OzonRateLimiter()  # interval / error_interval / max_retries заданы в __init__
+    limiter = OzonRateLimiter(max_retries=10, error_interval=5)  # interval / error_interval / max_retries заданы в __init__
 
     resp, ok = limiter.call(
         session.post,

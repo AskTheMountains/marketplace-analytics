@@ -610,6 +610,34 @@ def format_sheet_total(
                         f"{cluster_group_range}, \"{cluster}\""
                         ")"
                     )
+    # ---- Суммарная потребность по всем кластерам ----
+    if client_name == "RiverBoats":
+        # находим все колонки "Потребность <Кластер>", но не "Потребность на N дней"
+        # и не "Потребность по кластерам всего"
+        demand_cluster_cols = [
+            col
+            for col in svod_excel.columns
+            if col.startswith("Потребность ")
+            and not col.startswith("Потребность на ")
+            and col != "Потребность по кластерам всего"
+        ]
+        # Получаем их буквенные индексы
+        demand_cluster_excel_cols = [
+            _get_excel_column(mapping, col) for col in demand_cluster_cols
+        ]
+        demand_cluster_excel_cols = [c for c in demand_cluster_excel_cols if c]
+
+        # Колонка для итоговой суммы
+        total_demand_col = _get_excel_column(
+            mapping,
+            "Потребность по кластерам всего",
+        )
+
+        if total_demand_col and demand_cluster_excel_cols:
+            for i in range(row_start, row_end + 1):
+                # формула вида =SUM(<col1>i, <col2>i, ...)
+                sum_range = ", ".join(f"{col}{i}" for col in demand_cluster_excel_cols)
+                ws[f"{total_demand_col}{i}"] = f"=SUM({sum_range})"
 
     # Условное форматирование
     deficit_columns = [
@@ -852,7 +880,7 @@ def format_sheet_clusters(
                         f"= {cols['orders']}{i} / {days_in_period}"
                     )
         # ----------------- Логика для RiverBoats и BIO/ARK (через Дни планирования) -----------------
-        if client_name in ("RiverBoats", "BIO", "ARK") and cols["planning_days"]:
+        if client_name in ("Neva_Metall", "RiverBoats", "BIO", "ARK") and cols["planning_days"]:
             # Потребность = Оборачиваемость * Дни планирования
             if cols["demand_custom"] and cols["turnover"]:
                 ws[f"{cols['demand_custom']}{i}"] = (
@@ -979,7 +1007,7 @@ def format_sheet_clusters(
     # Условное форматирование
     # Для RiverBoats/BIO/ARK дефициты в custom-колонке,
     # для остальных — в дефолтных по периодам.
-    if client_name in ("RiverBoats", "BIO", "ARK") and cols["deficit_custom"]:
+    if client_name in ("Neva_Metall", "RiverBoats", "BIO", "ARK") and cols["deficit_custom"]:
         deficit_columns = [cols["deficit_custom"]]
         if cols.get("deficit_custom_fbs"):
             deficit_columns.append(cols["deficit_custom_fbs"])
