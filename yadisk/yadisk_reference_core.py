@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal, Optional, Any
 
 import requests
+import traceback
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -86,8 +87,7 @@ def list_yadisk_folder(path: str, token: str, logger) -> list[dict[str, Any]]:
     token : str
         OAuth-токен Яндекс.Диска.
     logger :
-        Логгер для записи сообщений (используется только при логировании ошибок,
-        если они будут обрабатываться на верхнем уровне).
+        Логгер для записи сообщений.
 
     Возвращает
     ----------
@@ -101,8 +101,20 @@ def list_yadisk_folder(path: str, token: str, logger) -> list[dict[str, Any]]:
     """
     headers = {"Authorization": f"OAuth {token}"}
     params = {"path": path, "limit": 1000}
-    resp = requests.get(DISK_RESOURCE_URL, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
+
+    try:
+        resp = requests.get(DISK_RESOURCE_URL, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        logger.error(
+            "Ошибка при получении списка файлов с Яндекс.Диска: "
+            "url='{}', status_code={}, response='{}'",
+            e.request.url if e.request else DISK_RESOURCE_URL,
+            e.response.status_code if e.response else "N/A",
+            (e.response.text[:1000] if e.response and e.response.text else "NO BODY"),
+        )
+        raise
+
     return resp.json().get("_embedded", {}).get("items", [])
 
 
@@ -117,8 +129,7 @@ def get_download_url(path: str, token: str, logger) -> str:
     token : str
         OAuth-токен Яндекс.Диска.
     logger :
-        Логгер для записи сообщений (используется только при логировании ошибок,
-        если они будут обрабатываться на верхнем уровне).
+        Логгер для записи сообщений.
 
     Возвращает
     ----------
@@ -132,8 +143,20 @@ def get_download_url(path: str, token: str, logger) -> str:
     """
     headers = {"Authorization": f"OAuth {token}"}
     params = {"path": path}
-    resp = requests.get(DISK_DOWNLOAD_URL, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
+
+    try:
+        resp = requests.get(DISK_DOWNLOAD_URL, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        logger.error(
+            "Ошибка при получении ссылки для скачивания с Яндекс.Диска: "
+            "url='{}', status_code={}, response='{}'",
+            e.request.url if e.request else DISK_DOWNLOAD_URL,
+            e.response.status_code if e.response else "N/A",
+            (e.response.text[:1000] if e.response and e.response.text else "NO BODY"),
+        )
+        raise
+
     return resp.json()["href"]
 
 
@@ -148,7 +171,7 @@ def download_file_from_yadisk(href: str, local_path: Path, logger) -> None:
     local_path : pathlib.Path
         Локальный путь, по которому будет сохранён файл.
     logger :
-        Логгер для записи сообщений (информационное и об ошибках).
+        Логгер для записи сообщений.
 
     Исключения
     ----------
@@ -158,12 +181,31 @@ def download_file_from_yadisk(href: str, local_path: Path, logger) -> None:
         Если возникли ошибки при записи файла на диск.
     """
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    with requests.get(href, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+
+    try:
+        with requests.get(href, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+    except requests.HTTPError as e:
+        logger.error(
+            "Ошибка при скачивании файла с Яндекс.Диска: "
+            "url='{}', status_code={}, response='{}'",
+            e.request.url if e.request else href,
+            e.response.status_code if e.response else "N/A",
+            (e.response.text[:1000] if e.response and e.response.text else "NO BODY"),
+        )
+        raise
+    except OSError as e:
+        logger.error(
+            "Ошибка записи файла на диск при скачивании с Яндекс.Диска: "
+            "path='{}', error='{}'",
+            local_path,
+            e,
+        )
+        raise
 
 
 def read_excel_from_yadisk_to_df(href: str, logger) -> pd.DataFrame:
@@ -176,7 +218,7 @@ def read_excel_from_yadisk_to_df(href: str, logger) -> pd.DataFrame:
     href : str
         Прямая ссылка для скачивания (href), полученная от API Яндекс.Диска.
     logger :
-        Логгер для записи сообщений (используется для логирования ошибок).
+        Логгер для записи сообщений.
 
     Возвращает
     ----------
@@ -192,11 +234,24 @@ def read_excel_from_yadisk_to_df(href: str, logger) -> pd.DataFrame:
     """
     from io import BytesIO
 
-    with requests.get(href, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        buffer = BytesIO(r.content)
-        df = pd.read_excel(buffer)
-    return df
+    try:
+        with requests.get(href, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            buffer = BytesIO(r.content)
+            df = pd.read_excel(buffer)
+        return df
+    except requests.HTTPError as e:
+        logger.error(
+            "Ошибка при скачивании Excel с Яндекс.Диска для чтения в DataFrame: "
+            "url='{}', status_code={}, response='{}'",
+            e.request.url if e.request else href,
+            e.response.status_code if e.response else "N/A",
+            (e.response.text[:1000] if e.response and e.response.text else "NO BODY"),
+        )
+        raise
+    except Exception as e:
+        logger.error("Ошибка при чтении Excel из потока: {}", e)
+        raise
 
 
 def find_reference_table_in_yadisk_folder(
@@ -374,7 +429,8 @@ def _handle_error_with_local_fallback(
     on_error : {"raise", "use_local"}
         Стратегия обработки ошибок:
         - "raise"     — пробросить исключение дальше;
-        - "use_local" — попытаться использовать локальную справочную таблицу.
+        - "use_local" — залогировать исходную ошибку и попытаться использовать
+                        локальную справочную таблицу.
     project_root : pathlib.Path | None
         Корень проекта. Требуется, если on_error="use_local".
     client_name : str
@@ -399,15 +455,33 @@ def _handle_error_with_local_fallback(
         Если on_error="raise" или fallback на локальный файл невозможен/
         завершился неудачно, исходное исключение (err) пробрасывается.
     """
+    # 1. Логируем исходную ошибку ВСЕГДА (как минимум warning)
+    if isinstance(err, requests.HTTPError):
+        resp = err.response
+        logger.error(
+            "HTTP ошибка при работе с Яндекс.Диском: "
+            "url='{}', status_code={}, response='{}'",
+            err.request.url if err.request else "N/A",
+            resp.status_code if resp else "N/A",
+            (resp.text[:1000] if resp and resp.text else "NO BODY"),
+        )
+    else:
+        logger.error(
+            "Ошибка при работе с Яндекс.Диском: {}. Traceback:\n{}",
+            err,
+            traceback.format_exc(),
+        )
+
+    # 2. Если стратегия "raise" — после логирования сразу пробрасываем исключение
     if on_error == "raise":
-        logger.error(f"Ошибка при работе с Яндекс.Диском: {err}")
         raise err
 
-    # on_error == "use_local"
+    # 3. on_error == "use_local" — пробуем использовать локальный файл
     if project_root is None:
         logger.error(
             "on_error='use_local', но project_root не задан — "
-            "невозможно найти локальную справочную таблицу."
+            "невозможно найти локальную справочную таблицу. "
+            "Исключение будет проброшено."
         )
         raise err
 
@@ -417,7 +491,7 @@ def _handle_error_with_local_fallback(
     if not local_path.exists():
         logger.error(
             "on_error='use_local': локальная справочная таблица не найдена по пути "
-            f"{local_path}"
+            f"{local_path}. Исключение будет проброшено."
         )
         raise err
 
@@ -434,7 +508,9 @@ def _handle_error_with_local_fallback(
             return df
         except Exception as e:
             logger.error(
-                f"Не удалось прочитать локальную справочную таблицу в DataFrame: {e}"
+                "Не удалось прочитать локальную справочную таблицу в DataFrame: {}. "
+                "Исключение исходное будет проброшено.",
+                e,
             )
             raise err
 
