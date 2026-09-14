@@ -3,7 +3,7 @@ import warnings
 import json
 import ast
 from openpyxl import load_workbook
-# from loguru import logger
+from general_logger import general_logger
 
 
 def move_columns(df, columns_to_move, position, insert_type='after'):
@@ -31,7 +31,7 @@ def move_columns(df, columns_to_move, position, insert_type='after'):
 
     # Если некоторые колонки не найдены — предупреждаем об этом
     if not_found_columns:
-        print(f"\nВ DataFrame отсутствуют следующие колонки:\n  {not_found_columns}")
+        general_logger.warning(f"В DataFrame отсутствуют следующие колонки: {not_found_columns}")
 
     # Если не найдено ни одной колонки для перемещения — возвращаем копию исходного DataFrame
     if not found_columns:
@@ -103,14 +103,14 @@ def add_element_to_list(lst, new_value, search, after=True, by_index=False):
     if by_index:
         idx = search
         if not isinstance(idx, int) or not (-len(lst) <= idx < len(lst)):
-            print(f"Индекс {idx} вне диапазона списка.")
+            general_logger.warning(f"Индекс {idx} вне диапазона списка.")
             return lst
         # Для отрицательных индексов Python сам корректно вставит
     else:
         try:
             idx = lst.index(search)
         except ValueError:
-            print(f"{search} не найден в списке.")
+            general_logger.warning(f"{search} не найден в списке.")
             return lst
 
     insert_at = idx + 1 if after else idx
@@ -201,9 +201,9 @@ def custom_pd_explode(df,
     # 3. Выбираем режим распаковки и логируем
     # ------------------------------------------------------------------
     if use_explode:
-        print(f"[custom_pd_explode] Using EXPLODE mode for column '{column}'.")
+        general_logger.info(f"[custom_pd_explode] Using EXPLODE mode for column '{column}'.")
     else:
-        print(f"[custom_pd_explode] Using DIRECT NORMALIZE mode for column '{column}'.")
+        general_logger.info(f"[custom_pd_explode] Using DIRECT NORMALIZE mode for column '{column}'.")
 
     # ------------------------------------------------------------------
     # 4. Реализация выбранного режима
