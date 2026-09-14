@@ -35,7 +35,8 @@ from ozon.scripts.constants import (
     client_secret_performance, headers,
     PROMOTION_COMPANIES, shop_type,
     CLIENT_SUMMARY_COL_FORMAT,
-    CAMPAIGNS_REPORT_COL_FORMAT
+    CAMPAIGNS_REPORT_COL_FORMAT,
+    enable_ai_recommendations,
 )
 # Функции выгрузки данных по API Performane
 # Функция формирования статистики РК
@@ -49,7 +50,12 @@ from ozon.scripts.ozon_generic_functions import (
 # Функции выгрузки данных по API Seller
 from ozon.scripts.uploadDataFromOzon import get_ozon_product
 
+# ИИ-помощник для рекомендаций по РК
+from ozon.scripts.ai_assistant_rk import add_ai_recommendations
+
 # Некоторые вспомогательные функции
+# Добавляем рекомендации ИИ-помощника (отдельный шаг; при ошибке отчёт формируется без них)
+from ozon.scripts.ai_assistant_rk import add_ai_recommendations
 
 
 parser = argparse.ArgumentParser(
@@ -276,6 +282,10 @@ def process_campaigns_report(df_campaigns_report):
         'Заказы ОЗЗ ст. по размерам, шт.': 'Заказы по размерам ОЗЗ ст., шт.',
         'Расход ОЗЗ ст. по размерам, руб.': 'Расход по размерам ОЗЗ ст., руб.',
     })
+    # Добавляем колонку для добавлений в корзину из заказов
+    df_campaigns_report_processed['Добавления в корзину (Заказы)'] = np.nan
+    # Добавляем столбец с комментарием
+    df_campaigns_report_processed['Комментарий'] = np.nan
     # Делаем порядок колонок
     column_order = [
         'Номер кампании',
@@ -288,6 +298,7 @@ def process_campaigns_report(df_campaigns_report):
         'Клики',
         'CTR (%)',
         'Добавления в корзину',
+        'Добавления в корзину (Заказы)',
         'Ср. цена клика, руб.',
         'Заказы, шт. (РК)',
         'Заказы, руб. (РК)',
@@ -318,6 +329,7 @@ def process_campaigns_report(df_campaigns_report):
         'ДРР артикула',
         'Остаток',
         'Дата добавления',
+        'Комментарий',
     ]
     existing_column_order = [col for col in column_order if col in df_campaigns_report_processed.columns]
     df_campaigns_report_processed = df_campaigns_report_processed[existing_column_order]
@@ -620,10 +632,13 @@ def create_client_svod_excel(df_client_svod, date_report):
         # 'ДРР % по размеру',
 
     ]
+    # Столбец с комментарием ИИ добавляется только при включённом флаге
+    if enable_ai_recommendations:
+        column_order.append('Комментарий ИИ')
     df_client_excel_svod = df_client_excel_svod[column_order]
 
-    # Сортировка по артикулу
-    df_client_excel_svod = df_client_excel_svod.sort_values(by=['Артикул'], ignore_index=True)
+    # Сортировка
+    df_client_excel_svod = df_client_excel_svod.sort_values(by=['Сумма заказов'], ascending=[True], ignore_index=True)
 
     # Заменяем все значения 0 и 0.0 на NaN
     df_client_excel_svod = df_client_excel_svod.replace({0: np.nan, 0.0: np.nan})
@@ -1064,7 +1079,17 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
         )
         ws.conditional_formatting.add(cell_range, rule)
 
-    # --- 3. Ширина столбцов и выравнивание данных по маппингу ---
+    # --- 3. Закрепление области до столбца "РК" (включительно) ---
+    if "РК" in df_client_excel_svod.columns:
+        name_idx = list(df_client_excel_svod.columns).index("РК") + 1  # 1-based индекс "РК"
+        # нужно зафиксировать всё, что левее следующей колонки → +1
+        freeze_col_idx = name_idx + 1
+        freeze_col_letter = get_column_letter(freeze_col_idx)
+        # Закрепляем область выше 2-й строки и левее freeze_col_idx:
+        # строка 1 + все столбцы до и включая "РК"
+        ws.freeze_panes = f"{freeze_col_letter}2"
+
+    # --- 4. Ширина столбцов и выравнивание данных по маппингу ---
     # Берём заголовки с листа
     # header_row = next(ws.iter_rows(min_row=1, max_row=1))
     # headers = [cell.value for cell in header_row]
@@ -1105,18 +1130,35 @@ def format_campaigns_report_sheet(
         sheet_name,
         df_campaigns_report=None,
         percent_cols=None,
+        reverse_gradient_cols=None,
 ):
     """
     Форматирование листа "Отчет РК {client_name}":
-    - подгоняем ширину столбцов и выравнивание данных по маппингу заголовков
-    - условное форматирование по столбцу "Тип товара" (значение "Товар из РК" -> жёлтая заливка)
-    - процентный формат и градиентное условное форматирование для percent_cols
+    - ширина столбцов и выравнивание по CAMPAIGNS_REPORT_COL_FORMAT
+    - процентный формат для percent_cols
+    - градиентное условное форматирование:
+        * для столбцов из reverse_gradient_cols: min -> красный, max -> зелёный
+        * для остальных столбцов, попавших в percent_cols или reverse_gradient_cols:
+          min -> зелёный, max -> красный
+      (т.е. градиент ставится, если колонка есть хотя бы в одном из списков,
+       а тип градиента определяется наличием в reverse_gradient_cols)
+    - закрепление области до столбца "Цена товара, руб." (включительно)
     """
     if sheet_name not in wb.sheetnames:
         return
 
-    ws = wb[sheet_name]
+    if percent_cols is None:
+        percent_cols = []
 
+    if reverse_gradient_cols is None:
+        reverse_gradient_cols = ['CTR (%)']
+
+    percent_set = set(percent_cols)
+    reverse_set = set(reverse_gradient_cols)
+    # Все колонки, для которых нужен градиент — объединение двух множеств
+    gradient_cols = list(percent_set | reverse_set)
+
+    ws = wb[sheet_name]
 
     # Заголовки с листа
     header_row = next(ws.iter_rows(min_row=1, max_row=1))
@@ -1126,50 +1168,20 @@ def format_campaigns_report_sheet(
     for col_idx, header in enumerate(headers, start=1):
         if header not in CAMPAIGNS_REPORT_COL_FORMAT:
             continue
-
         fmt = CAMPAIGNS_REPORT_COL_FORMAT[header]
         width = fmt.get('width')
         align_kwargs = fmt.get('alignment', {})
         alignment = Alignment(**align_kwargs)
-
         col_letter = get_column_letter(col_idx)
-
         if width is not None:
             ws.column_dimensions[col_letter].width = width
-
         # данные (со 2-й строки)
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=col_idx)
             cell.alignment = alignment
 
-    # # --- 2. Условное форматирование по столбцу "Тип товара" ---
-    # # Значение "Товар из РК" -> жёлтая заливка
-    # if df_campaigns_report is not None and "Тип товара" in df_campaigns_report.columns:
-    #     try:
-    #         type_col_idx = list(df_campaigns_report.columns).index("Тип товара") + 1
-    #         type_col_letter = get_column_letter(type_col_idx)
-    #         cell_range = f"{type_col_letter}2:{type_col_letter}{ws.max_row}"
-
-    #         rule = CellIsRule(
-    #             operator='equal',
-    #             formula=['"Товар из РК"'],
-    #             stopIfTrue=False,
-    #             fill=PatternFill(
-    #                 start_color="f2e422",  # мягкий жёлтый
-    #                 end_color="f2e422",
-    #                 fill_type="solid"
-    #             )
-    #         )
-    #         ws.conditional_formatting.add(cell_range, rule)
-    #     except ValueError:
-    #         pass
-
-    # --- 3. Процентный формат и градиент для percent_cols ---
-    if percent_cols is None:
-        percent_cols = []
-
-    # 3.1. Процентный формат
-    for col_name in percent_cols:
+    # --- 2. Процентный формат для percent_cols ---
+    for col_name in percent_set:
         if df_campaigns_report is None or col_name not in df_campaigns_report.columns:
             continue
         col_idx = list(df_campaigns_report.columns).index(col_name) + 1  # Excel: 1-based
@@ -1179,20 +1191,82 @@ def format_campaigns_report_sheet(
                 cell.value = cell.value * 0.01
             cell.number_format = '0.0%'
 
-    # 3.2. Градиентное условное форматирование (по тем же столбцам)
-    for col_name in percent_cols:
+    # --- 3. Градиентное условное форматирование для gradient_cols ---
+    for col_name in gradient_cols:
         if df_campaigns_report is None or col_name not in df_campaigns_report.columns:
             continue
+
         col_idx = list(df_campaigns_report.columns).index(col_name) + 1
         col_letter = ws.cell(row=1, column=col_idx).column_letter
         cell_range = f"{col_letter}2:{col_letter}{ws.max_row}"
 
-        rule = ColorScaleRule(
-            start_type='min', start_color='63BE7B',   # зелёный
-            mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
-            end_type='max', end_color='E06967',       # красный
-        )
+        # Приоритет: если колонка в reverse_gradient_cols → обратный градиент
+        if col_name in reverse_set:
+            rule = ColorScaleRule(
+                start_type='min', start_color='E06967',              # красный (минимум)
+                mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
+                end_type='max', end_color='63BE7B',                  # зелёный (максимум)
+            )
+        else:
+            rule = ColorScaleRule(
+                start_type='min', start_color='63BE7B',              # зелёный
+                mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
+                end_type='max', end_color='E06967',                  # красный
+            )
+
         ws.conditional_formatting.add(cell_range, rule)
+
+    # --- 4. Закрепление области до столбца (включительно) ---
+    rk_col_name = "Тип товара"
+    rk_col_idx = None
+    if df_campaigns_report is not None and rk_col_name in df_campaigns_report.columns:
+        rk_col_idx = list(df_campaigns_report.columns).index(rk_col_name) + 1  # 1-based
+    elif rk_col_name in headers:
+        rk_col_idx = headers.index(rk_col_name) + 1
+
+    if rk_col_idx is not None:
+        freeze_col_idx = rk_col_idx + 1
+        freeze_col_letter = get_column_letter(freeze_col_idx)
+        ws.freeze_panes = f"{freeze_col_letter}2"
+
+
+def format_models_sheet(ws, df_models=None, column_names=None):
+    """
+    Форматирование листа отчёта по моделям:
+    - закрепление области до столбца 'Тип товара' (включительно).
+
+    Параметры
+    ---------
+    ws : openpyxl.worksheet.worksheet.Worksheet
+        Лист Excel, на котором нужно применить форматирование.
+    df_models : pandas.DataFrame | None
+        Если передан, имена колонок берём из df_models.columns для поиска 'Тип товара'.
+        Если None — имена колонок берём из заголовков листа (первая строка).
+    column_names : list[str] | None
+        Зарезервировано для единообразия с format_campaigns_columns, сейчас не используется.
+    """
+    # Определяем индекс столбца "Тип товара"
+    type_col_idx = None
+
+    # 1. Если передан df_models — ищем в нём
+    if df_models is not None and "Тип товара" in df_models.columns:
+        type_col_idx = list(df_models.columns).index("Тип товара") + 1  # 1-based
+
+    # 2. Если не нашли или df_models нет — ищем по заголовкам листа
+    if type_col_idx is None:
+        header_row = next(ws.iter_rows(min_row=1, max_row=1))
+        headers = [cell.value for cell in header_row]
+        if "Тип товара" in headers:
+            type_col_idx = headers.index("Тип товара") + 1  # 1-based
+
+    # 3. Если столбец найден — закрепляем до него включительно
+    if type_col_idx is not None:
+        # нужно зафиксировать всё, что левее следующей колонки → +1
+        freeze_col_idx = type_col_idx + 1
+        freeze_col_letter = get_column_letter(freeze_col_idx)
+        # Закрепляем область: строка 1 + все столбцы до и включая "Тип товара"
+        ws.freeze_panes = f"{freeze_col_letter}2"
+
 
 # Функция сохранения и форматирования excel
 def save_and_format_excel(
@@ -1206,12 +1280,9 @@ def save_and_format_excel(
     ):
     # Формируем директорию для сохранения итогового отчета
     path_report = client_rk_svod_dir
-    # Формируем имя файла отчета
-    name_report = f"{date_report}_Сводная_РК_{client_name}_Ozon.xlsx"
-    file_name_report = path_report / name_report
     path_report.mkdir(parents=True, exist_ok=True)
 
-    # Формируем даты для названия листа
+    # Формируем даты для названия листа и файла
     date_start_excel = (
         pd.to_datetime(df_dates['date_start'])
         .iloc[0]
@@ -1223,13 +1294,19 @@ def save_and_format_excel(
         .strftime('%d.%m')
     )
 
+    # Формируем имя файла отчета по шаблону:
+    # "Отчет РК {client_name} {date_start}-{date_end}.xlsx"
+    name_report = f"Отчет РК {client_name} {date_start_excel}-{date_end_excel}.xlsx"
+    file_name_report = path_report / name_report
+
     # Колонки с процентами в сводном файле
     percent_cols = [
-        'CTR (%)',
+        # 'CTR (%)',
         'ДРР',
         'ДРР по РК',
         'ДРР артикула',
     ]
+    reverse_gradient_cols = ['CTR (%)',]
     sheet_name_client_svod = f"{client_name} {date_start_excel}-{date_end_excel}"
 
     # Сохраняем книгу
@@ -1238,10 +1315,10 @@ def save_and_format_excel(
         df_client_excel_svod.to_excel(w, index=False, sheet_name=sheet_name_client_svod)
         # Основной отчет РК
         df_campaigns_report.to_excel(w, index=False, sheet_name=f'Отчет РК {client_name}')
-        # Отчет оплаты за заказ
-        df_payment_orders_report.to_excel(w, index=False, sheet_name='ОЗЗ 5%')
         # Отчет по моделям товаров
         df_models.to_excel(w, index=False, sheet_name='Модели товаров')
+        # Отчет оплаты за заказ
+        df_payment_orders_report.to_excel(w, index=False, sheet_name='ОЗЗ 5%')
 
     # ---- Форматируем файл с отчетом ----
     wb = load_workbook(file_name_report)
@@ -1255,7 +1332,8 @@ def save_and_format_excel(
         wb,
         sheet_name=sheet_campaigns,
         df_campaigns_report=df_campaigns_report,
-        percent_cols=percent_cols
+        percent_cols=percent_cols,
+        reverse_gradient_cols=reverse_gradient_cols
     )
 
     # 3) Форматирование столбцов кампаний на листе "Отчет РК ..."
@@ -1268,6 +1346,7 @@ def save_and_format_excel(
     if sheet_models in wb.sheetnames:
         ws_models = wb[sheet_models]
         format_campaigns_columns(ws_models, df_models, column_names=['ID модели', 'model_id'])
+        format_models_sheet(ws_models, df_models)
 
     # 5) Форматирование сводного листа клиента (проценты, градиент)
     format_client_summary_sheet(
@@ -1380,7 +1459,15 @@ if __name__ == '__main__':
     # Формируем лист с моделями товаров
     df_models = get_model_list(df_products, df_campaigns_report, df_reminders)
 
-    # Формируем таблицу для записи в excel
+    # Добавляем рекомендации ИИ-помощника, если включено для клиента
+    # (отдельный шаг; при ошибке отчёт формируется без них)
+    if enable_ai_recommendations:
+        df_client_svod, df_campaigns_report_processed = add_ai_recommendations(
+            df_client_svod,
+            df_campaigns_report_processed
+        )
+
+    # Формируем таблицу для записи в excel (последний шаг, подбивает все предыдущие)
     df_client_excel_svod = create_client_svod_excel(
         df_client_svod,
         date_report

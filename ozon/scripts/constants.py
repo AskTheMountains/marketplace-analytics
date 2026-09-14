@@ -8,6 +8,11 @@ from options import settings, client_number
 # Некоторые доп. функции
 from generic_functions import add_element_to_list
 
+# Имя клиента
+client_name = settings['client_name'][client_number]
+client_ru_name = settings['client_ru_name'][client_number]
+
+
 # ID клиента и АПИ-ключ для заголовков запросов к Seller API
 client_id = settings['client_id_ozon'][client_number]
 api_key = settings['api_key_ozon'][client_number]
@@ -31,6 +36,17 @@ session.headers.update(headers)
 client_id_performance = settings['client_id_performance_ozon'][client_number]
 client_secret_performance = settings['client_secret_performance_ozon'][client_number]
 
+# ИИ-помощник для отчёта по РК: id ассистента
+AI_ASSISTANT_ID = "0df44590-1a01-4ea8-ad5e-004957c108d5"
+
+# Флаг включения ИИ-рекомендаций для конкретного клиента (по умолчанию выключено).
+# Чтобы включить рекомендации для клиента — добавь его в словарь со значением True.
+ENABLE_AI_RECOMMENDATIONS = {
+    # 'Orsk_Combinat': True,
+}
+# Готовая булева переменная для текущего клиента
+enable_ai_recommendations = ENABLE_AI_RECOMMENDATIONS.get(client_name, False)
+
 # Путь к корню проекта
 project_root = Path(__file__).parents[2]
 
@@ -47,9 +63,6 @@ headers_wb = {
 "Content-Type": "application/json",
 }
 
-# Имя клиента
-client_name = settings['client_name'][client_number]
-client_ru_name = settings['client_ru_name'][client_number]
 
 # Тип магазина
 shop_type_map = {
@@ -466,8 +479,8 @@ only_reference_table_products_flag = only_reference_table_products_map.get(clien
 # Столбцы, которые берем из каталога для расчета поставок
 # Карта: имя клиента → колонки
 client_catalog_supply_column_map = {
-    'SENS': ['Основной артикул', 'Артикул', 'Категория', 'Цвет', 'Размер', 'Сезон', 'Статус', 'РРЦ', 'Кратность коробов'],
-    'SENS_IP': ['Основной артикул', 'Артикул', 'Категория', 'Цвет', 'Размер', 'Сезон', 'Статус', 'РРЦ', 'Кратность коробов'],
+    'SENS': ['Основной артикул', 'Артикул', 'Категория', 'Цвет', 'Размер', 'Сезон', 'Статус', 'РРЦ',],
+    'SENS_IP': ['Основной артикул', 'Артикул', 'Категория', 'Цвет', 'Размер', 'Сезон', 'Статус', 'РРЦ',],
     'Water_Power': ['Артикул', 'Статус', 'Цвет', 'РРЦ', 'Категория', 'Кратность коробов'],
     'Neva_Metall': ['Артикул', 'Статус', 'Цвет', 'РРЦ', 'Категория', 'Кратность коробов'],
     'RiverBoats': ['Артикул', 'Артикул 1С', 'Категория', 'Статус', 'Подразделение', 'Сортируемость товара'],
@@ -525,7 +538,7 @@ supply_svod_total_columns_map = {
     'SENS': [
         '№', 'Сезон', 'Статус', 'Основной артикул', 'Артикул',
         'Штрихкод', 'SKU', 'Наименование товара', 'Категория',
-        'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара', 'Кратность коробов',
+        'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара',
         'В производстве', 'Остаток на складе',
         'Продажи_факт_2м',
         'Заказы', 'Продажи',
@@ -542,7 +555,7 @@ supply_svod_total_columns_map = {
     'SENS_IP': [
         '№', 'Сезон', 'Статус', 'Основной артикул', 'Артикул',
         'Штрихкод', 'SKU', 'Наименование товара', 'Категория',
-        'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара', 'Кратность коробов',
+        'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара',
         'В производстве', 'Остаток на складе',
         'Продажи_факт_2м',
         'Заказы', 'Продажи',
@@ -690,7 +703,7 @@ supply_svod_clusters_columns_map = {
         '№', 'Сезон', 'Статус', 'Основной артикул', 'Артикул',
         'Штрихкод', 'SKU', 'Наименование товара', 'Категория',
         'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара',
-        'Кратность коробов',
+        # 'Кратность коробов',
         'В производстве', 'Остаток на складе',
         'Кластер',
         'Кластер для группировки',
@@ -709,7 +722,7 @@ supply_svod_clusters_columns_map = {
         '№', 'Сезон', 'Статус', 'Основной артикул', 'Артикул',
         'Штрихкод', 'SKU', 'Наименование товара', 'Категория',
         'Размер', 'Цвет', 'РРЦ', 'Super-товар', 'Сортируемость товара',
-        'Кратность коробов',
+        # 'Кратность коробов',
         'В производстве', 'Остаток на складе',
         'Кластер',
         'Кластер для группировки',
@@ -1050,15 +1063,16 @@ PROMOTION_COMPANIES = {
         25437648,
     ],
     'Orsk_Combinat': [
-        19364356,
-        20269130,
-        19364524,
-        19364491,
-        20402014,
-        19364463,
+        39941534,
+        30417378,
+        22587646,
+        23024704,
+        24991279,
         19924905,
-        20402062,
-        20401939,
+        39933200,
+        33266828,
+        25793015,
+        22587709,
     ],
     'REENERGO': [
         28072249,
@@ -1144,6 +1158,11 @@ CLIENT_SUMMARY_COL_FORMAT = {
         'length': 20,
         'width': 33.0,
         'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Комментарий ИИ': {
+        'length': 20,
+        'width': 50.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center', 'wrap_text': True},
     },
 }
 
@@ -1347,6 +1366,11 @@ CAMPAIGNS_REPORT_COL_FORMAT = {
         'length': 15,
         'width': 17.0,
         'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+    'Комментарий ИИ': {
+        'length': 20,
+        'width': 50.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center', 'wrap_text': True},
     },
 }
 

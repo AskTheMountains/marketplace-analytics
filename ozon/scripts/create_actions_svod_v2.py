@@ -65,7 +65,7 @@ parser = argparse.ArgumentParser(
 )
 
 # Имя файла с данными по акциям
-# actions_file_name = 'products-1977747 (13).xlsx'
+# actions_file_name = 'products-1977747 (1).xlsx'
 actions_file_name = None
 
 # Функция парсинга аргументов командной строки пути к файлу по акциям
@@ -148,7 +148,7 @@ def process_action_file(df_actions_from_file):
     'Максимальный бустинг (Из ЛК)': [
         'Цена для максимального акционного бустинга',
         ],
-        'Минимальный бустинг (Из ЛК)': [
+    'Минимальный бустинг (Из ЛК)': [
             'Цена для минимального акционного бустинга'
         ]
     }
@@ -178,18 +178,35 @@ def process_action_file(df_actions_from_file):
 
     # Задаем имена столбцов, от которых считаем участие в акциях
     participate_column_patterns = {
-        "Участие в акции": "Участие товара в акции",
-        "Итоговая цена по акции": "Итоговая цена по акции"
+        "Участие в акции": [
+            "Участие товара в акции",
+        ],
+        "Итоговая цена по акции": [
+            "Итоговая цена по акции",
+            "Предельная цена по этой акции",
+        ],
+        "Ваша цена": [
+            "Предельная цена без акций",
+        ]
     }
     # Ищем нужные колонки и добавляем их в словарь
     participate_rename_dict = {}
-    for new_col, pattern in participate_column_patterns.items():
-        found_col = find_action_col(df_actions_from_file_processed.columns, pattern)
-        if found_col:
-            participate_rename_dict[found_col] = new_col
+
+    for new_col, pattern_list in participate_column_patterns.items():
+        for pattern in pattern_list:  # pattern теперь строка
+            found_col = find_action_col(df_actions_from_file_processed.columns, pattern)
+            if found_col:
+                participate_rename_dict[found_col] = new_col
+                # если достаточно одной найденной колонки на new_col — раскомментируй:
+                # break
 
     # Переименовываем найденные колонки
     df_actions_from_file_processed = df_actions_from_file_processed.rename(columns=participate_rename_dict)
+
+    # Удаляем дублирующиеся колонки, оставляя первую
+    df_actions_from_file_processed = df_actions_from_file_processed.loc[
+        :, ~df_actions_from_file_processed.columns.duplicated(keep='first')
+    ]
 
     # Переименовываем колонку с Ozon Product ID
     df_actions_from_file_processed = df_actions_from_file_processed.rename(columns={
@@ -205,8 +222,9 @@ def process_action_file(df_actions_from_file):
     symbols_to_remove = "*"
     columns_to_clean = ['Минимальная цена']
     for col in columns_to_clean:
-        for symbol in symbols_to_remove:
-            df_actions_from_file_processed[col] = df_actions_from_file_processed[col].str.replace(symbol, '', regex=False)
+        if col in df_actions_from_file_processed.columns:
+            for symbol in symbols_to_remove:
+                df_actions_from_file_processed[col] = df_actions_from_file_processed[col].str.replace(symbol, '', regex=False)
 
     # Переводим колонки с ценами в float
     price_columns = [

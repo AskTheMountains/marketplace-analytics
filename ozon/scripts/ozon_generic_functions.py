@@ -129,98 +129,76 @@ def get_reminders_by_product(
     headers,
     to_agg=True,
     agg_col=['Артикул'],
-    split_stocks=False  # новый флаг
+    split_stocks=False,  # новый флаг
 ):
     """
     Выгружает и обрабатывает остатки товаров по данным из Ozon (FBO и FBS).
-
-    Параметры
-    ----------
-    df_products : pandas.DataFrame
-        DataFrame со списком товаров, по которым нужно получить остатки.
-        Обычно содержит колонку 'Артикул' (и, при необходимости, другие
-        колонки, по которым далее будет происходить агрегация).
-
-    headers : dict
-        Словарь с HTTP-заголовками (токен, client_id и т.п.), необходимый
-        для обращения к API Ozon в функциях:
-        - getStockReminders_fbo_v2
-        - getStockReminders_fbs
-
-    to_agg : bool, по умолчанию True
-        Флаг агрегации остатков.
-        - Если True — данные агрегируются по колонкам из `agg_col`.
-        - Если False — возвращаются «сырые» данные по каждому товару без
-          дополнительной агрегации.
-
-    agg_col : list[str], по умолчанию ['Артикул']
-        Список колонок, по которым выполняется группировка при агрегации.
-        Пример: ['Артикул'] или ['Бренд', 'Артикул'] и т.п.
-
-    split_stocks : bool, по умолчанию False
-        Флаг способа представления остатков при агрегации.
-        Работает только если `to_agg=True`.
-
-        - Если False:
-            Возвращается колонка 'Остаток', где значение —
-            сумма 'Остатки FBO' + 'Остатки FBS'.
-            При этом также остаются колонки 'Остатки FBO' и 'Остатки FBS'.
-
-        - Если True:
-            Возвращаются раздельные колонки 'Остатки FBO' и 'Остатки FBS'
-            без дополнительной суммарной колонки 'Остаток'.
-
-    Возвращаемое значение
-    ---------------------
-    pandas.DataFrame
-        Если to_agg=False:
-            DataFrame с неагрегированными остатками и колонками:
-            - 'Артикул'
-            - 'Остатки FBO'
-            - 'Остатки FBS'
-
-        Если to_agg=True и split_stocks=False:
-            Агрегированный DataFrame с колонками:
-            - колонки из `agg_col` (например, 'Артикул')
-            - 'Остатки FBO'
-            - 'Остатки FBS'
-            - 'Остаток' (сумма FBO + FBS)
-
-        Если to_agg=True и split_stocks=True:
-            Агрегированный DataFrame с колонками:
-            - колонки из `agg_col`
-            - 'Остатки FBO'
-            - 'Остатки FBS'
     """
     from ozon.scripts.uploadDataFromOzon import (
         getStockReminders_fbo_v2,
-        getStockReminders_fbs
+        getStockReminders_fbs,
     )
+    import pandas as pd
 
     # Выгружаем остатки FBO и FBS
     df_reminders_fbo = getStockReminders_fbo_v2(headers, df_products, to_save=False)
     df_reminders_fbs = getStockReminders_fbs(headers, df_products, to_save=False)
 
     # Переименовываем колонки для удобства
-    df_reminders_fbo = df_reminders_fbo.rename(columns={
-        'Доступный к продаже товар': 'Остатки FBO',
-    })
-    df_reminders_fbs = df_reminders_fbs.rename(columns={
-        'Доступно на моем складе, шт': 'Остатки FBS',
-    })
+    df_reminders_fbo = df_reminders_fbo.rename(
+        columns={
+            'Доступный к продаже товар': 'Остатки FBO',
+        }
+    )
+    df_reminders_fbs = df_reminders_fbs.rename(
+        columns={
+            'Всего на складе, шт': 'Остатки FBS',
+        }
+    )
 
-    # Объединяем остатки FBO и FBS по артикулу (outer, чтобы не потерять данные)
+    # Приводим артикулы к строке, чтобы ключ был единообразным
+    if 'Артикул' in df_reminders_fbo.columns:
+        df_reminders_fbo['Артикул'] = df_reminders_fbo['Артикул'].astype(str)
+    if 'Артикул' in df_reminders_fbs.columns:
+        df_reminders_fbs['Артикул'] = df_reminders_fbs['Артикул'].astype(str)
+
+    # 1. Предварительная агрегация по Артикулу внутри каждого источника,
+    #    чтобы не было дублей по одному артикулу (разные склады и т.п.)
+    if not df_reminders_fbo.empty:
+        df_reminders_fbo = (
+            df_reminders_fbo
+            .groupby('Артикул', as_index=False)[['Остатки FBO']]
+            .sum()
+        )
+    else:
+        df_reminders_fbo = pd.DataFrame(columns=['Артикул', 'Остатки FBO'])
+
+    if not df_reminders_fbs.empty:
+        df_reminders_fbs = (
+            df_reminders_fbs
+            .groupby('Артикул', as_index=False)[['Остатки FBS']]
+            .sum()
+        )
+    else:
+        df_reminders_fbs = pd.DataFrame(columns=['Артикул', 'Остатки FBS'])
+
+    # 2. Объединяем агрегированные FBO и FBS по артикулу (outer, чтобы не потерять данные)
     df_reminders_all = pd.merge(
         df_reminders_fbo[['Артикул', 'Остатки FBO']],
         df_reminders_fbs[['Артикул', 'Остатки FBS']],
         on='Артикул',
-        how='outer'
+        how='outer',
     )
 
-    # Переводим колонку с артикулом в строку
-    df_reminders_all['Артикул'] = df_reminders_all['Артикул'].astype(str)
+    # Страхуемся от NaN и приводим к числам
+    for col in ['Остатки FBO', 'Остатки FBS']:
+        if col in df_reminders_all.columns:
+            df_reminders_all[col] = (
+                pd.to_numeric(df_reminders_all[col], errors='coerce')
+                .fillna(0)
+            )
 
-    # Если стоит флаг агрегации
+    # Если стоит флаг агрегации по другим колонкам
     if to_agg:
         df_agg = (
             df_reminders_all
@@ -228,20 +206,15 @@ def get_reminders_by_product(
             .sum()
         )
 
-        # По умолчанию одна колонка "Остаток" (сумма FBO+FBS)
         if not split_stocks:
             df_agg = df_agg.assign(
                 Остаток=lambda df: df[['Остатки FBO', 'Остатки FBS']].sum(axis=1)
             )
-            # Если нужно только общую колонку — можно раскомментировать:
-            # df_agg = df_agg.drop(columns=['Остатки FBO', 'Остатки FBS'])
 
-        # Если split_stocks=True, просто возвращаем две отдельные колонки
         return df_agg
 
     # Если флаг агрегации не стоит – возвращаем неагрегированные остатки
     return df_reminders_all
-
 
 # Функция выгрузки отчета реализации товаров
 def get_products_realization_report(headers, year, month):
