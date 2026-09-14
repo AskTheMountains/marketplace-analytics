@@ -836,6 +836,75 @@ ARTICLE_REPORT_LIST = {
 }
 
 # Список колонок с форматом Excel
+# Маппинг форматирования столбцов в отчете РК
+CLIENT_SUMMARY_COL_FORMAT = {
+    'SKU': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Артикул': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'}
+    },
+    'Название товара': {
+        'width': 47.8,  # округлено до одного знака
+        'alignment': {'horizontal': 'left', 'vertical': 'center'}
+    },
+    'Средняя цена продажи': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'РК': {
+        'width': 12.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Заказы ОЗЗ 5%, шт.': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Расход ОЗЗ 5%, руб.': {
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Заказы ОЗЗ ст., шт.': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Расход ОЗЗ ст., руб.': {
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Кол-во заказов': {
+        'width': 10.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Сумма заказов': {
+        'width': 12.1,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'ДРР': {
+        'width': 9.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Остаток FBO': {
+        'width': 11.7,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Остаток FBW': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Остаток': {
+        'width': 11.4,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Комментарий': {
+        'length': 20,
+        'width': 33.0,
+        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+    },
+}
+
 COMPANY_STATS_COL_FORMAT = {
     'Номер кампании': {
         'length': 14,
@@ -957,7 +1026,7 @@ COMPANY_STATS_COL_FORMAT = {
         'width': 13.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'},
     },
-    'Остаток FBO': {
+    'Остаток FBW': {
         'length': 20,
         'width': 10.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'},

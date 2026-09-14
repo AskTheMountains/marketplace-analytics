@@ -1019,8 +1019,8 @@ def getStockReminders_fbs(
         logger.info("Обработка склада '{}' (id={})...", warehouse_name, warehouse_id)
 
         for chunk_id, chunk_df in df_products.groupby("chunk"):
-            chrt_list = chunk_df["chrtId"].tolist()
-            payload = {"skus": chrt_list}
+            chrt_list = chunk_df["chrtId"].astype(int).tolist()
+            payload = {"chrtIds": chrt_list}
             url = f"{WB_STOCKS_FBS_URL}/{warehouse_id}"
 
             logger.debug(
@@ -1071,8 +1071,8 @@ def getStockReminders_fbs(
             "В ответе по остаткам FBS нет колонки 'sku'. Колонки: {}",
             list(df_reminders_fbs.columns),
         )
-    else:
-        df_reminders_fbs = df_reminders_fbs.rename(columns={"sku": "chrtId"})
+    # else:
+    #     df_reminders_fbs = df_reminders_fbs.rename(columns={"sku": "chrtId"})
 
     # Приводим chrtId и amount к числам/строкам
     if "chrtId" in df_reminders_fbs.columns:
@@ -1612,7 +1612,9 @@ if __name__ == '__main__':
     # Остатки
     df_reminders = getStockRemindersWB(headers, date_start, date_end)
     # Остатки fbs
+    # %%
     df_reminders_fbs = getStockReminders_fbs(headers)
+    # %%
 
     # Поставки
     df_supply_items = get_supply_orders_WB_v2(headers)

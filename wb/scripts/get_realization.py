@@ -283,8 +283,8 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2026-06-01',
-        date_end='2026-06-23'
+        date_start='2026-02-01',
+        date_end='2026-08-24'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
