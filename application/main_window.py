@@ -128,8 +128,8 @@ class ReportThread(QThread):
     log_line = Signal(str)
     finished = Signal(bool, str, str)
 
-    def __init__(self, cmds):
-        super().__init__()
+    def __init__(self, cmds, parent=None):
+        super().__init__(parent)
         self.cmds = cmds
 
     def run(self):
@@ -433,6 +433,9 @@ class ClientWorkspace(QWidget):
     LOG_MUTED_COLOR = "#6b7280"
     LOG_SOURCE_COLOR = "#85c1e9"
 
+    # Флаг: использовать ли выделение самого нового файла в проводнике на Windows
+    USE_HIGHLIGHT_LATEST = True
+
     def __init__(self, settings, clients, parent=None, tab_changed_callback=None):
         super().__init__(parent)
         self.settings = settings
@@ -670,18 +673,105 @@ class ClientWorkspace(QWidget):
         if idx is None:
             QMessageBox.warning(self, "Не выбран клиент", "Сначала выберите клиента!")
             return
+
         client_name = self.settings["client_name"][idx]
         path = Path(report_obj.report_dir.format(client_name=client_name)).resolve()
+
         if not path.exists():
-            QMessageBox.warning(self, "Папка не найдена", f"Папка отчётов не существует:\n{str(path)}")
+            QMessageBox.warning(
+                self,
+                "Папка не найдена",
+                f"Папка отчётов не существует:\n{str(path)}"
+            )
             return
+
         system = platform.system()
+
         if system == "Windows":
-            subprocess.run(["explorer", str(path)])
+            if not self.USE_HIGHLIGHT_LATEST:
+                # Старое поведение — просто открываем папку
+                os.startfile(str(path))
+            else:
+                # Новый вариант — пытаемся выделить самый свежий объект
+                files = [f for f in path.glob("*") if f.is_file()]
+                if files:
+                    # Есть файлы — берём самый свежий файл
+                    latest = max(files, key=lambda f: f.stat().st_mtime)
+                    if not self._select_in_explorer(str(latest)):
+                        os.startfile(str(path))
+                else:
+                    # Файлов нет — пробуем по папкам
+                    dirs = [d for d in path.glob("*") if d.is_dir()]
+                    if dirs:
+                        latest = max(dirs, key=lambda d: d.stat().st_mtime)
+                        if not self._select_in_explorer(str(latest)):
+                            os.startfile(str(path))
+                    else:
+                        # Ни файлов, ни папок — просто открываем директорию
+                        os.startfile(str(path))
         elif system == "Darwin":
             subprocess.run(["open", str(path)])
         else:
             subprocess.run(["xdg-open", str(path)])
+
+    @staticmethod
+    def _select_in_explorer(path):
+        """Надёжное выделение файла/папки в проводнике (работает с пробелами и юникодом)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except Exception:
+            return False
+
+        if not os.path.exists(path):
+            return False
+        path = os.path.abspath(path)
+        folder = os.path.dirname(path)
+
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+
+        SHParseDisplayName = shell32.SHParseDisplayName
+        SHParseDisplayName.restype = ctypes.HRESULT
+        SHParseDisplayName.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+
+        folder_pidl = ctypes.c_void_p()
+        item_pidl = ctypes.c_void_p()
+        sfgao = wintypes.DWORD()
+
+        hr = SHParseDisplayName(folder, None, ctypes.byref(folder_pidl), 0, ctypes.byref(sfgao))
+        if hr != 0 or not folder_pidl:
+            return False
+        hr = SHParseDisplayName(path, None, ctypes.byref(item_pidl), 0, ctypes.byref(sfgao))
+        if hr != 0 or not item_pidl:
+            return False
+
+        SHOpenFolderAndSelectItems = shell32.SHOpenFolderAndSelectItems
+        SHOpenFolderAndSelectItems.restype = ctypes.HRESULT
+        SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p),
+            wintypes.DWORD,
+        ]
+
+        items = (ctypes.c_void_p * 1)(item_pidl)
+        hr = SHOpenFolderAndSelectItems(folder_pidl, 1, items, 0)
+
+        CoTaskMemFree = ole32.CoTaskMemFree
+        CoTaskMemFree.argtypes = [ctypes.c_void_p]
+        if folder_pidl:
+            CoTaskMemFree(folder_pidl)
+        if item_pidl:
+            CoTaskMemFree(item_pidl)
+
+        return hr == 0
 
     def append_log_line(self, key, line):
         self.report_logs[key] = self.report_logs.get(key, "") + line + "\n"
@@ -1095,7 +1185,7 @@ class ClientWorkspace(QWidget):
             old_thread.wait()
             old_thread.deleteLater()
 
-        report_thread = ReportThread(cmds)
+        report_thread = ReportThread(cmds, parent=self)
         self.report_threads[key] = report_thread
         report_thread.log_line.connect(lambda line, k=key: self.append_log_line(k, line))
         report_thread.finished.connect(
@@ -1176,6 +1266,17 @@ class ClientWorkspace(QWidget):
             thread = self.report_threads.pop(key)
             thread.deleteLater()
 
+    def shutdown_threads(self):
+        for key, thread in list(self.report_threads.items()):
+            thread.quit()
+            thread.wait()
+            thread.deleteLater()
+        self.report_threads.clear()
+
+    def closeEvent(self, event):
+        self.shutdown_threads()
+        super().closeEvent(event)
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -1219,6 +1320,9 @@ class MainWindow(QWidget):
         if len(work_tabs) == 1 and work_tabs[0] == idx:
             return
         new_index = idx - 1 if idx - 1 >= 0 else 0
+        tab_widget = self.tab_widget.widget(idx)
+        if isinstance(tab_widget, ClientWorkspace):
+            tab_widget.shutdown_threads()
         self.tab_widget.removeTab(idx)
         count = self.tab_widget.count()
         plus_idx = self.find_plus_tab_index()
@@ -1247,6 +1351,13 @@ class MainWindow(QWidget):
         client_name = workspace_widget.get_current_client_name()
         if idx != -1:
             self.tab_widget.setTabText(idx, client_name)
+
+def closeEvent(self, event):
+        for i in range(self.tab_widget.count()):
+            tab_widget = self.tab_widget.widget(i)
+            if isinstance(tab_widget, ClientWorkspace):
+                tab_widget.shutdown_threads()
+        super().closeEvent(event)
 
 def main():
     app = QApplication(sys.argv)
