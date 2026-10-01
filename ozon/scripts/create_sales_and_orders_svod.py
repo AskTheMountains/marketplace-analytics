@@ -626,3 +626,5 @@ if __name__ == '__main__':
     # format_excel()
     logger.info(f"Finished calculating Sales svod for client {client_name}")
     logger.info(f"Report saved in: {report_file_name}")
+
+# %%

@@ -13,7 +13,7 @@ import re
 # from loguru import logger
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
 from openpyxl import load_workbook
-from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
+from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, Side, PatternFill
 from openpyxl.utils import get_column_letter
 from rich_argparse import RichHelpFormatter
@@ -33,7 +33,8 @@ from ozon.scripts.command_args_parser import cli_companies
 from ozon.scripts.constants import (
     client_id_performance, client_name,
     client_secret_performance, headers,
-    PROMOTION_COMPANIES, shop_type,
+    PROMOTION_COMPANIES, PROMOTION_ORDERS_THRESHOLD, RK_BUYOUT_PERCENT, shop_type,
+    CANCEL_PERCENT_THRESHOLD,
     CLIENT_SUMMARY_COL_FORMAT,
     CAMPAIGNS_REPORT_COL_FORMAT,
     enable_ai_recommendations,
@@ -283,7 +284,7 @@ def process_campaigns_report(df_campaigns_report):
         'Расход ОЗЗ ст. по размерам, руб.': 'Расход по размерам ОЗЗ ст., руб.',
     })
     # Добавляем колонку для добавлений в корзину из заказов
-    df_campaigns_report_processed['Добавления в корзину (Заказы)'] = np.nan
+    # df_campaigns_report_processed['Добавления в корзину (Заказы)'] = np.nan
     # Добавляем столбец с комментарием
     df_campaigns_report_processed['Комментарий'] = np.nan
     # Делаем порядок колонок
@@ -298,7 +299,7 @@ def process_campaigns_report(df_campaigns_report):
         'Клики',
         'CTR (%)',
         'Добавления в корзину',
-        'Добавления в корзину (Заказы)',
+        # 'Добавления в корзину (Заказы)',
         'Ср. цена клика, руб.',
         'Заказы, шт. (РК)',
         'Заказы, руб. (РК)',
@@ -521,21 +522,45 @@ def get_orders_for_svod(df_dates, headers):
 
 # Функция расчета заказов по артикулам
 def calc_orders(df_orders):
-    # Убираем отмененные отправления
-    df_orders_filtered = (
+    # Всего заказов по артикулам (включая отмененные)
+    df_orders_total = (
+        df_orders
+        .groupby('Артикул', as_index=False)
+        .agg(**{'Всего заказов': ('Заказы шт', 'sum')})
+    )
+    # Отмененные заказы по артикулам
+    df_orders_cancelled = (
+        df_orders
+        .loc[df_orders['Статус'].isin(['Отменён', 'Отменен']), :]
+        .groupby('Артикул', as_index=False)
+        .agg(**{'Кол-во отмен': ('Заказы шт', 'sum')})
+    )
+    # Считаем заказы по артикулам (без отмененных)
+    df_orders_by_products = (
         df_orders
         .loc[~df_orders['Статус'].isin(['Отменён', 'Отменен']), :]
-        .copy()
-    )
-    # Считаем заказы по артикулам
-    df_orders_by_products = (
-        df_orders_filtered
         .groupby(['Артикул'], as_index=False)
         .agg(**{
             'Сумма заказов': ('Заказы руб', 'sum'),
             'Кол-во заказов': ('Заказы шт', 'sum')
         })
     )
+    # Добавляем общее число заказов и число отмен
+    df_orders_by_products = (
+        df_orders_by_products
+        .merge(df_orders_total, how='left', on='Артикул')
+        .merge(df_orders_cancelled, how='left', on='Артикул')
+    )
+    # Заполняем пропуски по отменам
+    df_orders_by_products['Кол-во отмен'] = df_orders_by_products['Кол-во отмен'].fillna(0)
+    # Процент отмененных заказов (доля от общего числа заказов)
+    df_orders_by_products['Процент отмен'] = np.where(
+        df_orders_by_products['Всего заказов'] > 0,
+        df_orders_by_products['Кол-во отмен'] / df_orders_by_products['Всего заказов'],
+        0
+    )
+    # Убираем вспомогательную колонку
+    df_orders_by_products = df_orders_by_products.drop(columns=['Всего заказов'])
 
     return df_orders_by_products
 
@@ -551,7 +576,7 @@ def add_data_to_product_list(
     merge_params = [
         {"df": df_reminders, "columns": ["Остатки FBO", "Остатки FBS"], "on": "Артикул"},
         {"df": df_campaigns_report_by_article, "columns": ["РК"], "on": "Артикул"},
-        {"df": df_orders_by_products, "columns": ["Сумма заказов", "Кол-во заказов"], "on": "Артикул"},
+        {"df": df_orders_by_products, "columns": ["Сумма заказов", "Кол-во заказов", "Процент отмен"], "on": "Артикул"},
         {"df": df_payment_orders_report_processed, "columns": ["Заказы ОЗЗ 5%, шт.", "Расход ОЗЗ 5%, руб.", "Заказы ОЗЗ ст., шт.", "Расход ОЗЗ ст., руб."], "on": "Артикул"},
     ]
 
@@ -601,8 +626,64 @@ def calc_additional_columns(df_products_svod):
     )
     df_client_svod['ДРР'] = df_client_svod['ДРР'].replace([-np.inf, np.inf], np.nan)
 
+    # Процент отмен считаем только для товаров, у которых есть расходы на РК
+    # (РК, ОЗЗ 5%, ОЗЗ ст.). У остальных оставляем пропуск (NaN).
+    has_rk_costs = (
+        df_client_svod['РК'].fillna(0)
+        + df_client_svod['Расход ОЗЗ 5%, руб.'].fillna(0)
+        + df_client_svod['Расход ОЗЗ ст., руб.'].fillna(0)
+    ) != 0
+    df_client_svod['Процент отмен'] = (
+        df_client_svod['Процент отмен']
+        .where(has_rk_costs)
+    )
+
+    # Процент выкупа клиента для расчёта фактического ДРР (константа для всех строк).
+    # Если для клиента не задан — оставляем NaN.
+    df_client_svod['Процент выкупа'] = RK_BUYOUT_PERCENT.get(client_name, np.nan)
+    # Столбец фактического ДРР заполняется формулой уже при записи в Excel
+    df_client_svod['Фактический ДРР'] = np.nan
+
     # Добавляем столбец с комментарием
+    # 1. Собираем условия для комментариев: список (текст_комментария, условие-строка)
+    # Порог процента отмен — константа для клиента, по умолчанию 20%.
+    cancel_threshold = CANCEL_PERCENT_THRESHOLD.get(client_name, 0.2)
+    comment_conditions = [
+        (
+            'Большой процент отмен, влияет на ДРР',
+            (df_client_svod['Процент отмен'] > cancel_threshold) & has_rk_costs
+        ),
+    ]
+    # Условие: нет затрат РК, но достаточно заказов для рассмотрения продвижения.
+    # Если для клиента не задан порог заказов — условие не добавляем.
+    orders_threshold = PROMOTION_ORDERS_THRESHOLD.get(client_name)
+    if orders_threshold is not None:
+        comment_conditions.append((
+            'Нет затрат РК, можно рассмотреть включение в продвижение',
+            ~has_rk_costs
+            & (df_client_svod['Кол-во заказов'] >= orders_threshold)
+        ))
+
+# Условие: остатков менее чем на 2 недели (z = Остаток - 2 × Кол-во заказов ≤ 0),
+    # только для товаров, у которых были заказы.
+    comment_conditions.append((
+        'Остатков менее чем на 2 недели',
+        ((df_client_svod['Остаток'] - 2 * df_client_svod['Кол-во заказов']) <= 0)
+        & (df_client_svod['Кол-во заказов'] > 0)
+    ))
+
+    # 2. Инициализируем столбец комментария
     df_client_svod['Комментарий'] = ''
+
+    # 3. Для каждого комментария находим строки, где условие выполнено, и записываем его
+    for comment_text, condition in comment_conditions:
+        matched_rows = df_client_svod.index[condition]
+        df_client_svod.loc[matched_rows, 'Комментарий'] = (
+            df_client_svod.loc[matched_rows, 'Комментарий'] + comment_text + '\n'
+        )
+
+    # 4. Убираем завершающий перенос строки
+    df_client_svod['Комментарий'] = df_client_svod['Комментарий'].str.rstrip('\n')
 
     return df_client_svod
 
@@ -623,22 +704,26 @@ def create_client_svod_excel(df_client_svod, date_report):
         'Заказы ОЗЗ 5%, шт.', 'Расход ОЗЗ 5%, руб.',
         'Заказы ОЗЗ ст., шт.', 'Расход ОЗЗ ст., руб.',
         'Кол-во заказов', 'Сумма заказов',
+        'Процент выкупа',
         'ДРР',
+        'Фактический ДРР',
         f'Остаток {date_report_formatted}',
         'Комментарий',
+        'Процент отмен',
         # 'Тип кампании',
         # 'Отзывы',
         # 'Текущая цена с учетом скидки (из отчета по товарам)',
         # 'ДРР % по размеру',
 
     ]
-    # Столбец с комментарием ИИ добавляется только при включённом флаге
+    # Столбцы с результатами ИИ добавляются только при включённом флаге
     if enable_ai_recommendations:
         column_order.append('Комментарий ИИ')
+        column_order.append('Проблемы ИИ')
     df_client_excel_svod = df_client_excel_svod[column_order]
 
     # Сортировка
-    df_client_excel_svod = df_client_excel_svod.sort_values(by=['Сумма заказов'], ascending=[True], ignore_index=True)
+    df_client_excel_svod = df_client_excel_svod.sort_values(by=['Сумма заказов'], ascending=[False], ignore_index=True)
 
     # Заменяем все значения 0 и 0.0 на NaN
     df_client_excel_svod = df_client_excel_svod.replace({0: np.nan, 0.0: np.nan})
@@ -1053,10 +1138,47 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
 
     ws = wb[sheet_name]
 
+    # --- 0. Зашиваем ДРР и Фактический ДРР формулами ---
+    # ДРР = СУММ(расходы) / Сумма заказов.
+    # Фактический ДРР = СУММ(расходы) / (Процент выкупа × Кол-во заказов × Средняя цена продажи).
+    # Числитель (РК + ОЗЗ 5% + ОЗЗ ст.) — по аналогии с обычным ДРР.
+    if 'ДРР' in df_client_excel_svod.columns or 'Фактический ДРР' in df_client_excel_svod.columns:
+        cost_cols = ['РК', 'Расход ОЗЗ 5%, руб.', 'Расход ОЗЗ ст., руб.']
+        cost_letters = [
+            get_column_letter(list(df_client_excel_svod.columns).index(c) + 1)
+            for c in cost_cols if c in df_client_excel_svod.columns
+        ]
+
+        # Обычный ДРР = СУММ(расходы) / Сумма заказов
+        if 'ДРР' in df_client_excel_svod.columns:
+            sum_orders_letter = get_column_letter(list(df_client_excel_svod.columns).index('Сумма заказов') + 1)
+            drr_col_idx = list(df_client_excel_svod.columns).index('ДРР') + 1
+            for row in range(2, ws.max_row + 1):
+                numerator = "SUM(" + ",".join(f"{l}{row}" for l in cost_letters) + ")"
+                ws.cell(row=row, column=drr_col_idx).value = (
+                    f'=IFERROR(IF({numerator}=0,"",{numerator}/{sum_orders_letter}{row}),"")'
+                )
+
+        # Фактический ДРР = СУММ(расходы) / (Процент выкупа × Кол-во заказов × Средняя цена продажи)
+        if 'Фактический ДРР' in df_client_excel_svod.columns:
+            buyout_letter = get_column_letter(list(df_client_excel_svod.columns).index('Процент выкупа') + 1)
+            orders_letter = get_column_letter(list(df_client_excel_svod.columns).index('Кол-во заказов') + 1)
+            price_letter = get_column_letter(list(df_client_excel_svod.columns).index('Средняя цена продажи') + 1)
+            fdrr_col_idx = list(df_client_excel_svod.columns).index('Фактический ДРР') + 1
+            for row in range(2, ws.max_row + 1):
+                numerator = "SUM(" + ",".join(f"{l}{row}" for l in cost_letters) + ")"
+                ws.cell(row=row, column=fdrr_col_idx).value = (
+                    f'=IFERROR(IF({numerator}=0,"",'
+                    f'({numerator})/'
+                    f'({buyout_letter}{row}*{orders_letter}{row}*{price_letter}{row})),"")'
+                )
+
     # --- 1. Процентный формат ---
     for col_name in percent_cols:
         if col_name not in df_client_excel_svod.columns:
             continue
+        if col_name == 'ДРР':
+            continue  # теперь это формула (доля) — формат задаётся отдельно
         col_idx = list(df_client_excel_svod.columns).index(col_name) + 1  # Excel: 1-based
         for row in range(2, ws.max_row + 1):  # пропускаем заголовок
             cell = ws.cell(row=row, column=col_idx)
@@ -1064,8 +1186,18 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
                 cell.value = cell.value * 0.01  # делим на 100 для корректного отображения %
             cell.number_format = '0.0%'
 
+    # Процентный формат для колонок-формул (значение — доля) и "Процент выкупа"
+    for col_name in ['ДРР', 'Фактический ДРР', 'Процент выкупа']:
+        if col_name not in df_client_excel_svod.columns:
+            continue
+        col_idx = list(df_client_excel_svod.columns).index(col_name) + 1
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = '0.0%'
+
     # --- 2. Условное форматирование (градиент) ---
-    gradient_cols = percent_cols
+    gradient_cols = list(percent_cols)
+    if 'Фактический ДРР' in df_client_excel_svod.columns:
+        gradient_cols.append('Фактический ДРР')
     for col_name in gradient_cols:
         if col_name not in df_client_excel_svod.columns:
             continue
@@ -1089,7 +1221,64 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
         # строка 1 + все столбцы до и включая "РК"
         ws.freeze_panes = f"{freeze_col_letter}2"
 
-    # --- 4. Ширина столбцов и выравнивание данных по маппингу ---
+# --- 4. Подсветка "Кол-во заказов" по проценту отмен (выше порога) ---
+    # Формула ссылается на скрытый столбец "Процент отмен"
+    if "Процент отмен" in df_client_excel_svod.columns and "Кол-во заказов" in df_client_excel_svod.columns:
+        canc_col_idx = list(df_client_excel_svod.columns).index("Процент отмен") + 1
+        orders_col_idx = list(df_client_excel_svod.columns).index("Кол-во заказов") + 1
+        canc_col_letter = get_column_letter(canc_col_idx)
+        orders_col_letter = get_column_letter(orders_col_idx)
+
+        # Порог процента отмен — константа для клиента, по умолчанию 20%
+        cancel_threshold = CANCEL_PERCENT_THRESHOLD.get(client_name, 0.2)
+
+        # Условное форматирование оранжевой заливкой для строк с процентом отмен выше порога
+        cell_range = f"{orders_col_letter}2:{orders_col_letter}{ws.max_row}"
+        rule = FormulaRule(
+            formula=[f"${canc_col_letter}2>{cancel_threshold}"],
+            stopIfTrue=False,
+            fill=PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+        )
+        ws.conditional_formatting.add(cell_range, rule)
+
+        # Процентный формат для скрытого столбца с процентом отмен
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=canc_col_idx).number_format = '0.0%'
+
+        # Скрываем столбец с процентом отмен
+        ws.column_dimensions[canc_col_letter].hidden = True
+
+    # --- 5. Скрываем столбцы фактического ДРР, если для клиента не задан Процент выкупа ---
+    if 'Процент выкупа' in df_client_excel_svod.columns:
+        has_buyout = df_client_excel_svod['Процент выкупа'].notna().any()
+        if not has_buyout:
+            buyout_col_idx = list(df_client_excel_svod.columns).index('Процент выкупа') + 1
+            buyout_col_letter = get_column_letter(buyout_col_idx)
+            ws.column_dimensions[buyout_col_letter].hidden = True
+            if 'Фактический ДРР' in df_client_excel_svod.columns:
+                drr_col_idx = list(df_client_excel_svod.columns).index('Фактический ДРР') + 1
+                drr_col_letter = get_column_letter(drr_col_idx)
+                ws.column_dimensions[drr_col_letter].hidden = True
+
+    # --- 6. Подсветка "Остаток" бледно-красным при недостаточных остатках ---
+    # z = Остаток - 2 × Кол-во заказов; если z ≤ 0 и были заказы — остатков менее чем на 2 недели
+    stock_cols = [c for c in df_client_excel_svod.columns if c.startswith('Остаток')]
+    if stock_cols and 'Кол-во заказов' in df_client_excel_svod.columns:
+        stock_col_name = stock_cols[0]
+        stock_col_idx = list(df_client_excel_svod.columns).index(stock_col_name) + 1
+        orders_col_idx = list(df_client_excel_svod.columns).index('Кол-во заказов') + 1
+        stock_col_letter = get_column_letter(stock_col_idx)
+        orders_col_letter = get_column_letter(orders_col_idx)
+
+        cell_range = f"{stock_col_letter}2:{stock_col_letter}{ws.max_row}"
+        rule = FormulaRule(
+            formula=[f"AND(${stock_col_letter}2-2*${orders_col_letter}2<=0,${orders_col_letter}2>0)"],
+            stopIfTrue=False,
+            fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        )
+        ws.conditional_formatting.add(cell_range, rule)
+
+    # --- 7. Ширина столбцов и выравнивание данных по маппингу ---
     # Берём заголовки с листа
     # header_row = next(ws.iter_rows(min_row=1, max_row=1))
     # headers = [cell.value for cell in header_row]
@@ -1268,6 +1457,16 @@ def format_models_sheet(ws, df_models=None, column_names=None):
         ws.freeze_panes = f"{freeze_col_letter}2"
 
 
+# Функция скрытия столбца с заданным заголовком
+def hide_column_by_header(ws, header):
+    """Скрывает на листе столбец с указанным заголовком (если он есть)."""
+    header_cells = next(ws.iter_rows(min_row=1, max_row=1))
+    for cell in header_cells:
+        if cell.value == header:
+            ws.column_dimensions[get_column_letter(cell.column)].hidden = True
+            break
+
+
 # Функция сохранения и форматирования excel
 def save_and_format_excel(
         df_client_excel_svod,
@@ -1276,7 +1475,8 @@ def save_and_format_excel(
         df_models,
         client_rk_svod_dir,
         date_report,
-        df_dates
+        df_dates,
+        ai_data_issues=None
     ):
     # Формируем директорию для сохранения итогового отчета
     path_report = client_rk_svod_dir
@@ -1319,6 +1519,10 @@ def save_and_format_excel(
         df_models.to_excel(w, index=False, sheet_name='Модели товаров')
         # Отчет оплаты за заказ
         df_payment_orders_report.to_excel(w, index=False, sheet_name='ОЗЗ 5%')
+        # Глобальные проблемы анализа от ИИ-помощника (если есть)
+        if ai_data_issues:
+            df_ai_issues = pd.DataFrame({'Проблемы ИИ': ai_data_issues})
+            df_ai_issues.to_excel(w, index=False, sheet_name='Проблемы ИИ')
 
     # ---- Форматируем файл с отчетом ----
     wb = load_workbook(file_name_report)
@@ -1355,6 +1559,14 @@ def save_and_format_excel(
         df_client_excel_svod=df_client_excel_svod,
         percent_cols=percent_cols,
     )
+
+    # 6) Скрываем служебные столбцы и лист с проблемами ИИ
+    if sheet_name_client_svod in wb.sheetnames:
+        hide_column_by_header(wb[sheet_name_client_svod], 'Проблемы ИИ')
+    if sheet_campaigns in wb.sheetnames:
+        hide_column_by_header(wb[sheet_campaigns], 'Проблемы ИИ')
+    if 'Проблемы ИИ' in wb.sheetnames:
+        wb['Проблемы ИИ'].sheet_state = 'hidden'
 
     # Сохранение обновленного файла
     wb.save(file_name_report)
@@ -1461,11 +1673,14 @@ if __name__ == '__main__':
 
     # Добавляем рекомендации ИИ-помощника, если включено для клиента
     # (отдельный шаг; при ошибке отчёт формируется без них)
+    ai_data_issues = []
+    # %%
     if enable_ai_recommendations:
-        df_client_svod, df_campaigns_report_processed = add_ai_recommendations(
+        df_client_svod, df_campaigns_report_processed, ai_data_issues = add_ai_recommendations(
             df_client_svod,
             df_campaigns_report_processed
         )
+    # %%
 
     # Формируем таблицу для записи в excel (последний шаг, подбивает все предыдущие)
     df_client_excel_svod = create_client_svod_excel(
@@ -1480,7 +1695,8 @@ if __name__ == '__main__':
         df_models,
         client_rk_svod_dir,
         date_report,
-        df_dates
+        df_dates,
+        ai_data_issues=ai_data_issues
     )
     logger.info(f"Done creating rk client svod for client {client_name}")
     logger.info(f"RK client svod saved in: {file_name_report}")

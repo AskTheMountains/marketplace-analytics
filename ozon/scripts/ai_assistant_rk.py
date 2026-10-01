@@ -32,6 +32,41 @@ THREADS_FILE = Path(__file__).resolve().parent / ".ai_threads.json"
 # чтобы при необходимости просто переключить флаг на True.
 USE_THREADS = False
 
+# Порог запуска РК по умолчанию, если для клиента не задан PROMOTION_ORDERS_THRESHOLD
+DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD = 10
+
+# Строка, которая исключается из campaign_details (сшитые товары)
+ARTICLE_TYPE_TO_EXCLUDE = "Товар из сшивки"
+
+# Соответствие колонок отчёта и полей промпта для product_summary.
+# Внутри кода считаем в русских колонках, в промпт отдаём английские поля.
+PRODUCT_SUMMARY_COLUMN_MAP = {
+    'SKU': 'sku',
+    'Артикул': 'article',
+    'Название товара': 'name',
+    'Кол-во заказов': 'orders',
+    'Сумма заказов': 'revenue',
+    'РК': 'ad_spend',
+    'ДРР': 'drr',
+    'Остаток': 'stock',
+    'Дефицит': 'deficit',
+    'Отмены %': 'cancellations_pct',
+    'Доля РК %': 'ad_order_share_pct',
+}
+
+# Соответствие колонок отчёта и полей промпта для campaign_details (поля под воронку)
+CAMPAIGN_DETAILS_COLUMN_MAP = {
+    'Номер кампании': 'campaign_id',
+    'SKU': 'sku',
+    'Артикул': 'article',
+    'Название товара': 'name',
+    'Показы': 'impressions',
+    'Клики': 'clicks',
+    'Добавления в корзину': 'add_to_cart',
+    'Заказы, шт. (РК)': 'ad_orders',
+    'Расход РК, руб.': 'ad_spend',
+}
+
 
 def _load_dotenv():
     # .env лежит в корне проекта
@@ -164,14 +199,149 @@ def _records(df):
     ]
 
 
-def _target_product_summary(df):
+def _normalize_key(value):
+    """Нормализует ключ сопоставления (SKU/артикул) в строку без хвоста '.0'."""
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    s = str(value).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    if s == "" or s.lower() == "nan":
+        return None
+    return s
+
+
+def _aggregate_campaign_orders(df_campaigns):
     """
-    Целевая выборка: только товары (SKU/артикулы), присутствующие в product_summary
-    и у которых в столбце РК что-то есть (не пусто и не 0).
+    Агрегирует campaign_details по SKU и по артикулу:
+    - «Заказы, шт. (РК)» — сумма по строкам кампаний;
+    - «Заказы всего, шт.» — первое значение (общий показатель кампании не дублируем).
+    Из расчёта исключаются строки с «Товар из сшивки».
+    Возвращает (agg_by_sku, agg_by_article).
     """
-    if "РК" not in df.columns:
-        return df
-    return df.loc[(df["РК"].notna()) & (df["РК"] != 0), :]
+    df = df_campaigns.copy()
+    if 'Тип товара' in df.columns:
+        df = df.loc[df['Тип товара'] != ARTICLE_TYPE_TO_EXCLUDE, :]
+
+    for col in ['Заказы, шт. (РК)', 'Заказы всего, шт.']:
+        if col not in df.columns:
+            df[col] = 0
+    df['Заказы, шт. (РК)'] = (
+        pd.to_numeric(df['Заказы, шт. (РК)'], errors='coerce').fillna(0)
+    )
+    df['Заказы всего, шт.'] = (
+        pd.to_numeric(df['Заказы всего, шт.'], errors='coerce').fillna(0)
+    )
+
+    def aggregate(group_col):
+        if group_col not in df.columns:
+            return pd.DataFrame(columns=['_key', 'Заказы РК', 'Заказы всего'])
+        df_grouped = df.copy()
+        df_grouped['_key'] = df_grouped[group_col].map(_normalize_key)
+        return (
+            df_grouped
+            .loc[df_grouped['_key'].notna(), :]
+            .groupby('_key', as_index=False)
+            .agg(**{
+                'Заказы РК': ('Заказы, шт. (РК)', 'sum'),
+                'Заказы всего': ('Заказы всего, шт.', 'first'),
+            })
+        )
+
+    return aggregate('SKU'), aggregate('Артикул')
+
+
+def _build_product_summary(df_client_svod, agg_by_sku, agg_by_article):
+    """
+    Формирует product_summary для промпта: берём все товары листа 1,
+    добавляем расчётные поля (Дефицит, Отмены %, Доля РК %),
+    затем переименовываем колонки в английские поля промпта.
+    """
+    df = df_client_svod.copy()
+
+    # Колонка остатка может называться 'Остаток' или 'Остаток <дата>'
+    stock_col = 'Остаток' if 'Остаток' in df.columns else next(
+        (c for c in df.columns if str(c).startswith('Остаток')), None
+    )
+
+    df['_sku_key'] = df['SKU'].map(_normalize_key) if 'SKU' in df.columns else None
+    df['_article_key'] = df['Артикул'].map(_normalize_key) if 'Артикул' in df.columns else None
+
+    # Заказы РК и всего: сначала по SKU, при отсутствии — по артикулу
+    df = (
+        df
+        .merge(
+            agg_by_sku.rename(columns={
+                'Заказы РК': 'Заказы РК (SKU)',
+                'Заказы всего': 'Заказы всего (SKU)',
+            }),
+            how='left',
+            left_on='_sku_key',
+            right_on='_key',
+        )
+        .merge(
+            agg_by_article.rename(columns={
+                'Заказы РК': 'Заказы РК (артикул)',
+                'Заказы всего': 'Заказы всего (артикул)',
+            }),
+            how='left',
+            left_on='_article_key',
+            right_on='_key',
+        )
+    )
+    df['Заказы РК'] = df['Заказы РК (SKU)'].fillna(df['Заказы РК (артикул)'])
+    df['Заказы всего'] = df['Заказы всего (SKU)'].fillna(df['Заказы всего (артикул)'])
+
+    # Расчётные поля (русские имена)
+    df['Дефицит'] = df[stock_col] - 2 * df['Кол-во заказов']
+    df['Отмены %'] = (
+        (df['Заказы всего'] - df['Кол-во заказов'])
+        / df['Заказы всего'].replace(0, np.nan) * 100
+    )
+    df['Доля РК %'] = (
+        df['Заказы РК'] / df['Заказы всего'].replace(0, np.nan) * 100
+    )
+    # Подставляем фактическое имя колонки остатка, чтобы попало в map
+    df = df.rename(columns={stock_col: 'Остаток'})
+
+    # Отбор нужных колонок и переименование в английские поля промпта
+    existing_map = {
+        ru: en for ru, en in PRODUCT_SUMMARY_COLUMN_MAP.items()
+        if ru in df.columns
+    }
+    product_summary = df.loc[:, list(existing_map.keys())].rename(columns=existing_map)
+
+    # Сортировка по выручке (топ-30 ассистент берёт сам, но так нагляднее)
+    if 'revenue' in product_summary.columns:
+        product_summary = product_summary.sort_values(
+            by='revenue', ascending=False, ignore_index=True
+        )
+
+    return product_summary
+
+
+def _build_campaign_details(df_campaigns, valid_sku, valid_article):
+    """
+    Формирует campaign_details для промпта: исключает «Товар из сшивки»
+    и SKU/артикулы, которых нет в product_summary,
+    оставляет только поля под воронку и переименовывает их в английские поля.
+    """
+    df = df_campaigns.copy()
+    if 'Тип товара' in df.columns:
+        df = df.loc[df['Тип товара'] != ARTICLE_TYPE_TO_EXCLUDE, :]
+
+    sku_key = df['SKU'].map(_normalize_key) if 'SKU' in df.columns else pd.Series(None, index=df.index)
+    article_key = df['Артикул'].map(_normalize_key) if 'Артикул' in df.columns else pd.Series(None, index=df.index)
+    mask = sku_key.isin(valid_sku) | article_key.isin(valid_article)
+    df = df.loc[mask, :]
+
+    existing_map = {
+        ru: en for ru, en in CAMPAIGN_DETAILS_COLUMN_MAP.items()
+        if ru in df.columns
+    }
+    return df.loc[:, list(existing_map.keys())].rename(columns=existing_map)
 
 
 def _try_parse_json(text):
@@ -231,9 +401,7 @@ def _extract_recommendations(payload):
 # ----------------------------------------------------------------------
 def _key(value):
     """Нормализует ключ сопоставления (SKU/артикул/номер кампании) в строку."""
-    if value is None:
-        return None
-    return str(value).strip()
+    return _normalize_key(value)
 
 
 def _format_recommendation(item):
@@ -245,21 +413,31 @@ def _format_recommendation(item):
     return rec
 
 
+def _format_issues(item):
+    """Формирует текст проблем анализа из поля 'issues' записи ответа ИИ."""
+    issues = item.get("issues")
+    if not issues:
+        return ""
+    if isinstance(issues, str):
+        return issues.strip()
+    return "\n".join(str(i).strip() for i in issues if str(i).strip())
+
+
 def _apply_products_recommendations(df, products):
-    """Заполняет столбец 'Комментарий ИИ' по SKU/артикулу товара."""
+    """Заполняет столбцы 'Комментарий ИИ' и 'Проблемы ИИ' по SKU/артикулу товара."""
     if not products:
         return df
 
     by_sku = {}
     by_article = {}
     for p in products:
-        rec = _format_recommendation(p)
+        entry = (_format_recommendation(p), _format_issues(p))
         sku = _key(p.get("sku"))
         article = _key(p.get("article"))
         if sku:
-            by_sku.setdefault(sku, rec)
+            by_sku.setdefault(sku, entry)
         if article:
-            by_article.setdefault(article, rec)
+            by_article.setdefault(article, entry)
 
     if not by_sku and not by_article:
         return df
@@ -271,16 +449,18 @@ def _apply_products_recommendations(df, products):
         article = _key(row.get("Артикул"))
         if article and article in by_article:
             return by_article[article]
-        return ""
+        return ("", "")
 
     df = df.copy()
-    df["Комментарий ИИ"] = df.apply(lookup, axis=1)
+    applied = df.apply(lookup, axis=1)
+    df["Комментарий ИИ"] = applied.map(lambda x: x[0])
+    df["Проблемы ИИ"] = applied.map(lambda x: x[1])
     return df
 
 
 def _apply_campaigns_recommendations(df, campaigns):
     """
-    Дополняет столбец 'Комментарий ИИ' рекомендациями по кампаниям
+    Дополняет столбцы 'Комментарий ИИ' и 'Проблемы ИИ' рекомендациями по кампаниям
     (сопоставление по столбцу 'Номер кампании').
     """
     if not campaigns:
@@ -290,23 +470,33 @@ def _apply_campaigns_recommendations(df, campaigns):
     for c in campaigns:
         cid = _key(c.get("campaign_id"))
         if cid:
-            by_campaign.setdefault(cid, _format_recommendation(c))
+            by_campaign.setdefault(cid, (_format_recommendation(c), _format_issues(c)))
 
     if not by_campaign:
         return df
 
     def lookup(row):
-        existing = row.get("Комментарий ИИ") or ""
+        existing_rec = row.get("Комментарий ИИ") or ""
+        existing_issues = row.get("Проблемы ИИ") or ""
         cid = _key(row.get("Номер кампании"))
-        if cid and cid in by_campaign:
-            camp_rec = by_campaign[cid]
-            if existing:
-                return f"{existing}\n---\n{camp_rec}"
-            return camp_rec
-        return existing
+        entry = by_campaign.get(cid) if cid else None
+        if entry is None:
+            return (existing_rec, existing_issues)
+        camp_rec, camp_issues = entry
+        if existing_rec and camp_rec:
+            new_rec = f"{existing_rec}\n---\n{camp_rec}"
+        else:
+            new_rec = existing_rec or camp_rec
+        if existing_issues and camp_issues:
+            new_issues = f"{existing_issues}\n{camp_issues}"
+        else:
+            new_issues = existing_issues or camp_issues
+        return (new_rec, new_issues)
 
     df = df.copy()
-    df["Комментарий ИИ"] = df.apply(lookup, axis=1)
+    applied = df.apply(lookup, axis=1)
+    df["Комментарий ИИ"] = applied.map(lambda x: x[0])
+    df["Проблемы ИИ"] = applied.map(lambda x: x[1])
     return df
 
 
@@ -315,44 +505,72 @@ def _apply_campaigns_recommendations(df, campaigns):
 # ----------------------------------------------------------------------
 def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
     """
-    Добавляет рекомендации ИИ-помощника в столбец 'Комментарий ИИ'
+    Добавляет рекомендации ИИ-помощника в столбцы 'Комментарий ИИ' и 'Проблемы ИИ'
     на главной странице (df_client_excel_svod) и странице РК (df_campaigns_report_processed).
+
+    Возвращает (df_client_excel_svod, df_campaigns_report_processed, ai_data_issues),
+    где ai_data_issues — глобальные проблемы от ИИ (для отдельного листа отчёта).
 
     При любой ошибке (нет ключа, нет id ассистента, сбой API) возвращает
     датафреймы без изменений, чтобы отчёт сформировался без рекомендаций.
     """
-    from ozon.scripts.constants import AI_ASSISTANT_ID
+    from ozon.scripts.constants import AI_ASSISTANT_ID, PROMOTION_ORDERS_THRESHOLD
+
+    ai_data_issues = []
 
     # Инициализируем столбцы заранее
     df_client_excel_svod = df_client_excel_svod.copy()
     df_campaigns_report_processed = df_campaigns_report_processed.copy()
     df_client_excel_svod["Комментарий ИИ"] = ""
+    df_client_excel_svod["Проблемы ИИ"] = ""
     df_campaigns_report_processed["Комментарий ИИ"] = ""
+    df_campaigns_report_processed["Проблемы ИИ"] = ""
 
     try:
         # 1. Ключ ИИ-помощника
         api_key = get_assistant_api_key()
         if not api_key:
-            return df_client_excel_svod, df_campaigns_report_processed
+            return df_client_excel_svod, df_campaigns_report_processed, ai_data_issues
 
         # 2. id ассистента
         if not AI_ASSISTANT_ID:
             logger.warning("AI_ASSISTANT_ID не задан в ozon.scripts.constants — пропускаем ИИ-помощника")
-            return df_client_excel_svod, df_campaigns_report_processed
+            return df_client_excel_svod, df_campaigns_report_processed, ai_data_issues
 
         # 3. Диалог для клиента (только при включённом USE_THREADS)
         thread_id = None
         if USE_THREADS:
             thread_id = get_or_create_thread(AI_ASSISTANT_ID, api_key)
 
-        # 4. Целевая выборка для ИИ и сборка сообщения
-        product_summary = _target_product_summary(df_client_excel_svod)
-        if product_summary.empty:
-            logger.warning("Нет товаров с расходами по РК — отправляем ИИ только данные по кампаниям")
-        campaign_details = df_campaigns_report_processed
+        # 4. Подготовка данных: product_summary (все товары листа 1) и campaign_details
+        threshold = PROMOTION_ORDERS_THRESHOLD.get(
+            client_name, DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD
+        )
+        agg_by_sku, agg_by_article = _aggregate_campaign_orders(df_campaigns_report_processed)
+        product_summary = _build_product_summary(
+            df_client_excel_svod, agg_by_sku, agg_by_article
+        )
+
+        valid_sku = (
+            {_normalize_key(v) for v in product_summary['sku'].dropna()} - {None}
+            if 'sku' in product_summary.columns else set()
+        )
+        valid_article = (
+            {_normalize_key(v) for v in product_summary['article'].dropna()} - {None}
+            if 'article' in product_summary.columns else set()
+        )
+        campaign_details = _build_campaign_details(
+            df_campaigns_report_processed, valid_sku, valid_article
+        )
+
+        logger.info(
+            f"Данные для ИИ-помощника: product_summary={len(product_summary)} строк, "
+            f"campaign_details={len(campaign_details)} строк"
+        )
 
         message = json.dumps({
             "client_name": client_name,
+            "campaign_launch_threshold": threshold,
             "product_summary": _records(product_summary),
             "campaign_details": _records(campaign_details),
         }, ensure_ascii=False, allow_nan=False)
@@ -364,7 +582,15 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
         recommendations = _extract_recommendations(response)
         if not recommendations:
             logger.warning("ИИ-помощник не вернул рекомендации")
-            return df_client_excel_svod, df_campaigns_report_processed
+            return df_client_excel_svod, df_campaigns_report_processed, ai_data_issues
+
+        ai_data_issues = recommendations.get("data_issues") or []
+        if ai_data_issues:
+            issues_text = "\n".join(f"  - {issue}" for issue in ai_data_issues)
+            logger.warning(
+                f"ИИ-помощник вернул глобальные проблемы ({len(ai_data_issues)}):\n"
+                f"{issues_text}"
+            )
 
         # 7. Применяем к датафреймам
         df_client_excel_svod = _apply_products_recommendations(
@@ -380,4 +606,4 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
     except Exception as e:
         logger.exception(f"Ошибка при работе ИИ-помощника: {e}")
 
-    return df_client_excel_svod, df_campaigns_report_processed
+    return df_client_excel_svod, df_campaigns_report_processed, ai_data_issues
