@@ -42,7 +42,8 @@ def make_logger(logs_subdir, log_file_name, tz_name="Europe/Moscow"):
         lambda r: r["extra"].update({"custom_time": get_time_in_timezone(tz_name)})
     )
     format_str = "{time:YYYY-MM-DD HH:mm:ss} | {extra[custom_time]} | {level} | {module}:{function}:{line} | {message}"
-    patched_logger.add(sys.stdout)
+    if sys.stdout is not None:
+        patched_logger.add(sys.stdout)
     patched_logger.add(
         str(log_file),
         encoding="utf-8",
@@ -73,10 +74,11 @@ def client_logger(marketplace_dir_path, client_name, tz_name="Europe/Moscow"):
         lambda r: r["extra"].update({"custom_time": get_time_in_timezone(tz_name)})
     )
     format_str = "{time:YYYY-MM-DD HH:mm:ss} | {extra[custom_time]} | {level} | {module}:{function}:{line} | {message}"
-    patched_logger.add(
-        sys.stdout,
-        # format=format_str
-    )
+    if sys.stdout is not None:
+        patched_logger.add(
+            sys.stdout,
+            # format=format_str
+        )
     # Формат вывода в файл
     patched_logger.add(
         str(log_file),
