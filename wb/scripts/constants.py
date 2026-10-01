@@ -821,6 +821,29 @@ PROMOTION_COMPANIES = {
         37499898,
         37500007,
         38919900,
+    ],
+    'Water_Power':[
+        39762454,
+        38691331,
+        39761519,
+        38691267,
+        39760005,
+        39762137,
+        39762176,
+        39065518,
+        39065213,
+        38690368,
+        39761907,
+        39760625,
+        37634301,
+        39759707,
+        39761653,
+        39065390,
+        39762237,
+        39759892,
+        39759943,
+        39761586,
+        39761716,
     ]
 }
 
@@ -833,6 +856,28 @@ ARTICLE_REPORT_LIST = {
             'end_date':   '2025-11-24'  # Дата окончания статистики РК
         },
     },
+}
+
+
+# Минимальное число заказов артикула для рекомендации включения в продвижение
+# (используется при отсутствии затрат РК). Если клиента нет в словаре — блок пропускается.
+PROMOTION_ORDERS_THRESHOLD = {
+    # 'Client_Name': 30,
+    # 'Water_Power': 100,
+}
+
+
+# Процент выкупа для расчёта фактического ДРР (доля, например 0.8 = 80%).
+# Если клиента нет в словаре — столбцы "Процент выкупа" и "Фактический ДРР" скрываются.
+RK_BUYOUT_PERCENT = {
+    # 'Client_Name': 0.8,
+    # 'Water_Power': 0.8,
+}
+
+# Порог процента отмен для комментария и подсветки "Кол-во заказов" в отчёте РК
+# (доля, например 0.2 = 20%). Для каждого клиента своя; по умолчанию 20%.
+CANCEL_PERCENT_THRESHOLD = {
+    # 'Client_Name': 0.15,
 }
 
 # Список колонок с форматом Excel
@@ -886,6 +931,14 @@ CLIENT_SUMMARY_COL_FORMAT = {
         'width': 9.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },
+    'Фактический ДРР': {
+        'width': 13.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Процент выкупа': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
     'Остаток FBO': {
         'width': 11.7,
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
@@ -901,7 +954,7 @@ CLIENT_SUMMARY_COL_FORMAT = {
     'Комментарий': {
         'length': 20,
         'width': 33.0,
-        'alignment': {'horizontal': 'left', 'vertical': 'center'},
+        'alignment': {'horizontal': 'left', 'vertical': 'center', 'wrap_text': True},
     },
 }
 

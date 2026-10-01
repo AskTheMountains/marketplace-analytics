@@ -694,7 +694,10 @@ def add_new_columns(df_realization_report_renamed):
     for col in variable_api_columns:
         if col not in df_realization_report_new_columns.columns:
             df_realization_report_new_columns[col] = 0
-
+    # Переименование некоторых колонок
+    df_realization_report_new_columns = df_realization_report_new_columns.rename(columns={
+        'Стоимость платной приемки': 'Стоимость платной приёмки'
+    })
     # Перевод в datetime некоторых колонок с датой
     for col in ['Дата начала отчётного периода', 'Дата конца отчётного периода', 'Дата заказа', 'Дата продажи', 'Дата операции']:
         # Преобразуем всё в строку для корректной конвертации (это уберет смешение типов)

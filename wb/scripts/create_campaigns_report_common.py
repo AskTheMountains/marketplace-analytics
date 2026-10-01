@@ -32,6 +32,9 @@ from wb.scripts.constants import (
     headers,
     article_replacement,
     PROMOTION_COMPANIES,
+    PROMOTION_ORDERS_THRESHOLD,
+    RK_BUYOUT_PERCENT,
+    CANCEL_PERCENT_THRESHOLD,
     CLIENT_SUMMARY_COL_FORMAT,
     COMPANY_STATS_COL_FORMAT
 )
@@ -1833,6 +1836,25 @@ def create_client_svod(
         })
     )
 
+    # Всего заказов за период (включая отмены)
+    df_orders_total = (
+        df_orders
+        .loc[df_orders['datetime_orders'].between(datetime_start, datetime_end), :]
+        .groupby(['Артикул WB'], as_index=False)
+        .agg(**{'Всего заказов': ('Артикул WB', 'count')})
+    )
+    # Отменённые заказы (isCancel == True)
+    df_orders_cancelled = (
+        df_orders
+        .loc[
+            (df_orders['datetime_orders'].between(datetime_start, datetime_end))
+            & df_orders['isCancel'],
+            :
+        ]
+        .groupby(['Артикул WB'], as_index=False)
+        .agg(**{'Кол-во отмен': ('Артикул WB', 'count')})
+    )
+
     # Считаем показатели РК по артикулу
     df_companies_stats_agg = (
         df_companies_stats
@@ -1846,9 +1868,28 @@ def create_client_svod(
     df_client_svod = (
         df_products_
         .merge(df_orders_agg, how='left', on='Артикул WB')
+        .merge(df_orders_total, how='left', on='Артикул WB')
+        .merge(df_orders_cancelled, how='left', on='Артикул WB')
         .merge(df_companies_stats_agg, how='left', on='Артикул WB')
         .merge(df_reminders, how='left', on='Артикул WB')
         .replace({0.0: np.nan, 0: np.nan})
+    )
+
+    # Процент отменённых заказов (доля от общего числа заказов)
+    df_client_svod['Кол-во отмен'] = df_client_svod['Кол-во отмен'].fillna(0)
+    df_client_svod['Всего заказов'] = df_client_svod['Всего заказов'].fillna(0)
+    df_client_svod['Процент отмен'] = np.where(
+        df_client_svod['Всего заказов'] > 0,
+        df_client_svod['Кол-во отмен'] / df_client_svod['Всего заказов'],
+        0
+    )
+    # Убираем вспомогательные колонки
+    df_client_svod = df_client_svod.drop(columns=['Всего заказов', 'Кол-во отмен'])
+
+    # Процент отмен считаем только для товаров, у которых есть расход РК.
+    df_client_svod['Процент отмен'] = (
+        df_client_svod['Процент отмен']
+        .where(df_client_svod['РК'].fillna(0) != 0)
     )
 
     # Рассчитываем доп. колонки
@@ -1866,7 +1907,55 @@ def create_client_svod(
     df_client_svod['ДРР'] = df_client_svod['ДРР'].replace([-np.inf, np.inf], np.nan)
 
     # Столбец с комментарием
+    # Процент выкупа клиента для расчёта фактического ДРР (константа для всех строк).
+    # Если для клиента не задан — оставляем NaN.
+    df_client_svod['Процент выкупа'] = RK_BUYOUT_PERCENT.get(client_name, np.nan)
+    # Столбец фактического ДРР заполняется формулой уже при записи в Excel
+    df_client_svod['Фактический ДРР'] = np.nan
+
+    # Собираем условия для комментариев: список (текст_комментария, условие-строка)
+    # Порог процента отмен — константа для клиента, по умолчанию 20%.
+    cancel_threshold = CANCEL_PERCENT_THRESHOLD.get(client_name, 0.2)
+    comment_conditions = [
+        (
+            'Большой процент отмен, влияет на ДРР',
+            (df_client_svod['Процент отмен'] > cancel_threshold) & df_client_svod['РК'].notna()
+        ),
+    ]
+    # Условие: нет затрат РК, но достаточно заказов для рассмотрения продвижения.
+    # Если для клиента не задан порог заказов — условие не добавляем.
+    orders_threshold = PROMOTION_ORDERS_THRESHOLD.get(client_name)
+    if orders_threshold is not None:
+        comment_conditions.append((
+            'Нет затрат РК, можно рассмотреть включение в продвижение',
+            (df_client_svod['РК'].fillna(0) == 0)
+            & (df_client_svod['Кол-во заказов'].fillna(0) >= orders_threshold)
+        ))
+    # Условие: остатков менее чем на 2 недели (суммарный остаток FBW+FBS - 2×заказы ≤ 0),
+    # только для товаров, у которых были заказы.
+    df_client_svod['Остаток суммарно'] = (
+        df_client_svod['Остатки FBO'].fillna(0) + df_client_svod['Остатки FBS'].fillna(0)
+    )
+    comment_conditions.append((
+        'Остатков менее чем на 2 недели',
+        ((df_client_svod['Остаток суммарно'] - 2 * df_client_svod['Кол-во заказов'].fillna(0)) <= 0)
+        & (df_client_svod['Кол-во заказов'].fillna(0) > 0)
+    ))
+    # Убираем вспомогательную колонку
+    df_client_svod = df_client_svod.drop(columns=['Остаток суммарно'])
+
+    # Инициализируем столбец комментария
     df_client_svod['Комментарий'] = ''
+
+    # Для каждого комментария находим строки, где условие выполнено, и записываем его
+    for comment_text, condition in comment_conditions:
+        matched_rows = df_client_svod.index[condition]
+        df_client_svod.loc[matched_rows, 'Комментарий'] = (
+            df_client_svod.loc[matched_rows, 'Комментарий'] + comment_text + '\n'
+        )
+
+    # Убираем завершающий перенос строки
+    df_client_svod['Комментарий'] = df_client_svod['Комментарий'].str.rstrip('\n')
 
     # Переименовываем некоторые колонки
     df_client_svod = df_client_svod.rename(columns={
@@ -1886,10 +1975,13 @@ def create_client_svod(
         'РК',
         'Кол-во заказов',
         'Сумма заказов',
+        'Процент выкупа',
         'ДРР',
+        'Фактический ДРР',
         f'Остаток FBW {str(date.today().strftime("%d.%m"))}',
         f'Остаток FBS {str(date.today().strftime("%d.%m"))}',
         'Комментарий',
+        'Процент отмен',
     ]
     missing_columns = [col for col in column_order if col not in df_client_svod.columns]
     if missing_columns:
@@ -1898,6 +1990,10 @@ def create_client_svod(
             f"Итоговый df для Excel будет содержать NaN в этих колонках."
         )
         df_client_svod[missing_columns] = np.nan
+
+    # Сортировка
+    df_client_svod = df_client_svod.sort_values(by=['Сумма заказов'], ascending=[False], ignore_index=True)
+
     # Выбираем нужные колонки
     df_client_svod = df_client_svod[column_order]
 
@@ -2296,10 +2392,38 @@ def format_client_summary_sheet(wb, sheet_name, df_client_svod, percent_cols):
         freeze_col_letter = get_column_letter(freeze_col_idx)
         ws.freeze_panes = f"{freeze_col_letter}2"
 
+    # --- 0b. Зашиваем ДРР и Фактический ДРР формулами (числитель — РК) ---
+    if 'ДРР' in df_client_svod.columns or 'Фактический ДРР' in df_client_svod.columns:
+        rk_letter = get_column_letter(list(df_client_svod.columns).index('РК') + 1)
+
+        # Обычный ДРР = РК / Сумма заказов
+        if 'ДРР' in df_client_svod.columns:
+            sum_orders_letter = get_column_letter(list(df_client_svod.columns).index('Сумма заказов') + 1)
+            drr_col_idx = list(df_client_svod.columns).index('ДРР') + 1
+            for row in range(2, ws.max_row + 1):
+                ws.cell(row=row, column=drr_col_idx).value = (
+                    f'=IFERROR(IF({rk_letter}{row}=0,"",{rk_letter}{row}/{sum_orders_letter}{row}),"")'
+                )
+
+        # Фактический ДРР = РК / (Процент выкупа × Кол-во заказов × Средняя цена продажи)
+        if 'Фактический ДРР' in df_client_svod.columns:
+            buyout_letter = get_column_letter(list(df_client_svod.columns).index('Процент выкупа') + 1)
+            orders_letter = get_column_letter(list(df_client_svod.columns).index('Кол-во заказов') + 1)
+            price_letter = get_column_letter(list(df_client_svod.columns).index('Средняя цена продажи') + 1)
+            fdrr_col_idx = list(df_client_svod.columns).index('Фактический ДРР') + 1
+            for row in range(2, ws.max_row + 1):
+                ws.cell(row=row, column=fdrr_col_idx).value = (
+                    f'=IFERROR(IF({rk_letter}{row}=0,"",'
+                    f'{rk_letter}{row}/'
+                    f'({buyout_letter}{row}*{orders_letter}{row}*{price_letter}{row})),"")'
+                )
+
     # --- 1. Процентный формат ---
     for col_name in percent_cols:
         if col_name not in df_client_svod.columns:
             continue
+        if col_name == 'ДРР':
+            continue  # теперь это формула (доля) — формат задаётся отдельно
         col_idx = list(df_client_svod.columns).index(col_name) + 1  # Excel: 1-based
         for row in range(2, ws.max_row + 1):  # пропускаем заголовок
             cell = ws.cell(row=row, column=col_idx)
@@ -2307,8 +2431,19 @@ def format_client_summary_sheet(wb, sheet_name, df_client_svod, percent_cols):
                 cell.value = cell.value * 0.01  # делим на 100 для корректного отображения %
             cell.number_format = '0.0%'
 
+    # Процентный формат для колонок-формул (значение — доля) и "Процент выкупа"
+    for col_name in ['ДРР', 'Фактический ДРР', 'Процент выкупа']:
+        if col_name not in df_client_svod.columns:
+            continue
+        col_idx = list(df_client_svod.columns).index(col_name) + 1
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=col_idx).number_format = '0.0%'
+
     # --- 2. Условное форматирование (градиент) ---
-    for col_name in percent_cols:
+    gradient_cols = list(percent_cols)
+    if 'Фактический ДРР' in df_client_svod.columns:
+        gradient_cols.append('Фактический ДРР')
+    for col_name in gradient_cols:
         if col_name not in df_client_svod.columns:
             continue
         col_idx = list(df_client_svod.columns).index(col_name) + 1
@@ -2320,6 +2455,66 @@ def format_client_summary_sheet(wb, sheet_name, df_client_svod, percent_cols):
             end_type='max', end_color='E06967',        # красный
         )
         ws.conditional_formatting.add(cell_range, rule)
+
+    # --- 3. Подсветка "Кол-во заказов" оранжевым по проценту отмен (выше порога) ---
+    # Формула ссылается на скрытый столбец "Процент отмен"
+    if "Процент отмен" in df_client_svod.columns and "Кол-во заказов" in df_client_svod.columns:
+        canc_col_idx = list(df_client_svod.columns).index("Процент отмен") + 1
+        orders_col_idx = list(df_client_svod.columns).index("Кол-во заказов") + 1
+        canc_col_letter = get_column_letter(canc_col_idx)
+        orders_col_letter = get_column_letter(orders_col_idx)
+
+        # Порог процента отмен — константа для клиента, по умолчанию 20%
+        cancel_threshold = CANCEL_PERCENT_THRESHOLD.get(client_name, 0.2)
+
+        cell_range = f"{orders_col_letter}2:{orders_col_letter}{ws.max_row}"
+        rule = FormulaRule(
+            formula=[f"${canc_col_letter}2>{cancel_threshold}"],
+            stopIfTrue=False,
+            fill=PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+        )
+        ws.conditional_formatting.add(cell_range, rule)
+
+        # Процентный формат и скрытие столбца с процентом отмен
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row=row, column=canc_col_idx).number_format = '0.0%'
+        ws.column_dimensions[canc_col_letter].hidden = True
+
+    # --- 4. Подсветка "Остаток" бледно-красным при недостаточных остатках ---
+    # Суммарный остаток (FBW+FBS) - 2 × Кол-во заказов ≤ 0 и были заказы.
+    # Отдельную колонку не добавляем — применяем суммарную формулу к колонкам остатков.
+    if 'Кол-во заказов' in df_client_svod.columns:
+        orders_col_letter = get_column_letter(list(df_client_svod.columns).index('Кол-во заказов') + 1)
+        stock_cols = [c for c in df_client_svod.columns if c.startswith('Остаток FBW') or c.startswith('Остаток FBS')]
+        for stock_col_name in stock_cols:
+            stock_col_idx = list(df_client_svod.columns).index(stock_col_name) + 1
+            stock_col_letter = get_column_letter(stock_col_idx)
+            # Суммарный остаток: FBW + FBS (другая колонка остатков, если есть)
+            other_stock = [c for c in stock_cols if c != stock_col_name]
+            if other_stock:
+                other_letter = get_column_letter(list(df_client_svod.columns).index(other_stock[0]) + 1)
+                formula = f"AND({stock_col_letter}2+{other_letter}2-2*{orders_col_letter}2<=0,{orders_col_letter}2>0)"
+            else:
+                formula = f"AND({stock_col_letter}2-2*{orders_col_letter}2<=0,{orders_col_letter}2>0)"
+            cell_range = f"{stock_col_letter}2:{stock_col_letter}{ws.max_row}"
+            rule = FormulaRule(
+                formula=[formula],
+                stopIfTrue=False,
+                fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            )
+            ws.conditional_formatting.add(cell_range, rule)
+
+    # --- 5. Скрываем столбцы фактического ДРР, если для клиента не задан Процент выкупа ---
+    if 'Процент выкупа' in df_client_svod.columns:
+        has_buyout = df_client_svod['Процент выкупа'].notna().any()
+        if not has_buyout:
+            buyout_col_idx = list(df_client_svod.columns).index('Процент выкупа') + 1
+            buyout_col_letter = get_column_letter(buyout_col_idx)
+            ws.column_dimensions[buyout_col_letter].hidden = True
+            if 'Фактический ДРР' in df_client_svod.columns:
+                drr_col_idx = list(df_client_svod.columns).index('Фактический ДРР') + 1
+                drr_col_letter = get_column_letter(drr_col_idx)
+                ws.column_dimensions[drr_col_letter].hidden = True
 
 def format_wb_rk_sheet(
         wb,
