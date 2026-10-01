@@ -131,6 +131,8 @@ class ReportThread(QThread):
     def __init__(self, cmds, parent=None):
         super().__init__(parent)
         self.cmds = cmds
+        self._proc = None
+        self._stopping = False
 
     def run(self):
         all_logs = []
@@ -140,25 +142,62 @@ class ReportThread(QThread):
         else:
             CREATE_NO_WINDOW = 0
 
+        child_env = os.environ.copy()
+        child_env["PYTHONUTF8"] = "1"
+        child_env["PYTHONIOENCODING"] = "utf-8"
+
         for cmd in self.cmds:
+            if self._stopping:
+                return
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
-                creationflags=CREATE_NO_WINDOW
+                creationflags=CREATE_NO_WINDOW,
+                env=child_env
             )
+            self._proc = proc
             step_logs = []
             for line in proc.stdout:
+                if self._stopping:
+                    break
                 self.log_line.emit(line.rstrip('\n'))    # этот сигнал должен работать для КАЖДОЙ строки каждого скрипта
                 step_logs.append(line.rstrip('\n'))
             proc.wait()
             all_logs.extend(step_logs)
+            if self._stopping:
+                return
             if proc.returncode != 0:
                 self.finished.emit(False, f"Ошибка: код {proc.returncode}", "\n".join(all_logs))
                 return
-        self.finished.emit(True, "Готово", "\n".join(all_logs))
+        if not self._stopping:
+            self.finished.emit(True, "Готово", "\n".join(all_logs))
+
+    def stop(self):
+        """Принудительно завершает дочерние процессы и ждёт завершения потока."""
+        self._stopping = True
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                else:
+                    proc.kill()
+            except Exception:
+                pass
+        self.quit()
+        if not self.wait(5000):
+            super().terminate()
+            self.wait()
 
 
 class LogSyntaxHighlighter(QSyntaxHighlighter):
@@ -288,6 +327,27 @@ class LogLineDelegate(QStyledItemDelegate):
 
         return f"<span style='color:{self.default_color.name()};'>{escape(text)}</span>"
 
+    def _build_html(self, text):
+        parts = self._line_parts(text)
+        if parts:
+            ts_ui, custom_time, level, source, message = parts
+            level_key = level.strip().upper()
+            level_color = self.level_colors.get(level_key, self.default_color.name())
+            html = "".join([
+                f"<span style='color:{self.muted_color.name()};'>{escape(ts_ui)}</span>",
+                f" <span style='color:{self.muted_color.name()};'>|</span> ",
+                f"<span style='color:{self.custom_time_color.name()};'>{escape(custom_time)}</span>",
+                f" <span style='color:{self.muted_color.name()};'>|</span> ",
+                f"<b><span style='color:{level_color};'>{escape(level)}</span></b>",
+                f" <span style='color:{self.muted_color.name()};'>|</span> ",
+                f"<span style='color:{self.source_color.name()};'>{escape(source)}</span>",
+                f" <span style='color:{self.muted_color.name()};'>|</span> ",
+                f"<span style='color:{self.default_color.name()};'>{escape(message)}</span>",
+            ])
+        else:
+            html = self._colorize_text_html(text)
+        return html.replace("\n", "<br>")
+
     def paint(self, painter, option, index):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, False)
@@ -304,27 +364,9 @@ class LogLineDelegate(QStyledItemDelegate):
             painter.fillRect(option.rect, QColor("#111318"))
 
         text = index.data(Qt.DisplayRole) or ""
-        parts = self._line_parts(text)
 
         # Build HTML with colored segments to let QTextDocument handle wrapping and layout
-        if parts:
-            ts_ui, custom_time, level, source, message = parts
-            level_key = level.strip().upper()
-            level_color = self.level_colors.get(level_key, self.default_color.name())
-            html_parts = [
-                f"<span style='color:{self.muted_color.name()};'>{escape(ts_ui)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.custom_time_color.name()};'>{escape(custom_time)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<b><span style='color:{level_color};'>{escape(level)}</span></b>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.source_color.name()};'>{escape(source)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.default_color.name()};'>{escape(message)}</span>",
-            ]
-            html = "".join(html_parts)
-        else:
-            html = self._colorize_text_html(text)
+        html = self._build_html(text)
 
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
@@ -362,25 +404,7 @@ class LogLineDelegate(QStyledItemDelegate):
         if width <= 0:
             width = 400
 
-        parts = self._line_parts(text)
-        if parts:
-            ts_ui, custom_time, level, source, message = parts
-            level_key = level.strip().upper()
-            level_color = self.level_colors.get(level_key, self.default_color.name())
-            html_parts = [
-                f"<span style='color:{self.muted_color.name()};'>{escape(ts_ui)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.custom_time_color.name()};'>{escape(custom_time)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<b><span style='color:{level_color};'>{escape(level)}</span></b>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.source_color.name()};'>{escape(source)}</span>",
-                f" <span style='color:{self.muted_color.name()};'>|</span> ",
-                f"<span style='color:{self.default_color.name()};'>{escape(message)}</span>",
-            ]
-            html = "".join(html_parts)
-        else:
-            html = self._colorize_text_html(text)
+        html = self._build_html(text)
 
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
@@ -790,6 +814,8 @@ class ClientWorkspace(QWidget):
             r"(?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"
             r"(?:\.\d+)?\s+)?"
             r"\|\s*"
+            r"(?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"
+            r"(?:\.\d+)?\s*\|\s*)?"
             r"(TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL)"
             r"\s*\|"
         )
@@ -1267,11 +1293,11 @@ class ClientWorkspace(QWidget):
             thread.deleteLater()
 
     def shutdown_threads(self):
-        for key, thread in list(self.report_threads.items()):
-            thread.quit()
-            thread.wait()
-            thread.deleteLater()
+        threads = list(self.report_threads.values())
         self.report_threads.clear()
+        for thread in threads:
+            thread.stop()
+            thread.deleteLater()
 
     def closeEvent(self, event):
         self.shutdown_threads()

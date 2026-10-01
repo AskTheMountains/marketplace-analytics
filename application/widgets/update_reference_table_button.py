@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import QPushButton, QFileDialog, QMessageBox, QDialog, QVBoxLayout, QLabel, QTextEdit
 from application.paths import PYTHON_EXE
+import os
 import subprocess
 import sys
 
@@ -58,6 +59,9 @@ class UpdateReferenceTableButton(QPushButton):
                 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW
             else:
                 CREATE_NO_WINDOW = 0
+            child_env = os.environ.copy()
+            child_env["PYTHONUTF8"] = "1"
+            child_env["PYTHONIOENCODING"] = "utf-8"
             process = subprocess.run(
                 [
                     PYTHON_EXE, "-m",
@@ -67,7 +71,10 @@ class UpdateReferenceTableButton(QPushButton):
                 ],
                 capture_output=True,
                 text=True,
-                creationflags=CREATE_NO_WINDOW
+                encoding="utf-8",
+                errors="replace",
+                creationflags=CREATE_NO_WINDOW,
+                env=child_env
             )
             if process.returncode == 0:
                 QMessageBox.information(
