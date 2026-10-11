@@ -1101,8 +1101,9 @@ PROMOTION_COMPANIES = {
 # Флаг включения ИИ-рекомендаций для конкретного клиента (по умолчанию выключено).
 # Чтобы включить рекомендации для клиента — добавь его в словарь со значением True.
 ENABLE_AI_RECOMMENDATIONS = {
-    'REENERGO': True,
-    'Orsk_Combinat': True,
+    # 'REENERGO': True,
+    # 'Orsk_Combinat': True,
+    # 'Neva_Metall': True,
 }
 # Готовая булева переменная для текущего клиента
 enable_ai_recommendations = ENABLE_AI_RECOMMENDATIONS.get(client_name, False)
@@ -1127,6 +1128,13 @@ RK_BUYOUT_PERCENT = {
 # (доля, например 0.2 = 20%). Для каждого клиента своя; по умолчанию 20%.
 CANCEL_PERCENT_THRESHOLD = {
     # 'Client_Name': 0.15,
+}
+
+
+# Порог ДРР для комментария (в процентах, например 10 = 10%).
+# Для каждого клиента свой; по умолчанию 10%.
+DRR_COMMENT_THRESHOLD = {
+    # 'Client_Name': 10,
 }
 
 
@@ -1185,6 +1193,10 @@ CLIENT_SUMMARY_COL_FORMAT = {
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },
     'Процент выкупа': {
+        'width': 12.0,
+        'alignment': {'horizontal': 'center', 'vertical': 'center'}
+    },
+    'Процент отмен': {
         'width': 12.0,
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },

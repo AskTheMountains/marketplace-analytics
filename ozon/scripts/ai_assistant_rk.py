@@ -35,6 +35,9 @@ USE_THREADS = False
 # Порог запуска РК по умолчанию, если для клиента не задан PROMOTION_ORDERS_THRESHOLD
 DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD = 10
 
+# Порог ДРР для комментария по умолчанию, если для клиента не задан DRR_COMMENT_THRESHOLD (в процентах)
+DEFAULT_DRR_COMMENT_THRESHOLD = 10
+
 # Строка, которая исключается из campaign_details (сшитые товары)
 ARTICLE_TYPE_TO_EXCLUDE = "Товар из сшивки"
 
@@ -44,6 +47,7 @@ PRODUCT_SUMMARY_COLUMN_MAP = {
     'SKU': 'sku',
     'Артикул': 'article',
     'Название товара': 'name',
+    'Категория (тип)': 'category',
     'Кол-во заказов': 'orders',
     'Сумма заказов': 'revenue',
     'РК': 'ad_spend',
@@ -64,8 +68,12 @@ CAMPAIGN_DETAILS_COLUMN_MAP = {
     'Клики': 'clicks',
     'Добавления в корзину': 'add_to_cart',
     'Заказы, шт. (РК)': 'ad_orders',
+    'Заказы модели, шт. (РК)': 'ad_model_orders',
     'Расход РК, руб.': 'ad_spend',
 }
+
+# Статус товара на листе 2, для которого выводим комментарий ИИ
+CAMPAIGN_TARGET_TYPE = "Товар из РК"
 
 
 def _load_dotenv():
@@ -322,11 +330,39 @@ def _build_product_summary(df_client_svod, agg_by_sku, agg_by_article):
     return product_summary
 
 
-def _build_campaign_details(df_campaigns, valid_sku, valid_article):
+def _build_categories(df_products):
+    """
+    Строит словари категорий (по SKU и по артикулу) из колонки «Категория (тип)»
+    листа 1, чтобы передать категорию в campaign_details, а не выдумывать её.
+    """
+    by_sku = {}
+    by_article = {}
+    if 'Категория (тип)' not in df_products.columns:
+        return by_sku, by_article
+
+    for _, row in df_products.iterrows():
+        category = row.get('Категория (тип)')
+        if category is None or (isinstance(category, float) and pd.isna(category)):
+            continue
+        category = str(category).strip()
+        if not category:
+            continue
+        sku = _normalize_key(row.get('SKU'))
+        article = _normalize_key(row.get('Артикул'))
+        if sku:
+            by_sku.setdefault(sku, category)
+        if article:
+            by_article.setdefault(article, category)
+
+    return by_sku, by_article
+
+
+def _build_campaign_details(df_campaigns, valid_sku, valid_article, category_by_sku, category_by_article):
     """
     Формирует campaign_details для промпта: исключает «Товар из сшивки»
     и SKU/артикулы, которых нет в product_summary,
-    оставляет только поля под воронку и переименовывает их в английские поля.
+    оставляет только поля под воронку, добавляет категорию (из листа 1)
+    и переименовывает колонки в английские поля промпта.
     """
     df = df_campaigns.copy()
     if 'Тип товара' in df.columns:
@@ -335,13 +371,20 @@ def _build_campaign_details(df_campaigns, valid_sku, valid_article):
     sku_key = df['SKU'].map(_normalize_key) if 'SKU' in df.columns else pd.Series(None, index=df.index)
     article_key = df['Артикул'].map(_normalize_key) if 'Артикул' in df.columns else pd.Series(None, index=df.index)
     mask = sku_key.isin(valid_sku) | article_key.isin(valid_article)
-    df = df.loc[mask, :]
+    df = df.loc[mask, :].copy()
+
+    # Категория берётся из листа 1: сначала по SKU, при отсутствии — по артикулу
+    sku_key = df['SKU'].map(_normalize_key) if 'SKU' in df.columns else pd.Series(None, index=df.index)
+    article_key = df['Артикул'].map(_normalize_key) if 'Артикул' in df.columns else pd.Series(None, index=df.index)
+    df['category'] = sku_key.map(category_by_sku)
+    df['category'] = df['category'].fillna(article_key.map(category_by_article))
 
     existing_map = {
         ru: en for ru, en in CAMPAIGN_DETAILS_COLUMN_MAP.items()
         if ru in df.columns
     }
-    return df.loc[:, list(existing_map.keys())].rename(columns=existing_map)
+    columns = list(existing_map.keys()) + ['category']
+    return df.loc[:, columns].rename(columns=existing_map)
 
 
 def _try_parse_json(text):
@@ -478,6 +521,9 @@ def _apply_campaigns_recommendations(df, campaigns):
     def lookup(row):
         existing_rec = row.get("Комментарий ИИ") or ""
         existing_issues = row.get("Проблемы ИИ") or ""
+        # Комментарий по кампании выводим только для строк со статусом «Товар из РК»
+        if str(row.get("Тип товара", "")).strip() != CAMPAIGN_TARGET_TYPE:
+            return (existing_rec, existing_issues)
         cid = _key(row.get("Номер кампании"))
         entry = by_campaign.get(cid) if cid else None
         if entry is None:
@@ -514,7 +560,9 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
     При любой ошибке (нет ключа, нет id ассистента, сбой API) возвращает
     датафреймы без изменений, чтобы отчёт сформировался без рекомендаций.
     """
-    from ozon.scripts.constants import AI_ASSISTANT_ID, PROMOTION_ORDERS_THRESHOLD
+    from ozon.scripts.constants import (
+        AI_ASSISTANT_ID, PROMOTION_ORDERS_THRESHOLD, DRR_COMMENT_THRESHOLD
+    )
 
     ai_data_issues = []
 
@@ -546,6 +594,7 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
         threshold = PROMOTION_ORDERS_THRESHOLD.get(
             client_name, DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD
         )
+        drr_threshold = DRR_COMMENT_THRESHOLD.get(client_name, DEFAULT_DRR_COMMENT_THRESHOLD)
         agg_by_sku, agg_by_article = _aggregate_campaign_orders(df_campaigns_report_processed)
         product_summary = _build_product_summary(
             df_client_excel_svod, agg_by_sku, agg_by_article
@@ -559,8 +608,10 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
             {_normalize_key(v) for v in product_summary['article'].dropna()} - {None}
             if 'article' in product_summary.columns else set()
         )
+        category_by_sku, category_by_article = _build_categories(df_client_excel_svod)
         campaign_details = _build_campaign_details(
-            df_campaigns_report_processed, valid_sku, valid_article
+            df_campaigns_report_processed, valid_sku, valid_article,
+            category_by_sku, category_by_article
         )
 
         logger.info(
@@ -571,6 +622,7 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
         message = json.dumps({
             "client_name": client_name,
             "campaign_launch_threshold": threshold,
+            "drr_comment_threshold": drr_threshold,
             "product_summary": _records(product_summary),
             "campaign_details": _records(campaign_details),
         }, ensure_ascii=False, allow_nan=False)

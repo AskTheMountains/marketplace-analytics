@@ -37,7 +37,8 @@ from ozon.scripts.get_reference_table import get_reference_table
 
 # Некоторые доп. функции
 from ozon.scripts.ozon_generic_functions import (
-    clean_ozon_article
+    clean_ozon_article,
+    OzonRateLimiter,
 )
 
 
@@ -166,7 +167,7 @@ def process_action_file(df_actions_from_file):
 
     # Проверяем, что хотя бы один колонка нашлась:
     if found_action_cols:
-        print(
+        logger.info(
             f"В файле по акциям найдены колонки по следующим акциям: \n"
             f"{list(found_action_cols.keys())}"
         )
@@ -363,7 +364,7 @@ def get_available_products_for_actions(df_action_list, headers):
 # Получение товаров, которые могут участвовать в акции
     products_available_for_actions = pd.DataFrame()
     if len(df_action_list) > 0:
-        print("Выгрузка товаров, которые могут участвовать в акции")
+        logger.info("Выгрузка товаров, которые могут участвовать в акции")
         for i in range(len(df_action_list)):
             # Начальные значения для цикла while
             uploaded_products_count = 0  # Сколько выгружено товаров по данной акции
@@ -401,7 +402,7 @@ def get_available_products_for_actions(df_action_list, headers):
                 uploaded_products_count += products_amount
                 # Получаем id последнего элемента на странице, которое подставим в следующий запрос
                 last_id = result_products_available_for_actions['result']['last_id']
-                print(
+                logger.info(
                     f"Акция:{df_action_list['title'][i]}\n",
                     f"Всего товаров: {total_products_count}\n"
                     f"Выгружено {uploaded_products_count } товаров\n"
@@ -422,13 +423,121 @@ def get_available_products_for_actions(df_action_list, headers):
     return products_available_for_actions
 
 
+# Функция получения товаров, доступных для участия в акции из АПИ (новый метод /v2/actions/candidates)
+def get_available_products_for_actions_v2(df_action_list, headers):
+    """
+    Получение товаров, которые могут участвовать в акции, через новый метод API
+    https://api-seller.ozon.ru/v2/actions/candidates.
+
+    Отличие от старого метода /v1/actions/candidates:
+      - Ответ приходит без обёртки "result" (products/total/last_id на верхнем уровне).
+      - Цены (price, action_price, max_action_price) — объекты {"amount", "currency"},
+        amount распаковывается в число с плавающей точкой.
+      - Отсутствуют поля add_mode и stock (в дальнейшей логике отчёта не используются).
+      - limit ограничен 100 значениями на страницу.
+
+    Args:
+        df_action_list (pd.DataFrame): таблица акций (колонки id, title, date_start, date_end,
+            potential_products_count, participating_products_count), полученная из /v1/actions.
+        headers (dict): заголовки запросов к Seller API Ozon (Client-Id, Api-Key).
+
+    Returns:
+        pd.DataFrame: таблица товаров-кандидатов к участию в акциях с колонками
+            Ozon Product ID, price, action_price, max_action_price, min_stock,
+            action_id, action_title, action_start, action_end,
+            potential_products_count, participating_products_count, Скидка_по_акции.
+            Если акций нет или по ним нет товаров — возвращается пустой df с теми же колонками.
+    """
+    products_available_for_actions = pd.DataFrame()
+    if len(df_action_list) > 0:
+        logger.info("Выгрузка товаров, которые могут участвовать в акции (метод /v2/actions/candidates)")
+        # Создаём сессию и лимитер для соблюдения лимитов API
+        session = requests.Session()
+        session.headers.update(headers)
+        limiter = OzonRateLimiter()
+        for i in range(len(df_action_list)):
+            # Начальные значения для цикла while
+            uploaded_products_count = 0  # Сколько выгружено товаров по данной акции
+            last_id = ''  # Значение, для перехода на следующую страницу (пагинация)
+            tmp_df = pd.DataFrame({'A': [1]})
+            # Пока есть товары по данной акции, обращаемся к методу апи для выгрузки
+            while not tmp_df.empty:
+                params = {
+                    "action_id": df_action_list['id'][i].astype(str),
+                    "limit": 100,
+                    "last_id": last_id,
+                }
+                # Делаем запрос к АПИ через лимитер
+                result_products_available_for_actions, ok = limiter.call(
+                    session.post,
+                    url='https://api-seller.ozon.ru/v2/actions/candidates',
+                    json=params,
+                    timeout=60,
+                )
+                if not ok or result_products_available_for_actions is None:
+                    logger.error(
+                        f"Не удалось получить товары-кандидаты для акции "
+                        f"{df_action_list['title'][i]} (после всех попыток). Пропускаем акцию."
+                    )
+                    break
+                response_data = result_products_available_for_actions.json()
+                # Создаем df с товарами в акции
+                tmp_df = pd.DataFrame(response_data['products'])
+                if tmp_df.empty:
+                    break
+                # Распаковываем цены-объекты в числа
+                for price_col in ['price', 'action_price', 'max_action_price']:
+                    tmp_df[price_col] = (
+                        tmp_df[price_col]
+                        .apply(lambda x: float(x['amount']) if isinstance(x, dict) and x.get('amount') is not None else None)
+                    )
+                # Добавляем информацию об акции в df
+                tmp_df = tmp_df.assign(
+                    action_id=df_action_list['id'][i],
+                    action_title=df_action_list['title'][i],
+                    action_start=df_action_list['date_start'][i],
+                    action_end=df_action_list['date_end'][i],
+                    potential_products_count=df_action_list['potential_products_count'][i],
+                    participating_products_count=df_action_list['participating_products_count'][i],
+                )
+                # Объединяем с предыдущим проходом цикла
+                products_available_for_actions = pd.concat([products_available_for_actions, tmp_df])
+                # Получаем количество всех товаров по акции
+                total_products_count = response_data['total']
+                # Получаем количество выгруженных товаров по акции
+                products_amount = len(response_data['products'])
+                # Увеличиваем число выгруженных товаров по акции
+                uploaded_products_count += products_amount
+                # Получаем id последнего элемента на странице, которое подставим в следующий запрос
+                last_id = response_data['last_id']
+                logger.info(
+                    f"Акция:{df_action_list['title'][i]}\n",
+                    f"Всего товаров: {total_products_count}\n"
+                    f"Выгружено {uploaded_products_count} товаров\n"
+                )
+        # Если есть товары для участия в акциях считаем доп. колонки
+        if products_available_for_actions.shape[0] > 0:
+            products_available_for_actions.rename(columns={"id": "Ozon Product ID"}, inplace=True)
+            products_available_for_actions['Скидка_по_акции'] = products_available_for_actions['max_action_price'] / products_available_for_actions['price'] - 1.0
+        # Если нет, то создаем пустой df
+        else:
+            products_available_for_actions = pd.DataFrame(columns=[
+                'Ozon Product ID', 'price', 'action_price', 'max_action_price',
+                'min_stock', 'action_id', 'action_title',
+                'action_start', 'action_end', 'potential_products_count',
+                'participating_products_count', 'Скидка_по_акции'
+            ])
+
+    return products_available_for_actions
+
+
 # Функция получения товаров, участвующих в акции из АПИ
 def get_products_in_actions(df_action_list, headers):
     # Получение товаров, уже участвуют в акции
     products_in_actions = pd.DataFrame()
     # Если есть данные по акциям
     if len(df_action_list) > 0:
-        print("Выгрузка товаров, которые участвуют в акции")
+        logger.info("Выгрузка товаров, которые участвуют в акции")
         # Выгрузка данных по каждой из акции
         for i in range(len(df_action_list)):
             # Начальные значения для цикла while
@@ -474,12 +583,119 @@ def get_products_in_actions(df_action_list, headers):
                 uploaded_products_count += products_amount
                 # Получаем id последнего элемента на странице, которое подставим в следующий запрос
                 last_id = result_products_in_actions['result']['last_id']
-                print(
+                logger.info(
                     f"\nАкция:{df_action_list['title'][i]}\n",
                     f"Всего товаров: {total_products_count}\n"
                     f"Выгружено {uploaded_products_count } товаров"
                 )
 
+        # Если есть товары, участвующие в акциях, считаем доп. колонки
+        if products_in_actions.shape[0] > 0:
+            products_in_actions.rename(columns={"id": "Ozon Product ID"}, inplace=True)
+            products_in_actions['Скидка_по_акции'] = products_in_actions['action_price'] / products_in_actions['price'] - 1.0
+        # Если нет, то создаем пустой df
+        else:
+            products_in_actions = pd.DataFrame(columns=[
+                'Ozon Product ID', 'price', 'action_price', 'max_action_price',
+                'add_mode', 'stock', 'min_stock', 'action_id', 'action_title',
+                'action_start', 'action_end', 'potential_products_count',
+                'participating_products_count', 'Скидка_по_акции'
+            ])
+
+    return products_in_actions
+
+
+# Функция получения товаров, участвующих в акции из АПИ (новый метод /v2/actions/products)
+def get_products_in_actions_v2(df_action_list, headers):
+    """
+    Получение товаров, которые уже участвуют в акции, через новый метод API
+    https://api-seller.ozon.ru/v2/actions/products.
+
+    Отличие от старого метода /v1/actions/products:
+      - Ответ приходит без обёртки "result" (products/total/last_id на верхнем уровне).
+      - Цены (price, action_price, max_action_price) — объекты {"amount", "currency"},
+        amount распаковывается в число с плавающей точкой.
+      - limit ограничен 100 значениями на страницу.
+
+    Args:
+        df_action_list (pd.DataFrame): таблица акций (колонки id, title, date_start, date_end,
+            potential_products_count, participating_products_count), полученная из /v1/actions.
+        headers (dict): заголовки запросов к Seller API Ozon (Client-Id, Api-Key).
+
+    Returns:
+        pd.DataFrame: таблица товаров-участников акций с колонками
+            Ozon Product ID, price, action_price, max_action_price, add_mode, stock, min_stock,
+            action_id, action_title, action_start, action_end,
+            potential_products_count, participating_products_count, Скидка_по_акции.
+            Если акций нет или по ним нет товаров — возвращается пустой df с теми же колонками.
+    """
+    products_in_actions = pd.DataFrame()
+    if len(df_action_list) > 0:
+        logger.info("Выгрузка товаров, которые участвуют в акции (метод /v2/actions/products)")
+        # Создаём сессию и лимитер для соблюдения лимитов API
+        session = requests.Session()
+        session.headers.update(headers)
+        limiter = OzonRateLimiter()
+        for i in range(len(df_action_list)):
+            # Начальные значения для цикла while
+            uploaded_products_count = 0  # Сколько выгружено товаров по данной акции
+            last_id = ''  # Значение, для перехода на следующую страницу (пагинация)
+            tmp_df = pd.DataFrame({'A': [1]})
+            # Пока есть товары по данной акции, обращаемся к методу апи для выгрузки
+            while not tmp_df.empty:
+                params = {
+                    "action_id": df_action_list['id'][i].astype(str),
+                    "limit": 100,
+                    "last_id": last_id,
+                }
+                # Делаем запрос к АПИ через лимитер
+                result_products_in_actions, ok = limiter.call(
+                    session.post,
+                    url='https://api-seller.ozon.ru/v2/actions/products',
+                    json=params,
+                    timeout=60,
+                )
+                if not ok or result_products_in_actions is None:
+                    logger.error(
+                        f"Не удалось получить товары, участвующие в акции "
+                        f"{df_action_list['title'][i]} (после всех попыток). Пропускаем акцию."
+                    )
+                    break
+                response_data = result_products_in_actions.json()
+                # Создаем df с товарами в акции
+                tmp_df = pd.DataFrame(response_data['products'])
+                if tmp_df.empty:
+                    break
+                # Распаковываем цены-объекты в числа
+                for price_col in ['price', 'action_price', 'max_action_price']:
+                    tmp_df[price_col] = (
+                        tmp_df[price_col]
+                        .apply(lambda x: float(x['amount']) if isinstance(x, dict) and x.get('amount') is not None else None)
+                    )
+                # Добавляем информацию об акции в df
+                tmp_df = tmp_df.assign(
+                    action_id=df_action_list['id'][i],
+                    action_title=df_action_list['title'][i],
+                    action_start=df_action_list['date_start'][i],
+                    action_end=df_action_list['date_end'][i],
+                    potential_products_count=df_action_list['potential_products_count'][i],
+                    participating_products_count=df_action_list['participating_products_count'][i],
+                )
+                # Объединяем с предыдущим проходом цикла
+                products_in_actions = pd.concat([products_in_actions, tmp_df])
+                # Получаем количество всех товаров по акции
+                total_products_count = response_data['total']
+                # Получаем количество выгруженных товаров по акции
+                products_amount = len(response_data['products'])
+                # Увеличиваем число выгруженных товаров по акции
+                uploaded_products_count += products_amount
+                # Получаем id последнего элемента на странице, которое подставим в следующий запрос
+                last_id = response_data['last_id']
+                logger.info(
+                    f"Акция:{df_action_list['title'][i]}\n",
+                    f"Всего товаров: {total_products_count}\n"
+                    f"Выгружено {uploaded_products_count} товаров\n"
+                )
         # Если есть товары, участвующие в акциях, считаем доп. колонки
         if products_in_actions.shape[0] > 0:
             products_in_actions.rename(columns={"id": "Ozon Product ID"}, inplace=True)

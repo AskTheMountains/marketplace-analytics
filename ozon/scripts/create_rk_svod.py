@@ -35,6 +35,7 @@ from ozon.scripts.constants import (
     client_secret_performance, headers,
     PROMOTION_COMPANIES, PROMOTION_ORDERS_THRESHOLD, RK_BUYOUT_PERCENT, shop_type,
     CANCEL_PERCENT_THRESHOLD,
+    DRR_COMMENT_THRESHOLD,
     CLIENT_SUMMARY_COL_FORMAT,
     CAMPAIGNS_REPORT_COL_FORMAT,
     enable_ai_recommendations,
@@ -421,6 +422,7 @@ def process_product_list(df_products):
         'Артикул',
         'Название товара',
         'SKU',
+        'Тип',
         # 'Отзывы',
         # 'Текущая цена с учетом скидки, ₽',
     ])]
@@ -448,6 +450,10 @@ def process_product_list(df_products):
         # 'Минимальная цена после применения всех скидок': 'Мин. цена Ozon',
         # 'Цена с учетом акций продавца': 'Цена по акции',
         # 'Цена с учетом всех акций': 'Цена с баллами Озон',
+    })
+    # Переименовываем остальные колонки
+    df_products_processed = df_products_processed.rename(columns={
+        'Тип': 'Категория (тип)'
     })
     # Переводим SKU в строку чтобы не было ошибок при merge
     df_products_processed['SKU'] = df_products_processed['SKU'].astype(str)
@@ -646,9 +652,15 @@ def calc_additional_columns(df_products_svod):
 
     # Добавляем столбец с комментарием
     # 1. Собираем условия для комментариев: список (текст_комментария, условие-строка)
+    # Порог ДРР — константа для клиента, по умолчанию 10% (самое главное замечание, идёт первым)
+    drr_threshold = DRR_COMMENT_THRESHOLD.get(client_name, 10)
     # Порог процента отмен — константа для клиента, по умолчанию 20%.
     cancel_threshold = CANCEL_PERCENT_THRESHOLD.get(client_name, 0.2)
     comment_conditions = [
+        # (
+        #     f'Высокий ДРР (более {drr_threshold:g}%)',
+        #     df_client_svod['ДРР'] > drr_threshold
+        # ),
         (
             'Большой процент отмен, влияет на ДРР',
             (df_client_svod['Процент отмен'] > cancel_threshold) & has_rk_costs
@@ -904,6 +916,8 @@ def format_all_sheets_common(wb, exclude_columns=None):
     ORANGE = "FCD5B4"  # 252, 213, 180
     BLUE_2 = "DAEEF3"  # 218, 238, 243
     BROWN = "C4BD97"  # 196, 189, 151
+    TURQUOISE = "B7DEE8"  # 183, 222, 232
+    LAVENDER = "CCC0DA"  # 204, 192, 218
 
     blue1_headers = {
         "Номер кампании",
@@ -949,6 +963,15 @@ def format_all_sheets_common(wb, exclude_columns=None):
         "Заказы по размерам ОЗЗ ст., шт.",
         "Расход по размерам ОЗЗ ст., руб.",
     }
+    turquoise_headers = {
+        "Процент выкупа",
+        "Фактический ДРР",
+        "Процент отмен",
+    }
+    lavender_headers = {
+        "Комментарий ИИ",
+        "Проблемы ИИ",
+    }
 
     header_color_map = {}
     for h in blue1_headers:
@@ -959,6 +982,10 @@ def format_all_sheets_common(wb, exclude_columns=None):
         header_color_map[h] = BLUE_2
     for h in brown_headers:
         header_color_map[h] = BROWN
+    for h in turquoise_headers:
+        header_color_map[h] = TURQUOISE
+    for h in lavender_headers:
+        header_color_map[h] = LAVENDER
 
     def get_header_fill(header_value):
         if not isinstance(header_value, str) or not header_value.strip():
@@ -1087,54 +1114,6 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
     """
     if sheet_name not in wb.sheetnames:
         return
-
-    # маппинг ширины и выравнивания
-    # CLIENT_SUMMARY_COL_FORMAT = {
-    #     'SKU': {
-    #         'width': 12.0,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Артикул': {
-    #         'width': 12.0,
-    #         'alignment': {'horizontal': 'left', 'vertical': 'center'}
-    #     },
-    #     'Название товара': {
-    #         'width': 47.8,  # округлено до одного знака
-    #         'alignment': {'horizontal': 'left', 'vertical': 'center'}
-    #     },
-    #     'Средняя цена продажи': {
-    #         'width': 11.4,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'РК': {
-    #         'width': 12.1,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Заказы ОЗЗ 5%, шт.': {
-    #         'width': 11.4,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Расход ОЗЗ 5%, руб.': {
-    #         'width': 13.0,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Кол-во заказов': {
-    #         'width': 10.1,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Сумма заказов': {
-    #         'width': 12.1,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'ДРР': {
-    #         'width': 9.0,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    #     'Остаток': {
-    #         'width': 11.4,
-    #         'alignment': {'horizontal': 'center', 'vertical': 'center'}
-    #     },
-    # }
 
     ws = wb[sheet_name]
 
@@ -1278,40 +1257,6 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
         )
         ws.conditional_formatting.add(cell_range, rule)
 
-    # --- 7. Ширина столбцов и выравнивание данных по маппингу ---
-    # Берём заголовки с листа
-    # header_row = next(ws.iter_rows(min_row=1, max_row=1))
-    # headers = [cell.value for cell in header_row]
-
-    # for col_idx, header in enumerate(headers, start=1):
-    #     if header not in CLIENT_SUMMARY_COL_FORMAT:
-    #         continue
-
-    #     fmt = None
-    #     # ищем первый ключ-«префикс», который подходит под startswith
-    #     for key, cfg in CLIENT_SUMMARY_COL_FORMAT.items():
-    #         if header.startswith(key):
-    #             fmt = cfg
-    #             break
-
-    #     if fmt is None:
-    #         continue
-
-    #     # fmt = CLIENT_SUMMARY_COL_FORMAT[header]
-    #     width = fmt.get('width')
-    #     align_kwargs = fmt.get('alignment', {})
-    #     alignment = Alignment(**align_kwargs)
-
-    #     col_letter = get_column_letter(col_idx)
-
-    #     # устанавливаем ширину столбца
-    #     if width is not None:
-    #         ws.column_dimensions[col_letter].width = width
-
-    #     # выравнивание только для данных (со 2-й строки)
-    #     for row in range(2, ws.max_row + 1):
-    #         cell = ws.cell(row=row, column=col_idx)
-    #         cell.alignment = alignment
 
 
 def format_campaigns_report_sheet(
@@ -1576,8 +1521,14 @@ def save_and_format_excel(
 # %% Вызов всех функций
 if __name__ == '__main__':
 
-   # Парсим аргументы командной строки
+    # Парсим аргументы командной строки
     params_companies = cli_companies(parser)
+
+    # Флаг включения рекомендаций ИИ из командной строки (переопределяет настройку клиента).
+    # Если флаг не передан — берём настройку клиента из constants.py.
+    ai_recommendations_flag = params_companies.get("enable_ai_recommendations")
+    if ai_recommendations_flag is not None:
+        enable_ai_recommendations = ai_recommendations_flag in ('true', '1')
 
     # Получаем даты из аргументов командной строки
     date_start_cli = params_companies["start_date"]

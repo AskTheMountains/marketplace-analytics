@@ -373,6 +373,14 @@ def cli_companies(parser):
     help='Список ID кампаний через запятую или с новой строки. Примеры: "13687629,14962180" или "13687629\\n14962180".',
     # metavar='IDS'
     )
+    safe_add_argument(
+        parser,
+        '--enable_ai_recommendations',
+        type=str,
+        choices=['true', 'false', '1', '0'],
+        help='Включить (true) или выключить (false) рекомендации ИИ. Если не передан — используется настройка клиента из constants.py',
+        metavar='true|false'
+    )
     args, unknown = parser.parse_known_args()
 
     # Преобразуем приоритетно:
@@ -390,6 +398,8 @@ def cli_companies(parser):
     params["reference_date"] = args.reference_date if args.reference_date else None
 
     params["promotion_companies"] = getattr(args, 'promotion_companies', None)
+
+    params["enable_ai_recommendations"] = getattr(args, 'enable_ai_recommendations', None)
 
     return params
 
