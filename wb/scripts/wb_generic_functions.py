@@ -1008,6 +1008,35 @@ def add_sizes_to_realization_report(
 
     return df_realization_report_with_sizes
 
+# Функция выгрузки отчета о реализации
+def get_realization_report(headers, date_start, date_end, period='daily', verbose=True, df_products=None):
+    # Переводим даты в нужный формат
+    date_start_ = datetime.fromisoformat(date_start).strftime('%Y-%m-%d')
+    date_end_ = datetime.fromisoformat(date_end).strftime('%Y-%m-%d')
+    # Получение отчета о реализации по АПИ
+    df_realization_report = upload_realization_report(headers, date_start_, date_end_, period=period, verbose=verbose)
+    # Переименование колонок отчета о реализации в русские названия
+    df_realization_report_renamed = rename_report_columns(df_realization_report)
+    # Расчет некоторых дополнительных колонок, которые будут участвовать в расчетах
+    df_realization_report_new_columns = add_new_columns(df_realization_report_renamed)
+    # Фильтр по переходным неделям
+    df_realization_report_date_filtered = filter_report_dates(
+        date_start_, date_end_,
+        df_realization_report_new_columns,
+        filter_dates=True,
+        period=period
+    )
+    # Выгружаем список товаров WB, если не передан
+    if df_products is None:
+        from wb.scripts.uploadDataFromWB import get_wb_product
+        df_products = get_wb_product(headers, to_save=False)
+    # Добавляем размеры в отчет реализации
+    df_realization_report_with_sizes = add_sizes_to_realization_report(
+        df_realization_report_date_filtered,
+        df_products
+    )
+
+    return df_realization_report_date_filtered
 
 # Функция получения дат отчета
 def get_report_dates(df_realization_report_date_filtered):

@@ -43,6 +43,7 @@ from wb.scripts.wb_generic_functions import(
     rename_report_columns,
     add_new_columns,
     filter_report_dates,
+    get_realization_report,
     add_sizes_to_realization_report,
     get_company_stats,
     convert_currency
@@ -3358,10 +3359,10 @@ if __name__ == '__main__':
 
     # Генерируем диапазон дат для текущего отчета
     date_start, date_end = generate_date_range(
-        # date_start,
-        # date_end,
-        date_start = '2026-09-01',
-        date_end='2026-09-20'
+        date_start,
+        date_end,
+        # date_start = '2026-09-01',
+        # date_end='2026-09-30'
     )
     # Создаем директорию для текущего отчета
     current_report_dir, date_report = create_finance_report_dir(client_name, date_start, date_end)
@@ -3396,6 +3397,13 @@ if __name__ == '__main__':
         df_realization_report_date_filtered,
         df_products
     )
+    # df_realization_report_with_sizes = get_realization_report(
+    #     headers,
+    #     date_start,
+    #     date_end,
+    #     period='weekly',
+    #     df_products=df_products
+    # )
 
     # Получаем список дат отчета
     report_dates = get_report_dates(

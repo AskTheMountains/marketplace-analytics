@@ -283,18 +283,19 @@ if __name__ == '__main__':
     date_start, date_end = generate_date_range(
         # date_start=dates_cli['start_date'],
         # date_end=dates_cli['end_date'],
-        date_start='2026-02-01',
-        date_end='2026-08-24'
+        date_start='2024-10-01',
+        date_end='2026-09-30'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
     # Выгружаем отчет реализации
     df_realization_report_date_filtered = get_realization_report(
-        headers,
+        headers=headers,
         date_start=date_start,
         date_end=date_end,
         # date_start='2025-10-01',
-        # date_end='2025-10-31'
+        # date_end='2025-10-31',
+        verbose=True
     )
     # Считаем продажи возвраты и прочую лабуду
     df_sales_returns_wb = calc_sales_returns(
