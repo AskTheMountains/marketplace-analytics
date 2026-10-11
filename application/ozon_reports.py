@@ -12,7 +12,7 @@ from application.widgets.dates_defaults import (
     prev_month_date_range,
     last_n_days
 )
-from ozon.scripts.constants import PROMOTION_COMPANIES
+from ozon.scripts.constants import PROMOTION_COMPANIES, ENABLE_AI_RECOMMENDATIONS
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
     QFileDialog, QPushButton, QRadioButton, QButtonGroup, QTextEdit,
@@ -450,6 +450,7 @@ class OzonCampaignsReport(ReportBase):
             "start_date": "",
             "end_date": "",
             "promotion_companies": "",
+            "enable_ai_recommendations": False,
         }
 
     def __init__(self):
@@ -513,6 +514,21 @@ class OzonCampaignsReport(ReportBase):
                     self.txt_companies.setPlainText(default_text)
                     self.params["promotion_companies"] = default_text
 
+                # --- Чекбокс включения рекомендаций ИИ ---
+                self.ai_recommendations_checkbox = QCheckBox("Включить рекомендации ИИ-ассистента")
+                # Значение по умолчанию берём из настроек клиента в constants.py
+                default_ai = False
+                if parent_workspace and hasattr(parent_workspace, "settings"):
+                    cur_idx = getattr(parent_workspace, "client_idx", 0)
+                    cli_name = parent_workspace.settings["client_name"][cur_idx]
+                    default_ai = ENABLE_AI_RECOMMENDATIONS.get(cli_name, False)
+                self.ai_recommendations_checkbox.setChecked(default_ai)
+                self.params["enable_ai_recommendations"] = default_ai
+                self.ai_recommendations_checkbox.toggled.connect(
+                    lambda _: self._on_params_changed(on_params_changed)
+                )
+                vbox.addWidget(self.ai_recommendations_checkbox)
+
                 # --- Значение по умолчанию для дат ---
                 start_str, end_str = prev_week_date_range()
                 self.start_selector.set_date(start_str)
@@ -560,6 +576,8 @@ class OzonCampaignsReport(ReportBase):
         self.params["end_date"] = self.end_selector.get_date() or ""
         companies = self.txt_companies.toPlainText()
         self.params["promotion_companies"] = companies
+        checkbox = getattr(self, 'ai_recommendations_checkbox', None)
+        self.params["enable_ai_recommendations"] = checkbox.isChecked() if checkbox else self.params.get("enable_ai_recommendations", False)
         cb(self.params)
 
     def is_params_ready(self):
@@ -582,6 +600,8 @@ class OzonCampaignsReport(ReportBase):
         comps = self.params.get("promotion_companies", "")
         if comps.strip():
             cmd += ["--promotion_companies", comps.strip()]
+        ai_enabled = self.params.get("enable_ai_recommendations")
+        cmd += ["--enable_ai_recommendations", "true" if ai_enabled else "false"]
         return cmd
 
 class OzonClientCabinetReport(ReportBase):
