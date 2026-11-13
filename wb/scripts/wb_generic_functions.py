@@ -25,6 +25,35 @@ from wb.scripts.constants import (
 BASE_DIR = Path(__file__).parent.parent
 
 
+# Функция приведения размера к строковому типу с нормализацией чисел (векторная)
+def normalize_size_series(series):
+    """
+    Векторно приводит размер к строковому типу.
+    Целые числа (36.0, '36.0', 42) -> '36', '42'; дробные (43.5) -> '43.5'.
+    Пустые/NaN значения -> np.nan; нечисловые размеры ('M', 'S') остаются как есть.
+    """
+    s = series.copy()
+    # None/NaN -> np.nan (пустые размеры будут представлены как np.nan/pd.isna)
+    s = s.where(~s.isna(), np.nan)
+    # в строку и убираем лишние пробелы
+    s = s.astype(str).str.strip()
+    # пустые строки и строковые представления пустот (после astype(str) NaN -> 'nan') -> np.nan
+    s = s.replace(['', 'nan', 'None', '<NA>', 'NaT'], np.nan)
+    # парсим числа (нечисловые значения и NaN -> NaN, остаются строками как есть)
+    num = pd.to_numeric(s, errors='coerce')
+    # маска: где удалось распарсить число
+    is_num = num.notna()
+    # целые числа: 36.0 -> True, 43.5 -> False
+    is_integer = is_num & (num == np.floor(num))
+    out = s.copy()
+    if is_integer.any():
+        out.loc[is_integer] = num.loc[is_integer].astype('int64').astype(str)
+    fractional = is_num & ~is_integer
+    if fractional.any():
+        out.loc[fractional] = num.loc[fractional].astype(str)
+    return out
+
+
 def split_into_intervals(start_date, end_date, max_days=31):
     """Разбивает интервал на интервалы не длиннее max_days."""
     intervals = []
@@ -833,8 +862,8 @@ def add_new_columns(df_realization_report_renamed):
             col
         ].map(other_costs_combo_replace_patterns)
 
-    # Заменяем пустые строки в размере на пропуски
-    df_realization_report_new_columns['Размер'] = df_realization_report_new_columns['Размер'].replace('', np.nan)
+    # Приводим размер к строковому типу с нормализацией чисел (36.0 -> '36', 43.5 -> '43.5')
+    df_realization_report_new_columns['Размер'] = normalize_size_series(df_realization_report_new_columns['Размер'])
 
     # Считаем НДС в долях
     df_realization_report_new_columns['НДС'] = (
@@ -912,10 +941,7 @@ def filter_report_dates(date_start, date_end, df_realization_report_new_columns,
     return df_realization_report_date_filtered
 
 # Функция добавления размера товара в отчет реализации
-def add_sizes_to_realization_report(
-        df_realization_report_date_filtered,
-        df_products
-    ):
+def add_sizes_to_realization_report(df_realization_report_date_filtered, df_products):
     # Создаем копию для избежания изменений в оригинальном df
     df_realization_report_with_sizes = df_realization_report_date_filtered.copy()
     df_products_barcodes = df_products.copy()
@@ -934,6 +960,10 @@ def add_sizes_to_realization_report(
             'Размер': 'Размер (список товаров)'
         })
         .reset_index(drop=True)
+    )
+    # Приводим размер из списка товаров к строковому типу с нормализацией чисел (36.0 -> '36', 43.5 -> '43.5')
+    df_products_barcodes['Размер (список товаров)'] = (
+        normalize_size_series(df_products_barcodes['Размер (список товаров)'])
     )
 
     # Переводим баркод в строку

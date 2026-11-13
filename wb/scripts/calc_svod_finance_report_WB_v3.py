@@ -46,7 +46,8 @@ from wb.scripts.wb_generic_functions import(
     get_realization_report,
     add_sizes_to_realization_report,
     get_company_stats,
-    convert_currency
+    convert_currency,
+    normalize_size_series
 )
 # Функция получения справочной таблицы
 from wb.scripts.get_reference_table import get_reference_table
@@ -57,7 +58,7 @@ CUSTOM_SUM_COLS = {
     'Вознаграждение WB без НДС': [''],
     'НДС с вознаграждения WB': [''],
     'Стоимость логистики': ['Логистика', 'Коррекция логистики', 'Доставка', 'Коррекция стоимости доставки'],
-    'Стоимость платной приёмки': ['Платная приемка (Отчет реализации)', 'Обработка товара'],
+    'Стоимость платной приёмки': ['Платная приемка (Отчет реализации)', 'Обработка товара', 'Услуга по обработке Товара'],
     # 'Стоимость платной приемки': ['Платная приемка (Отчет реализации)', 'Обработка товара'],
     'Возмещение издержек по эквайрингу': [''],
     'Возмещение за выдачу и возврат товаров на ПВЗ': [''],
@@ -523,14 +524,8 @@ def calc_sku_costs_v4(
     # Формируем id строк с расходами по артикулам
     sku_costs_ids = df_sku_costs['id'].to_list()
 
-    # --- Нормализация размера: пустые -> '0' ---
-    df_sku_costs['Размер'] = (
-        df_sku_costs['Размер']
-        .astype(str)
-        .str.strip()
-        .replace({'nan': '', 'None': ''})
-    )
-    df_sku_costs['Размер'] = df_sku_costs['Размер'].replace('', '0')
+    # --- Нормализация размера: строковый тип (36.0 -> '36', 43.5 -> '43.5'), пустые -> '0' ---
+    df_sku_costs['Размер'] = normalize_size_series(df_sku_costs['Размер']).fillna('0')
 
     # Все строки с артикулом и "размером" (включая '0')
     df_sku_sizes_costs = df_sku_costs.copy()
@@ -659,7 +654,7 @@ def calc_sku_costs_v4(
         'Вознаграждение WB без НДС': [''],
         'НДС с вознаграждения WB': [''],
         'Стоимость логистики': ['Логистика', 'Коррекция логистики', 'Доставка', 'Коррекция стоимости доставки'],
-        'Стоимость платной приёмки': ['Платная приемка (Отчет реализации)', 'Обработка товара'],
+        'Стоимость платной приёмки': ['Платная приемка (Отчет реализации)', 'Обработка товара', 'Услуга по обработке Товара'],
         # 'Стоимость платной приемки': ['Платная приемка (Отчет реализации)', 'Обработка товара'],
         'Возмещение издержек по эквайрингу': [''],
         'Возмещение за выдачу и возврат товаров на ПВЗ': [''],
@@ -2209,8 +2204,12 @@ def add_data_from_catalog(result_other_costs):
         if col not in catalog.columns:
             catalog[col] = np.nan
 
+    # Нормализуем колонку с размером
+    catalog['Размер'] =normalize_size_series(catalog['Размер'])
+
     # Заполняем пропуски в размерах
     catalog['Размер'] = catalog['Размер'].fillna('0')
+
 
     # Переводим артикул продавца в верхний регистр
     catalog['Артикул продавца'] = catalog['Артикул продавца'].str.upper()
@@ -2218,9 +2217,16 @@ def add_data_from_catalog(result_other_costs):
     # Переводим себестоимость в число
     catalog['Себестоимость'] = pd.to_numeric(catalog['Себестоимость'], errors='coerce')
 
+    # Переименовываем некоторые колонки
+    if 'Предмет' not in catalog.columns:
+        catalog = catalog.rename(columns={
+            'Категория': 'Предмет'
+        })
+
+
     # В каждой группе артикулов искуственно создаем артикул с размером 0, если такого размера нет
     # Словарь, где для каждого нужного столбца указана агрегация
-    if client_name in ['SENS', 'SENS_IP', 'SENS_KZ']:
+    if client_name in ['SENS', 'SENS_IP', 'SENS_KZ', 'Kadi']:
         agg_dict = {
             'Себестоимость': 'mean',
             'Предмет': 'first',
@@ -2232,7 +2238,7 @@ def add_data_from_catalog(result_other_costs):
             if not (group['Размер'].astype(str).str.strip().replace(',', '.') == '0').any():
                 new_row = {col: np.nan for col in catalog.columns}
                 new_row['Артикул продавца'] = art
-                new_row['Размер'] = 0
+                new_row['Размер'] = '0'
 
                 for col, func in agg_dict.items():
                     if isinstance(func, str):

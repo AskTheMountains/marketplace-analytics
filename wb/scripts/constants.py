@@ -32,7 +32,8 @@ shop_type_map = {
     'SENS': 'clothes',
     'SENS_IP': 'clothes',
     'Orsk_Combinat': 'food',
-    'Neva_Metall': 'dishes'
+    'Neva_Metall': 'dishes',
+    'Kadi': 'clothes',
 }
 shop_type = shop_type_map.get(client_name, 'unassigned')
 
@@ -822,7 +823,7 @@ PROMOTION_COMPANIES = {
         37500007,
         38919900,
     ],
-    'Water_Power':[
+    'Water_Power': [
         39762454,
         38691331,
         39761519,
@@ -844,6 +845,11 @@ PROMOTION_COMPANIES = {
         39759943,
         39761586,
         39761716,
+    ],
+    'Kadi': [
+        41133400,
+        41133209,
+        41062894,
     ]
 }
 

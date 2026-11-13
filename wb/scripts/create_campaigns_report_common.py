@@ -1492,6 +1492,8 @@ def create_model_report(df_products_processed, df_companies_stats_with_orders, d
     })
     # Выбираем нужные колонки
     df_models = df_models.loc[:, ['ID модели', 'Артикул WB', 'Артикул продавца', 'Наименование товара']]
+    # Удаляем дубликаты по артикулу продавца
+    df_models = df_models.drop_duplicates(subset=['Артикул продавца'], ignore_index=True)
     # Объединяем данные
     df_models = (
         df_models
@@ -1785,6 +1787,12 @@ def create_final_df_for_excel(df_final_orders):
     # Выбираем нужные колонки и переименовываем их для итогового df
     df_excel_companies_report = df_excel_companies_report[columns_for_excel]
 
+    # Удаляем дубликаты по артикулу
+    # df_excel_companies_report = df_excel_companies_report.drop_duplicates(
+    #     subset=['Артикул WB'],
+    #     ignore_index=True
+    # )
+
     # Заменяем 0 и 0.0 на NaN во всех колонках
     # df_final_for_excel = df_final_for_excel.replace({0: np.nan, 0.0: np.nan})
 
@@ -1813,6 +1821,7 @@ def create_client_svod(
             ['Артикул WB', 'Артикул продавца','Наименование товара',]
         ]
         .copy()
+        .drop_duplicates(subset=['Артикул WB'], ignore_index=True)
     )
 
     # Считаем заказы
@@ -2017,7 +2026,9 @@ def calc_keyword_stats(df_companies_keywords_stats):
         # Считаем доп. столбцы
         .assign(
             CTR=lambda x: (
-                (x['Клики'] / x['Просмотры'] * 100)
+                pd.to_numeric(x['Клики'], errors='coerce')
+                .mul(100)
+                .div(pd.to_numeric(x['Просмотры'], errors='coerce').replace(0, np.nan))
                 .replace([np.inf, -np.inf], np.nan)
                 .fillna(0)
                 .round(2)
@@ -2071,7 +2082,11 @@ def create_result_dictionary(
     }
     # В каждом df заменяем 0 и 0.0 на NaN
     for key in result_companies_report:
-        result_companies_report[key] = result_companies_report[key].replace({0: np.nan, 0.0: np.nan})
+        result_companies_report[key] = (
+            result_companies_report[key]
+            .replace({0: np.nan, 0.0: np.nan})
+            .infer_objects(copy=False)
+        )
 
     return result_companies_report
 

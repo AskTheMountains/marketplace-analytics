@@ -293,9 +293,8 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
       boxAcceptanceType -> Ограничения
 
     Дополнительно:
-      - если название склада заканчивается на 'СГТ' (с пробелом или без),
-        оно переименовывается в 'СГТ <имя_склада_без_СГТ>',
-        чтобы совпасть с маппингом, где 'СГТ' стоит в начале строки.
+      - если название склада заканчивается на «СГТ» (с пробелом или без),
+        оно преобразуется в «СГТ <имя_склада_без_СГТ>».
 
     Ожидаемый путь:
       <marketplace_dir_path>/Clients/<client_name>/UploadFiles/UploadFiles_<date_metrics>/
@@ -312,9 +311,17 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
 
     try:
         df_warehouses = pd.read_csv(file_path, sep=";")
+
     except FileNotFoundError:
         logger.error(
             "Файл с загруженностью складов WB не найден: {}",
+            file_path,
+        )
+        return pd.DataFrame()
+
+    except pd.errors.EmptyDataError:
+        logger.warning(
+            "Файл с загруженностью складов WB пустой: {}",
             file_path,
         )
         return pd.DataFrame()
@@ -329,26 +336,31 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
         for col_src, col_dst in rename_map.items()
         if col_src in df_warehouses.columns
     }
+
     if existing_rename:
         df_warehouses = df_warehouses.rename(columns=existing_rename)
 
-    # Переименование самих складов: '... СГТ' / '...СГТ' -> 'СГТ ...'
+    # Переименование складов: «... СГТ» / «...СГТ» -> «СГТ ...»
     if "Склад" in df_warehouses.columns:
+
         def _normalize_sgt(name: str) -> str:
             if not isinstance(name, str):
                 return name
+
             s = name.strip()
-            # убираем мышиные пробелы перед СГТ
+
             if s.endswith("СГТ"):
-                base = s[:-3].rstrip()  # отрезаем 'СГТ' и возможный пробел перед ним
+                base = s[:-3].rstrip()
+
                 if base:
                     return f"СГТ {base}"
-                else:
-                    # если было просто "СГТ" — оставляем как есть
-                    return "СГТ"
+
+                return "СГТ"
+
             return s
 
-        df_warehouses["Склад"] = df_warehouses["Склад"].astype(str).map(_normalize_sgt)
+        # map без astype(str), чтобы не превращать NaN в строку "nan"
+        df_warehouses["Склад"] = df_warehouses["Склад"].map(_normalize_sgt)
 
     logger.info(
         "Считан файл с загруженностью складов WB: {}, строк: {}, колонок: {}",
@@ -356,6 +368,7 @@ def load_wb_warehouses_load(date_metrics: str) -> pd.DataFrame:
         len(df_warehouses),
         len(df_warehouses.columns),
     )
+
     return df_warehouses
 
 def read_products(date_metrics: str) -> pd.DataFrame:

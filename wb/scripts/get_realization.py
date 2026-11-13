@@ -5,6 +5,7 @@ import glob
 import os
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import openpyxl
@@ -272,19 +273,31 @@ def print_realization_reports(df_sales_returns_wb):
     df_sales_returns_wb.to_clipboard(excel=True, index=False)
 
 
+# Функция сохранения df с продажами и возвратами в файл Excel
+def save_realization_reports(df_sales_returns_wb, date_start, date_end):
+    realization_dir = marketplace_dir_path / "Clients" / client_name / "Realization"
+    realization_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name = f"{date_start}_{date_end}_Продажи_по_реализации_{client_name}_WB.xlsx"
+    file_path = realization_dir / file_name
+    df_sales_returns_wb.to_excel(file_path, index=False)
+    logger.info(f"Отчет реализации WB по клиенту {client_name} сохранен в: {file_path}")
+
+    return file_path
+
+
 
 # %% Вызов всех функций
 if __name__ == '__main__':
 
     # Парсим аргументы командной строки
     dates_cli = cli_date_range(parser)
+    save_as_excel = dates_cli.get("save_as_excel", False)
 
     # Формируем диапазон дат
     date_start, date_end = generate_date_range(
-        # date_start=dates_cli['start_date'],
-        # date_end=dates_cli['end_date'],
-        date_start='2024-10-01',
-        date_end='2026-09-30'
+        date_start=dates_cli['start_date'] or '2024-10-01',
+        date_end=dates_cli['end_date'] or '2026-09-30'
     )
     # date_range_df = generate_date_range(date_start, date_end)
 
@@ -307,13 +320,15 @@ if __name__ == '__main__':
             'Размер'
         ]
     )
-    # Выводим в консоль
-    print_realization_reports(df_sales_returns_wb)
-
-    logger.info(
-        f"Отчет реализации WB по клиенту "
-        f"{client_name} за даты {date_start} по {date_end} в буфере обмена. "
-        "Скопируйте его в Excel"
-    )
+    # Выводим результат в консоль или сохраняем в файл
+    if save_as_excel:
+        save_realization_reports(df_sales_returns_wb, date_start, date_end)
+    else:
+        print_realization_reports(df_sales_returns_wb)
+        logger.info(
+            f"Отчет реализации WB по клиенту "
+            f"{client_name} за даты {date_start} по {date_end} в буфере обмена. "
+            "Скопируйте его в Excel"
+        )
 
  # %%
