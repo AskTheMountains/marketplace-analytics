@@ -147,6 +147,12 @@ def cli_dates(parser):
         help='Опорная дата (например, для автоматического диапазона) в формате YYYY-MM-DD (опционально)',
         metavar=''
     )
+    safe_add_argument(
+        parser,
+        '--save_as_excel',
+        action='store_true',
+        help='Сохранять результат в файл Excel (по умолчанию результат копируется в буфер обмена)'
+    )
     args, unknown = parser.parse_known_args()
 
     # Преобразуем приоритетно:
@@ -162,6 +168,7 @@ def cli_dates(parser):
         params["start_date"] = None
         params["end_date"] = None
     params["reference_date"] = args.reference_date if args.reference_date else None
+    params["save_as_excel"] = args.save_as_excel if hasattr(args, 'save_as_excel') else False
     return params
 
 def cli_date_range(parser):
@@ -204,15 +211,23 @@ def cli_date_range(parser):
         help='Конечная дата в формате ГГГГ-ММ-ДД (необязательный, если не передан — генерируется автоматически)',
         metavar='YYYY-MM-DD'
     )
+    safe_add_argument(
+        parser,
+        '--save_as_excel',
+        action='store_true',
+        help='Сохранять результат в файл Excel (по умолчанию результат копируется в буфер обмена)'
+    )
     args, unknown = parser.parse_known_args()
 
     # Приоритет: оба позиционных > оба именованных > None/None
     if args.start_date_pos and args.end_date_pos:
-        return {"start_date": args.start_date_pos, "end_date": args.end_date_pos}
+        result = {"start_date": args.start_date_pos, "end_date": args.end_date_pos}
     elif args.start_date and args.end_date:
-        return {"start_date": args.start_date, "end_date": args.end_date}
+        result = {"start_date": args.start_date, "end_date": args.end_date}
     else:
-        return {"start_date": None, "end_date": None}
+        result = {"start_date": None, "end_date": None}
+    result["save_as_excel"] = args.save_as_excel if hasattr(args, 'save_as_excel') else False
+    return result
 
 def cli_days_ago(parser):
     """

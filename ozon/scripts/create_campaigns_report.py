@@ -1144,6 +1144,12 @@ def process_product_list(df_products):
     )
     # GPT END----
 
+    # Переименовываем колонку категории товара (тип) — как на листе 1
+    if 'Тип' in df_products_processed.columns:
+        df_products_processed = df_products_processed.rename(columns={
+            'Тип': 'Категория (тип)'
+        })
+
     # Перемещаем колонки в начало df
     df_products_processed = move_columns(
         df_products_processed,
@@ -1180,7 +1186,8 @@ def add_products_data_to_companies_reports(df_companies_parsed, df_products_proc
             # 'ID Размерного ряда',
             'Артикул размера',
             'Количество размеров в артикуле',
-            'model_id'
+            'model_id',
+            'Категория (тип)',
         ]],
         on='SKU',
         how='left',
@@ -1610,6 +1617,7 @@ def add_model_products(
                 'Артикул размера',
                 'Количество размеров в артикуле',
                 'model_id',
+                'Категория (тип)',
             ]
         ]
         .pipe(lambda df:
@@ -2394,6 +2402,7 @@ def create_excel_report(df_final_orders):
         'Количество размеров в артикуле',
         # 'model_id',
         'Название товара',
+        'Категория (тип)',
         'Тип товара',
         'Цена товара, руб.',
 

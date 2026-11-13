@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from ozon.scripts.ozon_logger import ozon_client_logger as logger
 # Имя клиента
 from ozon.scripts.constants import client_name
+# Общая утилита перемещения колонок
+from generic_functions import move_columns
 
 # Базовый адрес сервиса ИИ-помощника
 PORTARIUS_URL = "https://portarius.1bitai.ru"
@@ -34,9 +36,6 @@ USE_THREADS = False
 
 # Порог запуска РК по умолчанию, если для клиента не задан PROMOTION_ORDERS_THRESHOLD
 DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD = 10
-
-# Порог ДРР для комментария по умолчанию, если для клиента не задан DRR_COMMENT_THRESHOLD (в процентах)
-DEFAULT_DRR_COMMENT_THRESHOLD = 10
 
 # Строка, которая исключается из campaign_details (сшитые товары)
 ARTICLE_TYPE_TO_EXCLUDE = "Товар из сшивки"
@@ -321,7 +320,7 @@ def _build_product_summary(df_client_svod, agg_by_sku, agg_by_article):
     }
     product_summary = df.loc[:, list(existing_map.keys())].rename(columns=existing_map)
 
-    # Сортировка по выручке (топ-30 ассистент берёт сам, но так нагляднее)
+    # Сортировка по выручке (для наглядности; отбор делает модель по правилам промпта)
     if 'revenue' in product_summary.columns:
         product_summary = product_summary.sort_values(
             by='revenue', ascending=False, ignore_index=True
@@ -384,6 +383,18 @@ def _build_campaign_details(df_campaigns, valid_sku, valid_article, category_by_
         if ru in df.columns
     }
     columns = list(existing_map.keys()) + ['category']
+
+    # Числовые поля под воронку: пустую ячейку (NaN) считаем 0.
+    # Иначе NaN уходит в JSON как null и модель ошибочно пишет «неполные данные о заказах».
+    # Применяем только к числовым полям воронки, не трогая ключи (номер кампании, sku, article) и название.
+    numeric_fields = [
+        'Показы', 'Клики', 'Добавления в корзину',
+        'Заказы, шт. (РК)', 'Заказы модели, шт. (РК)', 'Расход РК, руб.',
+    ]
+    numeric_cols = [c for c in numeric_fields if c in df.columns]
+    if numeric_cols:
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+
     return df.loc[:, columns].rename(columns=existing_map)
 
 
@@ -561,7 +572,7 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
     датафреймы без изменений, чтобы отчёт сформировался без рекомендаций.
     """
     from ozon.scripts.constants import (
-        AI_ASSISTANT_ID, PROMOTION_ORDERS_THRESHOLD, DRR_COMMENT_THRESHOLD
+        AI_ASSISTANT_ID, PROMOTION_ORDERS_THRESHOLD
     )
 
     ai_data_issues = []
@@ -573,6 +584,13 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
     df_client_excel_svod["Проблемы ИИ"] = ""
     df_campaigns_report_processed["Комментарий ИИ"] = ""
     df_campaigns_report_processed["Проблемы ИИ"] = ""
+
+    # Комментарий — всегда в самом конце таблицы (после ИИ-колонок)
+    df_campaigns_report_processed = move_columns(
+        df_campaigns_report_processed,
+        "Комментарий",
+        position=len(df_campaigns_report_processed.columns) - 1,
+    )
 
     try:
         # 1. Ключ ИИ-помощника
@@ -594,7 +612,6 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
         threshold = PROMOTION_ORDERS_THRESHOLD.get(
             client_name, DEFAULT_CAMPAIGN_LAUNCH_THRESHOLD
         )
-        drr_threshold = DRR_COMMENT_THRESHOLD.get(client_name, DEFAULT_DRR_COMMENT_THRESHOLD)
         agg_by_sku, agg_by_article = _aggregate_campaign_orders(df_campaigns_report_processed)
         product_summary = _build_product_summary(
             df_client_excel_svod, agg_by_sku, agg_by_article
@@ -622,7 +639,6 @@ def add_ai_recommendations(df_client_excel_svod, df_campaigns_report_processed):
         message = json.dumps({
             "client_name": client_name,
             "campaign_launch_threshold": threshold,
-            "drr_comment_threshold": drr_threshold,
             "product_summary": _records(product_summary),
             "campaign_details": _records(campaign_details),
         }, ensure_ascii=False, allow_nan=False)

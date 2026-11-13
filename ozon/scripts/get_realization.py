@@ -5,6 +5,7 @@ import json
 import re
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -173,30 +174,46 @@ def print_realization_reports(df_all_reports):
     df_all_reports.to_clipboard(excel=True, index=False)
 
 
+# Функция сохранения отчетов реализации в файл Excel
+def save_realization_reports(df_all_reports, date_start, date_end):
+    realization_dir = marketplace_dir_path / "Clients" / client_name / "Realization"
+    realization_dir.mkdir(parents=True, exist_ok=True)
+
+    file_name = f"{date_start}_{date_end}_Продажи_по_реализации_{client_name}_Ozon.xlsx"
+    file_path = realization_dir / file_name
+    df_all_reports.to_excel(file_path, index=False)
+    logger.info(f"Отчет реализации Ozon по клиенту {client_name} сохранен в: {file_path}")
+
+    return file_path
+
+
 
 
 # %% Вызов всех функций
 if __name__ == '__main__':
     # Парсим аргументы командной строки
     dates_cli = cli_dates(parser)
+    save_as_excel = dates_cli.get("save_as_excel", False)
 
     # Формируем диапазон дат
+    date_start = dates_cli['start_date'] or '2024-04-01'
+    date_end = dates_cli['end_date'] or '2026-10-01'
     df_date_range = generate_date_range(
-        # date_start=dates_cli['start_date'],
-        # date_end=dates_cli['end_date'],
-        date_start='2024-04-01',
-        date_end='2026-04-01'
+        date_start=date_start,
+        date_end=date_end
     )
 
     # Выгружаем отчеты реализации
     df_all_reports = get_all_realization_reports(df_date_range)
 
-    # Выводим в консоль
-    print_realization_reports(df_all_reports)
-
-    logger.info(
-        f"Отчет реализации Озон по клиенту {client_name} в буфере обмена. "
-        "Скопируйте его в Excel"
-    )
+    # Выводим результат в консоль или сохраняем в файл
+    if save_as_excel:
+        save_realization_reports(df_all_reports, date_start, date_end)
+    else:
+        print_realization_reports(df_all_reports)
+        logger.info(
+            f"Отчет реализации Озон по клиенту {client_name} в буфере обмена. "
+            "Скопируйте его в Excel"
+        )
 
 # %%

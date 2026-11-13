@@ -1145,7 +1145,6 @@ CLIENT_SUMMARY_COL_FORMAT = {
         'alignment': {'horizontal': 'center', 'vertical': 'center'}
     },
     'Артикул': {
-        'width': 12.0,
         'alignment': {'horizontal': 'left', 'vertical': 'center'}
     },
     'Название товара': {
@@ -1242,7 +1241,6 @@ CAMPAIGNS_REPORT_COL_FORMAT = {
     },
     'Артикул': {
         'length': 7,
-        'width': 32.1,
         'alignment': {'horizontal': 'left', 'vertical': 'center'},
     },
     'Название товара': {

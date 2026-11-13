@@ -294,6 +294,7 @@ def process_campaigns_report(df_campaigns_report):
         'SKU',
         'Артикул',
         'Название товара',
+        'Категория (тип)',
         'Тип товара',
         'Цена товара, руб.',
         'Показы',
@@ -711,6 +712,7 @@ def create_client_svod_excel(df_client_svod, date_report):
     # Делаем порядок колонок
     column_order = [
         'SKU', 'Артикул', 'Название товара',
+        'Категория (тип)',
         'Средняя цена продажи',
         'РК',
         'Заказы ОЗЗ 5%, шт.', 'Расход ОЗЗ 5%, руб.',
@@ -720,7 +722,6 @@ def create_client_svod_excel(df_client_svod, date_report):
         'ДРР',
         'Фактический ДРР',
         f'Остаток {date_report_formatted}',
-        'Комментарий',
         'Процент отмен',
         # 'Тип кампании',
         # 'Отзывы',
@@ -732,6 +733,8 @@ def create_client_svod_excel(df_client_svod, date_report):
     if enable_ai_recommendations:
         column_order.append('Комментарий ИИ')
         column_order.append('Проблемы ИИ')
+    # Комментарий — всегда в самом конце таблицы
+    column_order.append('Комментарий')
     df_client_excel_svod = df_client_excel_svod[column_order]
 
     # Сортировка
@@ -1220,6 +1223,15 @@ def format_client_summary_sheet(wb, sheet_name, df_client_excel_svod, percent_co
         )
         ws.conditional_formatting.add(cell_range, rule)
 
+        # Градиентная заливка самого столбца "Процент отмен": зелёный (мин) → красный (макс),
+        # как у столбца ДРР
+        gradient_range = f"{canc_col_letter}2:{canc_col_letter}{ws.max_row}"
+        ws.conditional_formatting.add(gradient_range, ColorScaleRule(
+            start_type='min', start_color='63BE7B',   # зелёный
+            mid_type='percentile', mid_value=50, mid_color='FFEB84',  # жёлтый
+            end_type='max', end_color='E06967',       # красный
+        ))
+
         # Процентный формат для скрытого столбца с процентом отмен
         for row in range(2, ws.max_row + 1):
             ws.cell(row=row, column=canc_col_idx).number_format = '0.0%'
@@ -1508,8 +1520,10 @@ def save_and_format_excel(
     # 6) Скрываем служебные столбцы и лист с проблемами ИИ
     if sheet_name_client_svod in wb.sheetnames:
         hide_column_by_header(wb[sheet_name_client_svod], 'Проблемы ИИ')
+        hide_column_by_header(wb[sheet_name_client_svod], 'Категория (тип)')
     if sheet_campaigns in wb.sheetnames:
         hide_column_by_header(wb[sheet_campaigns], 'Проблемы ИИ')
+        hide_column_by_header(wb[sheet_campaigns], 'Категория (тип)')
     if 'Проблемы ИИ' in wb.sheetnames:
         wb['Проблемы ИИ'].sheet_state = 'hidden'
 
