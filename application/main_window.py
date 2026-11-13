@@ -37,6 +37,7 @@ from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer, QRectF, QObject, 
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QIcon, QPixmap, QTextCursor, QTextCharFormat, QColor, QSyntaxHighlighter, QFont, QPainter, QFontMetrics, QTextDocument, QKeySequence
 from application.widgets.update_reference_table_button import UpdateReferenceTableButton
+from application.clients_db_editor import ClientsDbEditor
 
 from application.ozon_reports import (
     OzonSalesOrdersReport,
@@ -45,6 +46,7 @@ from application.ozon_reports import (
     OzonActionsReport,
     OzonCampaignsReport,
     OzonOrdersSvodReport,
+    OzonRealizationReport,
     OzonFinanceReport
     )
 from application.wb_reports import (
@@ -54,6 +56,7 @@ from application.wb_reports import (
     WBActionsReport,
     WBCampaignsReport,
     WBOrdersSvodReport,
+    WBRealizationReport,
     WBFinanceReport,
 )
 
@@ -66,6 +69,7 @@ REPORTS_REGISTRY = {
         OzonUploadDataReport,
         OzonSupplyPlanningReport,
         OzonActionsReport,
+        OzonRealizationReport,
         OzonFinanceReport,
         # Другие классы Ozon-отчетов...
     ],
@@ -76,6 +80,7 @@ REPORTS_REGISTRY = {
         WBUploadDataReport,
         WBSupplyPlanningReport,
         WBActionsReport,
+        WBRealizationReport,
         WBFinanceReport
     ],
 }
@@ -1316,6 +1321,14 @@ class MainWindow(QWidget):
         self.tab_widget.tabBar().tabBarClicked.connect(self.on_tab_clicked)
 
         layout = QVBoxLayout()
+
+        top_bar = QHBoxLayout()
+        self.btn_edit_db = QPushButton("Редактировать БД клиентов")
+        self.btn_edit_db.clicked.connect(self.open_clients_db_editor)
+        top_bar.addWidget(self.btn_edit_db)
+        top_bar.addStretch(1)
+        layout.addLayout(top_bar)
+
         layout.addWidget(self.tab_widget)
         self.setLayout(layout)
 
@@ -1377,6 +1390,34 @@ class MainWindow(QWidget):
         client_name = workspace_widget.get_current_client_name()
         if idx != -1:
             self.tab_widget.setTabText(idx, client_name)
+
+    def open_clients_db_editor(self):
+        """Открывает редактор БД клиентов (settings.json)."""
+        self.clients_db_editor = ClientsDbEditor(
+            self.settings,
+            parent=self,
+            on_saved=self.refresh_clients_after_edit,
+        )
+        self.clients_db_editor.setWindowIcon(QIcon(str(icon_path)))
+        self.clients_db_editor.exec()
+
+    def refresh_clients_after_edit(self):
+        """Пересобирает список клиентов и обновляет все вкладки после сохранения БД."""
+        self.clients = get_clients_list(self.settings)
+        for i in range(self.tab_widget.count()):
+            widget = self.tab_widget.widget(i)
+            if isinstance(widget, ClientWorkspace):
+                widget.clients = self.clients
+                # Обновляем выпадающий список, сохраняя текущий выбор
+                current_idx = widget.client_idx
+                widget.clientCombo.blockSignals(True)
+                widget.clientCombo.clear()
+                widget.clientCombo.addItem("— Выберите клиента —")
+                widget.clientCombo.addItems(self.clients)
+                if current_idx is not None:
+                    widget.clientCombo.setCurrentIndex(current_idx + 1)
+                widget.clientCombo.blockSignals(False)
+                widget.update_buttons_and_labels()
 
 def closeEvent(self, event):
         for i in range(self.tab_widget.count()):

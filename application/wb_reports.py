@@ -720,6 +720,102 @@ class WBOrdersSvodReport(ReportBase):
 
         return cmd
 
+class WBRealizationReport(ReportBase):
+    report_name = "Продажи по реализации (WB)"
+    report_dir = "wb/Clients/{client_name}/Realization"
+
+    def default_params(self):
+        return {
+            "start_date": "",
+            "end_date": "",
+            "save_as_excel": False,
+        }
+
+    def __init__(self):
+        super().__init__()
+        self.panel_widget = None
+
+    def build_ui(self, parent_layout, on_params_changed, parent_workspace=None, key=None):
+        if self.panel_widget is None:
+            self.panel_widget = QWidget()
+            layout = QVBoxLayout(self.panel_widget)
+
+            # --- Календарь выбора начальной и конечной даты ---
+            dates_hbox = QVBoxLayout()
+            self.start_selector = DateSelector("Дата начала:")
+            self.start_selector.date_edit.dateChanged.connect(
+                lambda _: self._on_dates_changed(on_params_changed)
+            )
+            self.end_selector = DateSelector("Дата окончания:")
+            self.end_selector.date_edit.dateChanged.connect(
+                lambda _: self._on_dates_changed(on_params_changed)
+            )
+            dates_hbox.addWidget(self.start_selector)
+            dates_hbox.addWidget(self.end_selector)
+            layout.addLayout(dates_hbox)
+
+            # --- Значения по умолчанию для дат ---
+            start_str, end_str = prev_month_date_range()
+            self.start_selector.set_date(start_str)
+            self.end_selector.set_date(end_str)
+
+            # --- Чекбокс сохранения в файл Excel ---
+            self.save_excel_checkbox = QCheckBox("Сохранить результат в файл Excel")
+            self.save_excel_checkbox.setChecked(False)
+            self.save_excel_checkbox.toggled.connect(
+                lambda _: self._on_dates_changed(on_params_changed)
+            )
+            layout.addWidget(self.save_excel_checkbox)
+
+            # Обработчик для синхронизации:
+            self._on_dates_changed(on_params_changed)
+
+            # --- Статус и прогрессбар ---
+            status_label = QLabel(getattr(self, 'status_text', ''))
+            layout.addWidget(status_label)
+            progress_bar = QProgressBar()
+            progress_bar.setRange(0, 0)
+            progress_bar.setVisible(False)
+            layout.addWidget(progress_bar)
+
+            # --- Дефолтные кнопки ---
+            if parent_workspace and key:
+                for btn in super().make_standard_buttons(parent_workspace, key, status_label, progress_bar):
+                    layout.addWidget(btn)
+                for btn in self.make_custom_buttons(parent_workspace, key, status_label, progress_bar):
+                    layout.addWidget(btn)
+
+        already_in_layout = any(
+            parent_layout.itemAt(i).widget() is self.panel_widget for i in range(parent_layout.count())
+        )
+        if not already_in_layout:
+            parent_layout.addWidget(self.panel_widget)
+
+    def _on_dates_changed(self, cb):
+        self.params["start_date"] = self.start_selector.get_date()
+        self.params["end_date"] = self.end_selector.get_date()
+        checkbox = getattr(self, 'save_excel_checkbox', None)
+        self.params["save_as_excel"] = checkbox.isChecked() if checkbox else self.params.get("save_as_excel", False)
+        cb(self.params)
+
+    def is_params_ready(self):
+        return True
+
+    def build_cmd(self, client_number):
+        from application.paths import PYTHON_EXE
+        cmd = [
+            PYTHON_EXE,
+            "-m", "wb.scripts.get_realization",
+            "-c", str(client_number)
+        ]
+        if self.params.get("start_date"):
+            cmd += ["--start_date", self.params["start_date"]]
+        if self.params.get("end_date"):
+            cmd += ["--end_date", self.params["end_date"]]
+        if self.params.get("save_as_excel"):
+            cmd += ["--save_as_excel"]
+        return cmd
+
 class WBFinanceReport(ReportBase):
     report_name = "Отчет маржинальности (WB)"
     report_dir = "wb/Clients/{client_name}/FinanceReports"
